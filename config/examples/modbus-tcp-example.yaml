@@ -1,0 +1,41 @@
+# Fully configured Modbus TCP driver reading from a PLC at 192.168.1.100.
+# Update `config.host` to a reachable device (or the FakeModbusServer-style
+# simulator) before enabling this in a real deployment.
+schema_version: "0.1"
+
+logging:
+  level: INFO
+
+watchdog:
+  enabled: true
+  interval_seconds: 15
+
+drivers:
+  - id: modbus_tcp_01
+    type: modbus_tcp
+    enabled: true
+    config:
+      host: 192.168.1.100
+      port: 502
+      unit_id: 1
+      connect_timeout_seconds: 5
+      read_timeout_seconds: 3
+    tag_groups:
+      - id: analog_inputs
+        scan_rate_ms: 1000
+        tags:
+          - id: temperature_01
+            function_code: read_holding_registers
+            address: 0
+          - id: pressure_01
+            function_code: read_input_registers
+            address: 0
+      - id: digital_inputs
+        scan_rate_ms: 500
+        tags:
+          - id: pump_running
+            function_code: read_coils
+            address: 0
+          - id: door_open
+            function_code: read_discrete_inputs
+            address: 0

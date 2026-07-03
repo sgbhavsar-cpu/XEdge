@@ -16,9 +16,12 @@ from pathlib import Path
 
 from xedge import __version__
 from xedge.core.config import ConfigEngine, ConfigStore
+from xedge.core.driver_config import build_driver_config
+from xedge.core.pipeline import normalize
 from xedge.core.supervisor import DriverRegistry, DriverSupervisor
 from xedge.core.watchdog import watchdog_loop
 from xedge.drivers.base import TagUpdate
+from xedge.drivers.modbus.tcp import ModbusTcpDriver
 from xedge.observability.logging import configure_logging, get_logger
 
 _SCHEMA_FILENAME = "xedge-core.schema.json"
@@ -54,6 +57,42 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--version", action="version", version=f"xedge {__version__}")
     return parser.parse_args(argv)
+
+
+def _build_registry() -> DriverRegistry:
+    """Known driver types (FR-DF-001: plugin-based, but Sprint 2 has exactly
+    one concrete driver so registration is still explicit here rather than
+    via a discovered entry-point mechanism)."""
+    registry = DriverRegistry()
+    registry.register("modbus_tcp", ModbusTcpDriver)
+    return registry
+
+
+def _start_configured_drivers(
+    store: ConfigStore, registry: DriverRegistry, supervisor: DriverSupervisor
+) -> None:
+    for entry in store.get_section("drivers", []):
+        if not entry.get("enabled", True):
+            continue
+        driver_config = build_driver_config(entry)
+        supervisor.start(driver_config)
+
+
+async def _drain_tag_queue(queue: asyncio.Queue[TagUpdate]) -> None:
+    """Phase 1 pipeline consumer (XEDGE-014/017): normalize each TagUpdate
+    and log it. Store-and-forward and northbound dispatch are later sprints
+    (XEDGE-030, XEDGE-023) — for now this is what makes tag reads observable."""
+    logger = get_logger(__name__)
+    while True:
+        update = await queue.get()
+        tag = normalize(update)
+        logger.debug(
+            "tag.update",
+            tag_id=tag.tag_id,
+            value=tag.value,
+            quality=tag.quality.value,
+            source_driver=tag.source_driver,
+        )
 
 
 async def _wait_for_shutdown_signal() -> None:
@@ -98,10 +137,10 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
     )
 
     tag_queue: asyncio.Queue[TagUpdate] = asyncio.Queue(maxsize=_TAG_QUEUE_MAX_DEPTH)
-    registry = DriverRegistry()
+    registry = _build_registry()
     supervisor = DriverSupervisor(registry, tag_queue)
-    # Driver instances from store.get_section("drivers") are started here in
-    # Sprint 2+, once a concrete driver type (e.g. modbus_tcp) is registered.
+    _start_configured_drivers(store, registry, supervisor)
+    drain_task = asyncio.create_task(_drain_tag_queue(tag_queue))
 
     logger.info("xedge.ready")
     try:
@@ -109,7 +148,8 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
         logger.info("xedge.shutdown_signal_received")
     finally:
         watchdog_task.cancel()
-        await asyncio.gather(watchdog_task, return_exceptions=True)
+        drain_task.cancel()
+        await asyncio.gather(watchdog_task, drain_task, return_exceptions=True)
         await supervisor.stop_all()
         logger.info("xedge.stopped")
 

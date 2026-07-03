@@ -39,6 +39,9 @@ test = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
+    # Black-box test oracles only (ADR-006) — never imported by xedge itself,
+    # never read as a reference implementation, not shipped in any edition.
+    "pymodbus>=3.6",
 ]
 
 [project.scripts]

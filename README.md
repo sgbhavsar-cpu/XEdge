@@ -29,13 +29,25 @@ xEdge is an enterprise-grade, multi-protocol IIoT edge software stack that runs 
 
 ## Status
 
-**Sprint 1 (Foundation) complete.** Repo scaffolding, config engine, structured
-logging, systemd watchdog integration, the `BaseDriver`/`DriverSupervisor`
-skeleton, CI pipeline, and a multi-arch Docker build are in place and
-verified (unit + integration tests, ruff, mypy --strict, bandit, and a real
-`docker build && docker run` smoke test all pass). No protocol driver is
-implemented yet — that begins in Sprint 2 with the in-house Modbus stack
-(see [ADR-006](docs/architecture/adr-006-protocol-stack-build-vs-buy.md)).
+**Sprint 2 (Driver Framework + Modbus TCP) complete.** Milestone M1 (First
+Data) is reached: xEdge reads real tags from a live Modbus TCP device at a
+configured scan rate and pushes them through the pipeline, end to end.
+
+- Sprint 1: repo scaffolding, config engine, structured logging, systemd
+  watchdog integration, the `BaseDriver`/`DriverSupervisor` skeleton, CI
+  pipeline, multi-arch Docker build.
+- Sprint 2: in-house Modbus MBAP/PDU codec (ADR-006, clean-room from the
+  public spec), the Modbus TCP driver (FC01–04, per-tag Bad-quality handling
+  on protocol exceptions, supervisor-driven reconnect on transport failure),
+  per-driver-type config schema (FR-DF-004), and pipeline v1
+  (`TagUpdate` → `UnifiedTag`). Cross-validated against pymodbus as an
+  independent black-box oracle, per ADR-006.
+
+Verified via unit + integration tests (including the pymodbus oracle
+cross-check), ruff, mypy --strict, bandit, and a live `docker build && docker
+run` smoke test reading a real device. Northbound publishing (MQTT/Sparkplug
+B) and store-and-forward are Sprint 3+ (see
+[Sprint Planning](docs/planning/sprint-planning.md)).
 
 ## Quick Start (Development)
 
@@ -46,6 +58,11 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,test]"
 xedge --config config/examples/modbus-minimal.yaml
 ```
+
+`config/examples/modbus-minimal.yaml` ships with its Modbus driver disabled
+(no device to reach by default). See `config/examples/modbus-tcp-example.yaml`
+for a fully configured driver — point `config.host` at a reachable Modbus TCP
+device (or a `pymodbus` simulator) and enable it.
 
 Run the test suite and static checks:
 
