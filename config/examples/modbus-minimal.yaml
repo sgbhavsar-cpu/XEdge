@@ -1,0 +1,17 @@
+# Minimal xEdge configuration — Sprint 1 core config only.
+# Per-driver `config` and `tag_groups` schemas land with the Modbus driver
+# in Sprint 2 (XEDGE-020); the `drivers` list below is validated only at the
+# core level (id/type/enabled) until then.
+schema_version: "0.1"
+
+logging:
+  level: INFO
+
+watchdog:
+  enabled: true
+  interval_seconds: 15
+
+drivers:
+  - id: modbus_tcp_01
+    type: modbus_tcp
+    enabled: true

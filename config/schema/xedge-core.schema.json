@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://xedge.example.com/schema/xedge-core.schema.json",
+  "title": "xEdge Core Configuration",
+  "description": "Schema for the core section of xedge.yaml (FR-CM-001). Per-driver schemas are loaded and validated independently by the driver framework (FR-DF-004).",
+  "type": "object",
+  "required": ["schema_version"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Config schema version, e.g. '0.1'. Used by the migration tool (NFR-M-003).",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+          "default": "INFO"
+        }
+      }
+    },
+    "watchdog": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "interval_seconds": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 30,
+          "default": 15,
+          "description": "Must kick at least once per 30s per NFR-R-005; default kicks at 2x that margin."
+        }
+      }
+    },
+    "drivers": {
+      "type": "array",
+      "description": "Driver instances. Each driver's `config` and `tag_groups` are validated against that driver type's own schema (FR-DF-004) — not enumerated here in Sprint 1.",
+      "items": {
+        "type": "object",
+        "required": ["id", "type"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "type": { "type": "string", "minLength": 1 },
+          "enabled": { "type": "boolean", "default": true }
+        }
+      }
+    }
+  }
+}
