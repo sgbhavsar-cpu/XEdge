@@ -49,6 +49,37 @@
           "enabled": { "type": "boolean", "default": true }
         }
       }
+    },
+    "northbound": {
+      "type": "object",
+      "description": "Northbound MQTT + Sparkplug B connector (FR-NB-001..FR-NB-006). Only a single connector is supported in Sprint 3; FR-NB-005 (>=3 simultaneous connectors) is later-sprint scope.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "publish_interval_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 1.0,
+          "description": "How often the dispatcher drains the ring buffer and publishes an NDATA batch."
+        },
+        "mqtt": {
+          "type": "object",
+          "required": ["host"],
+          "additionalProperties": false,
+          "properties": {
+            "host": { "type": "string", "minLength": 1 },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 1883 },
+            "group_id": { "type": "string", "minLength": 1, "default": "xedge" },
+            "edge_node_id": { "type": "string", "minLength": 1, "default": "edge01" },
+            "client_id": { "type": "string", "default": "" },
+            "keepalive_seconds": { "type": "integer", "minimum": 1, "default": 60 },
+            "connect_timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "default": 10 },
+            "qos": { "type": "integer", "enum": [0, 1, 2], "default": 1 },
+            "username": { "type": "string" },
+            "password": { "type": "string" }
+          }
+        }
+      }
     }
   }
 }

@@ -1,6 +1,9 @@
-# Fully configured Modbus TCP driver reading from a PLC at 192.168.1.100.
-# Update `config.host` to a reachable device (or the FakeModbusServer-style
-# simulator) before enabling this in a real deployment.
+# Fully configured Modbus TCP driver reading from a PLC at 192.168.1.100,
+# publishing northbound as Sparkplug B over MQTT to a broker at
+# 192.168.1.10:1883. Update both hosts to reachable endpoints (or test
+# doubles — see tests/fixtures/fake_modbus_server.py and amqtt) before
+# enabling this in a real deployment. TLS/mTLS (SR-TS-001/002) lands in
+# Sprint 13; this connects in plaintext.
 schema_version: "0.1"
 
 logging:
@@ -39,3 +42,13 @@ drivers:
           - id: door_open
             function_code: read_discrete_inputs
             address: 0
+
+northbound:
+  enabled: true
+  publish_interval_seconds: 1.0
+  mqtt:
+    host: 192.168.1.10
+    port: 1883
+    group_id: factory1
+    edge_node_id: edge01
+    qos: 1

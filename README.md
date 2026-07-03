@@ -29,9 +29,10 @@ xEdge is an enterprise-grade, multi-protocol IIoT edge software stack that runs 
 
 ## Status
 
-**Sprint 2 (Driver Framework + Modbus TCP) complete.** Milestone M1 (First
-Data) is reached: xEdge reads real tags from a live Modbus TCP device at a
-configured scan rate and pushes them through the pipeline, end to end.
+**Sprint 3 (MQTT Northbound + Sparkplug B) complete — Milestone M1 (First
+Data) fully reached end to end.** xEdge now reads real tags from a live
+Modbus TCP device and publishes them northbound as Sparkplug B over MQTT,
+verified against a real broker with an independent decoder.
 
 - Sprint 1: repo scaffolding, config engine, structured logging, systemd
   watchdog integration, the `BaseDriver`/`DriverSupervisor` skeleton, CI
@@ -40,13 +41,21 @@ configured scan rate and pushes them through the pipeline, end to end.
   public spec), the Modbus TCP driver (FC01–04, per-tag Bad-quality handling
   on protocol exceptions, supervisor-driven reconnect on transport failure),
   per-driver-type config schema (FR-DF-004), and pipeline v1
-  (`TagUpdate` → `UnifiedTag`). Cross-validated against pymodbus as an
-  independent black-box oracle, per ADR-006.
+  (`TagUpdate` → `UnifiedTag`).
+- Sprint 3: in-house Sparkplug B protobuf encoder (hand-rolled wire format
+  from the public field-number spec, ADR-002/ADR-006), the bdSeq/seq session
+  state machine, the MQTT connector (NBIRTH/NDEATH-as-LWT/NDATA, asyncio
+  bridge over paho-mqtt 2.x), a Phase-1 RAM ring buffer per driver
+  (FR-SF-001), and the northbound dispatcher (connect/reconnect backoff,
+  FR-NB-010).
 
-Verified via unit + integration tests (including the pymodbus oracle
-cross-check), ruff, mypy --strict, bandit, and a live `docker build && docker
-run` smoke test reading a real device. Northbound publishing (MQTT/Sparkplug
-B) and store-and-forward are Sprint 3+ (see
+Cross-validated at every layer against independent black-box oracles
+(pymodbus, pysparkplug, and amqtt as a real MQTT broker — never read as
+reference implementations, per ADR-006), plus a live run against real
+device/broker processes decoding correct Sparkplug B payloads end to end.
+Verified via unit + integration tests, ruff, mypy --strict, bandit, and a
+`docker build && docker run` smoke test. Store-and-forward SD persistence,
+OPC UA, REST API, and security (mTLS/RBAC) are Sprint 4+ (see
 [Sprint Planning](docs/planning/sprint-planning.md)).
 
 ## Quick Start (Development)

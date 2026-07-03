@@ -41,7 +41,9 @@ gate is passed):
 | pyserial-asyncio | Modbus RTU transport | BSD-3-Clause | ✅ Clear | Transport only; framing/CRC is in-house (ADR-006) |
 | paho-mqtt | MQTT transport | EPL-2.0 / EDL-1.0 | ✅ Clear | Permissive; dual-licensed by Eclipse |
 | pymodbus | **test oracle only** (ADR-006) | BSD-3-Clause | ✅ Clear | Not shipped in the runtime driver; used in CI to validate the in-house Modbus codec |
-| tahu (Sparkplug B ref impl) | **not used** | Apache-2.0 | N/A | Reference only, informed the in-house encoder design; encoder is built from the Eclipse spec + official `.proto`, not this codebase |
+| pysparkplug | **test oracle only** (ADR-006) | Apache-2.0 | ✅ Clear | Bundles the officially-generated Sparkplug B protobuf classes; used in tests to decode our in-house encoder's output. Installed with `--no-deps` (its own paho-mqtt<2 pin conflicts with our real paho-mqtt 2.x dependency; only its payload-decode classes are used, never its MQTT client) |
+| amqtt | **test-only MQTT broker** (ADR-006) | MIT | ✅ Clear | Pure-Python asyncio broker; stands in for a real broker (Mosquitto) in integration tests so CI needs no external service |
+| tahu (Sparkplug B ref impl) | **not used** | Apache-2.0 | N/A | Not installed; the in-house encoder is built from the Eclipse spec + public field-number tables, not this codebase |
 | asyncua | **test oracle only** (ADR-006) | LGPL-3.0 | ⚠ Requires legal review before any packaging that links it | Used in CI as an OPC UA client/server simulator; not linked into the shipped runtime, which uses open62541 |
 | open62541 | OPC UA client + server (ADR-006) | MPL-2.0 | ✅ Clear (file-level copyleft; compatible with proprietary linking) | In-house asyncio C-extension binding required (no off-the-shelf async Python binding exists) |
 | lib60870-C | **black-box oracle only** (ADR-006) | GPL-2.0 (OSS ed.) / Commercial | ⚠ GPL — do not link into commercial edition | IEC 104 stack is built in-house from the purchased IEC 60870-5-104 spec |

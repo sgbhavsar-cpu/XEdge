@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.mqtt_broker import mqtt_broker  # noqa: F401 — re-exported fixture
 from xedge.drivers.base import TagUpdate
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

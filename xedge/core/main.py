@@ -22,7 +22,10 @@ from xedge.core.supervisor import DriverRegistry, DriverSupervisor
 from xedge.core.watchdog import watchdog_loop
 from xedge.drivers.base import TagUpdate
 from xedge.drivers.modbus.tcp import ModbusTcpDriver
+from xedge.northbound.dispatcher import NorthboundDispatcher
+from xedge.northbound.mqtt import MqttSparkplugConnector, SparkplugConnectorConfig
 from xedge.observability.logging import configure_logging, get_logger
+from xedge.store.ring_buffer import RingBufferManager
 
 _SCHEMA_FILENAME = "xedge-core.schema.json"
 _TAG_QUEUE_MAX_DEPTH = 10_000
@@ -78,10 +81,16 @@ def _start_configured_drivers(
         supervisor.start(driver_config)
 
 
-async def _drain_tag_queue(queue: asyncio.Queue[TagUpdate]) -> None:
-    """Phase 1 pipeline consumer (XEDGE-014/017): normalize each TagUpdate
-    and log it. Store-and-forward and northbound dispatch are later sprints
-    (XEDGE-030, XEDGE-023) — for now this is what makes tag reads observable."""
+async def _pipeline_to_buffer(
+    queue: asyncio.Queue[TagUpdate], ring_buffers: RingBufferManager
+) -> None:
+    """Pipeline consumer (XEDGE-014/017): normalize each TagUpdate and push
+    it into its driver's ring buffer for the northbound dispatcher to drain.
+
+    Buffering key is `source_driver`, not a tag-group id — see
+    xedge.store.ring_buffer module docstring for why (tag_group id isn't
+    threaded through TagUpdate/UnifiedTag yet).
+    """
     logger = get_logger(__name__)
     while True:
         update = await queue.get()
@@ -93,6 +102,38 @@ async def _drain_tag_queue(queue: asyncio.Queue[TagUpdate]) -> None:
             quality=tag.quality.value,
             source_driver=tag.source_driver,
         )
+        ring_buffers.push(tag.source_driver, tag)
+
+
+def _build_northbound_dispatcher(
+    store: ConfigStore, ring_buffers: RingBufferManager
+) -> NorthboundDispatcher | None:
+    northbound_config = store.get_section("northbound", {})
+    if not northbound_config.get("enabled", True):
+        return None
+    mqtt_config = northbound_config.get("mqtt")
+    if not mqtt_config:
+        return None
+
+    connector = MqttSparkplugConnector(
+        SparkplugConnectorConfig(
+            host=mqtt_config["host"],
+            port=mqtt_config.get("port", 1883),
+            group_id=mqtt_config.get("group_id", "xedge"),
+            edge_node_id=mqtt_config.get("edge_node_id", "edge01"),
+            client_id=mqtt_config.get("client_id", ""),
+            keepalive_seconds=mqtt_config.get("keepalive_seconds", 60),
+            connect_timeout_seconds=mqtt_config.get("connect_timeout_seconds", 10),
+            qos=mqtt_config.get("qos", 1),
+            username=mqtt_config.get("username"),
+            password=mqtt_config.get("password"),
+        )
+    )
+    return NorthboundDispatcher(
+        connector,
+        ring_buffers,
+        publish_interval_seconds=northbound_config.get("publish_interval_seconds", 1.0),
+    )
 
 
 async def _wait_for_shutdown_signal() -> None:
@@ -140,7 +181,12 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
     registry = _build_registry()
     supervisor = DriverSupervisor(registry, tag_queue)
     _start_configured_drivers(store, registry, supervisor)
-    drain_task = asyncio.create_task(_drain_tag_queue(tag_queue))
+
+    ring_buffers = RingBufferManager()
+    buffer_task = asyncio.create_task(_pipeline_to_buffer(tag_queue, ring_buffers))
+
+    dispatcher = _build_northbound_dispatcher(store, ring_buffers)
+    dispatcher_task = asyncio.create_task(dispatcher.run()) if dispatcher is not None else None
 
     logger.info("xedge.ready")
     try:
@@ -148,8 +194,14 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
         logger.info("xedge.shutdown_signal_received")
     finally:
         watchdog_task.cancel()
-        drain_task.cancel()
-        await asyncio.gather(watchdog_task, drain_task, return_exceptions=True)
+        buffer_task.cancel()
+        tasks_to_await = [watchdog_task, buffer_task]
+        if dispatcher_task is not None:
+            dispatcher_task.cancel()
+            tasks_to_await.append(dispatcher_task)
+        await asyncio.gather(*tasks_to_await, return_exceptions=True)
+        if dispatcher is not None:
+            await dispatcher.stop()
         await supervisor.stop_all()
         logger.info("xedge.stopped")
 

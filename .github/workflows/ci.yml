@@ -27,7 +27,7 @@ jobs:
       - run: bandit -r xedge -q
 
   unit-tests:
-    name: Unit Tests (amd64)
+    name: Unit + Integration Tests (amd64)
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -39,7 +39,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: pip install -e ".[dev,test]"
-      - run: pytest tests/unit --cov=xedge --cov-report=xml --cov-report=term-missing
+      # pysparkplug pins paho-mqtt<2, conflicting with our real paho-mqtt 2.x
+      # dependency; installed separately since we only use its payload-decode
+      # classes as a black-box oracle (ADR-006), never its MQTT client.
+      - run: pip install --no-deps "pysparkplug>=0.6"
+      - run: pytest tests/ --cov=xedge --cov-report=xml --cov-report=term-missing
       - uses: actions/upload-artifact@v4
         if: matrix.python-version == '3.11'
         with:
