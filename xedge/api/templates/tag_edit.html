@@ -1,0 +1,24 @@
+{% extends "config_layout.html" %}
+{% import "_form_macros.html" as macros %}
+{% block title %}xEdge — {{ tag_id }}{% endblock %}
+{% block config_content %}
+<div class="xedge-card">
+  <h1>Tag: {{ tag_id }} <span class="xedge-tree-hint">({{ group_id }})</span></h1>
+  <form method="post" action="/ui/config/drivers/{{ driver_id }}/tag-groups/{{ group_id }}/tags/{{ tag_id }}">
+    {% for f in fields %}
+    {{ macros.render_field(f) }}
+    {% endfor %}
+    <div class="xedge-form-actions">
+      <button type="submit">Save</button>
+      <a href="/ui/config/drivers/{{ driver_id }}/tag-groups/{{ group_id }}" class="xedge-button-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<div class="xedge-card">
+  <form method="post" action="/ui/config/drivers/{{ driver_id }}/tag-groups/{{ group_id }}/tags/{{ tag_id }}/delete"
+        onsubmit="return confirm('Delete tag {{ tag_id }}?');">
+    <button type="submit" class="xedge-button-danger">Delete this tag</button>
+  </form>
+</div>
+{% endblock %}

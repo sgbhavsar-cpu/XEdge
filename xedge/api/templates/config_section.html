@@ -1,0 +1,17 @@
+{% extends "config_layout.html" %}
+{% import "_form_macros.html" as macros %}
+{% block title %}xEdge — {{ label }}{% endblock %}
+{% block config_content %}
+<div class="xedge-card">
+  <h1>{{ label }}</h1>
+  <form method="post" action="/ui/config/core/{{ section }}">
+    {% for f in fields %}
+    {{ macros.render_field(f) }}
+    {% endfor %}
+    <div class="xedge-form-actions">
+      <button type="submit">Save</button>
+      <a href="/ui/config" class="xedge-button-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

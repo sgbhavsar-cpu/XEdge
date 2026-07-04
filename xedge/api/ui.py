@@ -14,13 +14,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
 from fastapi import APIRouter, Form, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from xedge.api.auth import SESSION_COOKIE_NAME, LoginAttemptTracker, SessionManager, UserStore
-from xedge.core.config import ConfigValidationError, ConfigValidator, ConfigVersionHistory
+from xedge.core.config import ConfigVersionHistory
 from xedge.core.supervisor import DriverSupervisor
 from xedge.northbound.dispatcher import NorthboundDispatcher
 
@@ -42,18 +41,15 @@ def _set_session_cookie(response: Response, token: str) -> None:
 
 def create_ui_router(
     supervisor: DriverSupervisor,
-    version_history: ConfigVersionHistory,
+    version_history: ConfigVersionHistory,  # noqa: ARG001 — kept for interface symmetry with config_ui's router factory
     dispatcher: NorthboundDispatcher | None,
     *,
     user_store: UserStore,
     session_manager: SessionManager,
     login_tracker: LoginAttemptTracker,
-    config_path: Path,
-    schema_path: Path,
 ) -> APIRouter:
     router = APIRouter(prefix="/ui")
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
-    validator = ConfigValidator.from_file(schema_path)
 
     def is_authenticated(request: Request) -> bool:
         token = request.cookies.get(SESSION_COOKIE_NAME)
@@ -148,50 +144,8 @@ def create_ui_router(
             },
         )
 
-    @router.get("/config", response_class=HTMLResponse)
-    def config_editor(request: Request) -> Response:
-        if not is_authenticated(request):
-            return RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
-        versions = version_history.list_versions()
-        current = version_history.load_version(versions[-1]) if versions else {}
-        yaml_text = yaml.safe_dump(current, sort_keys=False)
-        return templates.TemplateResponse(
-            request, "config.html", {"yaml_text": yaml_text, "error": None, "success": False}
-        )
-
-    @router.post("/config", response_class=HTMLResponse)
-    def config_submit(request: Request, yaml_text: str = Form(...)) -> Response:
-        if not is_authenticated(request):
-            return RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
-        try:
-            new_config = yaml.safe_load(yaml_text)
-        except yaml.YAMLError as exc:
-            return templates.TemplateResponse(
-                request,
-                "config.html",
-                {"yaml_text": yaml_text, "error": f"Invalid YAML: {exc}", "success": False},
-            )
-        if not isinstance(new_config, dict):
-            return templates.TemplateResponse(
-                request,
-                "config.html",
-                {
-                    "yaml_text": yaml_text,
-                    "error": "Config must be a YAML mapping (key: value), not a list/scalar",
-                    "success": False,
-                },
-            )
-        try:
-            validator.validate(new_config)
-        except ConfigValidationError as exc:
-            return templates.TemplateResponse(
-                request,
-                "config.html",
-                {"yaml_text": yaml_text, "error": str(exc), "success": False},
-            )
-        config_path.write_text(yaml_text, encoding="utf-8")
-        return templates.TemplateResponse(
-            request, "config.html", {"yaml_text": yaml_text, "error": None, "success": True}
-        )
+    # Note: /ui/config* is handled by xedge.api.config_ui's dedicated
+    # router (schema-driven tree + forms) — not here. This module only
+    # renders login/setup/dashboard/logout.
 
     return router

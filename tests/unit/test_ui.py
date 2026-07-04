@@ -182,7 +182,11 @@ def test_logout_redirects_to_login_and_clears_session(
     assert response.headers["location"] == "/ui/login"
 
 
-class TestConfigEditorPage:
+class TestConfigRootPage:
+    """/ui/config now shows the schema-driven tree + landing page (see
+    tests/unit/test_config_ui.py for the forms themselves); the raw-YAML
+    editor these tests used to cover moved to /ui/config/advanced."""
+
     def _authenticated_client(self, app: FastAPI) -> TestClient:
         client = TestClient(app)
         client.post(
@@ -191,16 +195,7 @@ class TestConfigEditorPage:
         )
         return client
 
-    def test_config_page_shows_current_yaml(self, tmp_path: Path, core_schema_path: Path) -> None:
-        history = ConfigVersionHistory(tmp_path)
-        history.save({"schema_version": "0.1", "logging": {"level": "DEBUG"}})
-        app = _build_app(tmp_path, core_schema_path)
-        client = self._authenticated_client(app)
-        response = client.get("/ui/config")
-        assert response.status_code == 200
-        assert "DEBUG" in response.text
-
-    def test_config_page_redirects_when_unauthenticated(
+    def test_config_root_redirects_when_unauthenticated(
         self, tmp_path: Path, core_schema_path: Path
     ) -> None:
         app = _build_app(tmp_path, core_schema_path)
@@ -209,35 +204,11 @@ class TestConfigEditorPage:
         assert response.status_code == 303
         assert response.headers["location"] == "/ui/login"
 
-    def test_valid_config_submit_writes_file_and_shows_success(
+    def test_config_root_shows_tree_when_authenticated(
         self, tmp_path: Path, core_schema_path: Path
     ) -> None:
         app = _build_app(tmp_path, core_schema_path)
         client = self._authenticated_client(app)
-        response = client.post(
-            "/ui/config", data={"yaml_text": "schema_version: '0.1'\nlogging:\n  level: DEBUG\n"}
-        )
+        response = client.get("/ui/config")
         assert response.status_code == 200
-        assert "Saved" in response.text
-        assert "DEBUG" in (tmp_path / "xedge.yaml").read_text(encoding="utf-8")
-
-    def test_invalid_yaml_submit_shows_error_and_preserves_input(
-        self, tmp_path: Path, core_schema_path: Path
-    ) -> None:
-        app = _build_app(tmp_path, core_schema_path)
-        client = self._authenticated_client(app)
-        bad_yaml = "schema_version: '0.1'\n  bad indentation: [oops\n"
-        response = client.post("/ui/config", data={"yaml_text": bad_yaml})
-        assert "Invalid YAML" in response.text
-        assert "oops" in response.text  # user's input preserved for correction
-
-    def test_schema_invalid_config_submit_shows_validation_error(
-        self, tmp_path: Path, core_schema_path: Path
-    ) -> None:
-        app = _build_app(tmp_path, core_schema_path)
-        client = self._authenticated_client(app)
-        response = client.post(
-            "/ui/config", data={"yaml_text": "schema_version: 'not-a-valid-version'\n"}
-        )
-        assert response.status_code == 200
-        assert "error" in response.text.lower()
+        assert "Core Settings" in response.text

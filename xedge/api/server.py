@@ -34,6 +34,7 @@ from pydantic import BaseModel
 from xedge import __version__
 from xedge.api.auth import SESSION_COOKIE_NAME as _SESSION_COOKIE_NAME
 from xedge.api.auth import LoginAttemptTracker, SessionManager, UserStore
+from xedge.api.config_ui import create_config_ui_router
 from xedge.api.ui import create_ui_router
 from xedge.core.config import ConfigValidationError, ConfigValidator, ConfigVersionHistory
 from xedge.core.supervisor import DriverSupervisor
@@ -187,8 +188,13 @@ def create_app(
             user_store=user_store,
             session_manager=session_manager,
             login_tracker=login_tracker,
+        )
+    )
+    app.include_router(
+        create_config_ui_router(
+            session_manager=session_manager,
             config_path=config_path,
-            schema_path=schema_path,
+            core_schema_path=schema_path,
         )
     )
 

@@ -36,7 +36,7 @@ body {
   padding: 0.25rem 0.75rem; cursor: pointer; font: inherit; color: inherit;
 }
 
-.xedge-main { max-width: 60rem; margin: 0 auto; padding: 1.5rem; }
+.xedge-main { max-width: 75rem; margin: 0 auto; padding: 1.5rem; }
 
 .xedge-card {
   border: 1px solid var(--xedge-border);
@@ -76,4 +76,53 @@ form button {
 code {
   font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
   background: #8882; padding: 0.1rem 0.3rem; border-radius: 3px;
+}
+
+/* ---- Config tree + forms (schema-driven config UI) ---- */
+
+.xedge-config-layout { display: flex; gap: 1.5rem; align-items: flex-start; }
+
+.xedge-tree {
+  flex: 0 0 16rem;
+  border: 1px solid var(--xedge-border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  font-size: 0.9rem;
+}
+.xedge-tree ul { list-style: none; margin: 0.25rem 0 0.25rem 0.9rem; padding: 0; }
+.xedge-tree li { margin: 0.2rem 0; }
+.xedge-tree summary { cursor: pointer; font-weight: 600; }
+.xedge-tree a { text-decoration: none; color: inherit; }
+.xedge-tree a:hover { text-decoration: underline; }
+.xedge-tree a.active { color: var(--xedge-accent); font-weight: 700; }
+.xedge-tree-hint { opacity: 0.6; font-weight: 400; font-size: 0.85em; }
+.xedge-tree-add { opacity: 0.75; font-style: italic; }
+
+.xedge-config-content { flex: 1 1 auto; min-width: 0; }
+
+.xedge-fieldset {
+  border: 1px solid var(--xedge-border);
+  border-radius: 6px;
+  margin: 0.75rem 0;
+  padding: 0.25rem 1rem 0.75rem 1rem;
+}
+.xedge-fieldset legend { padding: 0 0.4rem; font-weight: 600; font-size: 0.9rem; }
+
+.xedge-field { margin-top: 0.75rem; }
+form select, form input[type="number"] {
+  width: 100%; padding: 0.5rem; margin-top: 0.25rem;
+  border: 1px solid var(--xedge-border); border-radius: 4px; font: inherit;
+  background: transparent; color: inherit;
+}
+form input[type="checkbox"] { width: auto; margin-top: 0.25rem; }
+.xedge-field-help { opacity: 0.65; font-size: 0.8rem; margin: 0.2rem 0 0 0; }
+
+.xedge-form-actions { display: flex; gap: 0.75rem; align-items: center; }
+.xedge-button-secondary {
+  margin-top: 1rem; padding: 0.5rem 1.25rem; border: 1px solid var(--xedge-border);
+  border-radius: 4px; text-decoration: none; color: inherit; display: inline-block;
+}
+.xedge-button-danger {
+  margin-top: 1rem; padding: 0.5rem 1.25rem; border: none; border-radius: 4px;
+  background: var(--xedge-error); color: white; cursor: pointer; font: inherit;
 }

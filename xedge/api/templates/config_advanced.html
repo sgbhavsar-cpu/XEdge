@@ -1,0 +1,21 @@
+{% extends "config_layout.html" %}
+{% block title %}xEdge — Advanced: Raw YAML{% endblock %}
+{% block config_content %}
+<div class="xedge-card">
+  <h1>Advanced: raw YAML</h1>
+  <p class="xedge-hint">
+    Escape hatch for anything the forms don't have a screen for yet.
+    Secret fields already show as <code>${SECRET:name}</code> placeholders,
+    never the actual value — leave them as-is to keep the current secret.
+    Saving validates against the schema and applies through the same
+    hot-reload path as the forms above.
+  </p>
+  <form method="post" action="/ui/config/advanced">
+    <textarea name="yaml_text" id="yaml-editor" rows="30" spellcheck="false">{{ yaml_text }}</textarea>
+    <div class="xedge-form-actions">
+      <button type="submit">Save and apply</button>
+      <a href="/ui/config" class="xedge-button-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

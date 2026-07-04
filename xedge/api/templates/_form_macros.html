@@ -1,0 +1,83 @@
+{% macro render_field(f) %}
+{% if f.control == "object" %}
+<fieldset class="xedge-fieldset">
+  <legend>{{ f.label }}</legend>
+  {% for child in f.children %}
+  {{ render_field(child) }}
+  {% endfor %}
+</fieldset>
+{% else %}
+<div class="xedge-field">
+  <label for="{{ f.name }}">{{ f.label }}{% if f.required %} *{% endif %}</label>
+  {% if f.control == "select" %}
+  <select id="{{ f.name }}" name="{{ f.name }}"{% if f.required %} required{% endif %}>
+    {% for opt in f.options %}
+    <option value="{{ opt }}"{% if opt == f.value %} selected{% endif %}>{{ opt }}</option>
+    {% endfor %}
+  </select>
+  {% elif f.control == "checkbox" %}
+  <input type="checkbox" id="{{ f.name }}" name="{{ f.name }}"{% if f.value %} checked{% endif %}>
+  {% elif f.control == "number" %}
+  <input type="number" id="{{ f.name }}" name="{{ f.name }}"
+         value="{{ f.value if f.value is not none else '' }}"
+         {% if f.minimum is not none %}min="{{ f.minimum }}"{% endif %}
+         {% if f.maximum is not none %}max="{{ f.maximum }}"{% endif %}
+         step="{{ f.step }}"{% if f.required %} required{% endif %}>
+  {% elif f.control == "password" %}
+  <input type="password" id="{{ f.name }}" name="{{ f.name }}" value="" autocomplete="new-password">
+  {% else %}
+  <input type="text" id="{{ f.name }}" name="{{ f.name }}"
+         value="{{ f.value if f.value is not none else '' }}"{% if f.required %} required{% endif %}>
+  {% endif %}
+  {% if f.description %}<p class="xedge-field-help">{{ f.description }}</p>{% endif %}
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro config_tree(core_sections, drivers, active) %}
+<nav class="xedge-tree">
+  <details open>
+    <summary>Core Settings</summary>
+    <ul>
+      {% for key, label in core_sections %}
+      <li><a href="/ui/config/core/{{ key }}"{% if active == "core/" + key %} class="active"{% endif %}>{{ label }}</a></li>
+      {% endfor %}
+    </ul>
+  </details>
+  <details open>
+    <summary>Drivers</summary>
+    <ul>
+      {% for d in drivers %}
+      <li>
+        <details{% if active is not none and active.startswith("drivers/" + d.id) %} open{% endif %}>
+          <summary><a href="/ui/config/drivers/{{ d.id }}"{% if active == "drivers/" + d.id %} class="active"{% endif %}>{{ d.id }}</a> <span class="xedge-tree-hint">({{ d.type }})</span></summary>
+          <ul>
+            {% for g in d.tag_groups %}
+            <li>
+              <details{% if active is not none and active.startswith("drivers/" + d.id + "/tag-groups/" + g.id) %} open{% endif %}>
+                <summary><a href="/ui/config/drivers/{{ d.id }}/tag-groups/{{ g.id }}"{% if active == "drivers/" + d.id + "/tag-groups/" + g.id %} class="active"{% endif %}>{{ g.id }}</a></summary>
+                <ul>
+                  {% for t in g.tags %}
+                  <li><a href="/ui/config/drivers/{{ d.id }}/tag-groups/{{ g.id }}/tags/{{ t.id }}"{% if active == "drivers/" + d.id + "/tag-groups/" + g.id + "/tags/" + t.id %} class="active"{% endif %}>{{ t.id }}</a></li>
+                  {% endfor %}
+                  <li><a href="/ui/config/drivers/{{ d.id }}/tag-groups/{{ g.id }}/tags/new" class="xedge-tree-add">+ Add tag</a></li>
+                </ul>
+              </details>
+            </li>
+            {% endfor %}
+            <li><a href="/ui/config/drivers/{{ d.id }}/tag-groups/new" class="xedge-tree-add">+ Add tag group</a></li>
+          </ul>
+        </details>
+      </li>
+      {% endfor %}
+      <li><a href="/ui/config/drivers/new" class="xedge-tree-add">+ Add driver</a></li>
+    </ul>
+  </details>
+  <details>
+    <summary>Advanced</summary>
+    <ul>
+      <li><a href="/ui/config/advanced"{% if active == "advanced" %} class="active"{% endif %}>Raw YAML</a></li>
+    </ul>
+  </details>
+</nav>
+{% endmacro %}

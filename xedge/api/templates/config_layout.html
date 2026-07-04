@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% import "_form_macros.html" as macros %}
+{% block nav %}
+<nav class="xedge-nav">
+  <a href="/ui/dashboard">Dashboard</a>
+  <a href="/ui/config" class="active">Configuration</a>
+  <form method="post" action="/ui/logout" class="xedge-logout-form">
+    <button type="submit">Log out</button>
+  </form>
+</nav>
+{% endblock %}
+{% block content %}
+<div class="xedge-config-layout">
+  {{ macros.config_tree(core_sections, drivers, active_path|default(none)) }}
+  <div class="xedge-config-content">
+    {% if success %}<p class="xedge-success">Saved. Hot-reload will apply it shortly.</p>{% endif %}
+    {% if error %}<p class="xedge-error">{{ error }}</p>{% endif %}
+    {% block config_content %}{% endblock %}
+  </div>
+</div>
+{% endblock %}

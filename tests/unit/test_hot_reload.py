@@ -78,6 +78,49 @@ class TestApplyDriverChanges:
         updated = await apply_driver_changes([disabled_entry], current, registry, supervisor)
         assert updated == {}
 
+    async def test_one_invalid_driver_entry_does_not_crash_or_block_others(
+        self, registry_and_supervisor
+    ) -> None:  # type: ignore[no-untyped-def]
+        # A stub tag group with no tags yet (as the Web UI's "add tag group"
+        # flow briefly creates) fails modbus_tcp's tag_groups schema
+        # (minItems: 1) — build_driver_config() raises ConfigValidationError.
+        # This must not crash apply_driver_changes(): d1 is skipped and
+        # logged, but d2 (unrelated and valid) still starts normally.
+        registry, supervisor = registry_and_supervisor
+        invalid_entry = {
+            "id": "d1",
+            "type": "modbus_tcp",
+            "config": {"host": "127.0.0.1"},
+            "tag_groups": [{"id": "g1", "scan_rate_ms": 1000, "tags": []}],
+        }
+        updated = await apply_driver_changes(
+            [invalid_entry, _entry("d2")], {}, registry, supervisor
+        )
+        assert "d1" not in updated  # never started, so not tracked as current
+        with pytest.raises(KeyError):
+            supervisor.status("d1")
+        assert "d2" in updated
+        assert supervisor.status("d2") is not None
+        await supervisor.stop_all()
+
+    async def test_invalid_edit_of_a_running_driver_leaves_it_running_on_old_config(
+        self, registry_and_supervisor
+    ) -> None:  # type: ignore[no-untyped-def]
+        registry, supervisor = registry_and_supervisor
+        good_entry = _entry("d1", 1000)
+        current = await apply_driver_changes([good_entry], {}, registry, supervisor)
+        broken_entry = {
+            **good_entry,
+            "tag_groups": [{"id": "g1", "scan_rate_ms": 1000, "tags": []}],
+        }
+        updated = await apply_driver_changes([broken_entry], current, registry, supervisor)
+        # d1 was left running (never stopped) on its last-known-good config,
+        # and the tracked entry stays the old one so a later valid edit is
+        # still recognized as "changed" and retried.
+        assert supervisor.status("d1").state != DriverState.STOPPED
+        assert updated["d1"] == good_entry
+        await supervisor.stop_all()
+
 
 class TestConfigWatchLoop:
     async def test_detects_file_change_and_reconciles_drivers(

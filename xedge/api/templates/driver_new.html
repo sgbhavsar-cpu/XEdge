@@ -1,0 +1,28 @@
+{% extends "config_layout.html" %}
+{% block title %}xEdge — Add Driver{% endblock %}
+{% block config_content %}
+<div class="xedge-card">
+  <h1>Add driver</h1>
+  {% if error %}<p class="xedge-error">{{ error }}</p>{% endif %}
+  <form method="post" action="/ui/config/drivers/new">
+    <div class="xedge-field">
+      <label for="id">Instance ID</label>
+      <input type="text" id="id" name="id" value="{{ id_value }}" required autofocus>
+      <p class="xedge-field-help">A unique name for this driver instance, e.g. "modbus_tcp_01".</p>
+    </div>
+    <div class="xedge-field">
+      <label for="type">Driver type</label>
+      <select id="type" name="type" required>
+        <option value="" disabled {% if not type_value %}selected{% endif %}>Choose a type&hellip;</option>
+        {% for t in driver_types %}
+        <option value="{{ t }}"{% if t == type_value %} selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="xedge-form-actions">
+      <button type="submit">Create</button>
+      <a href="/ui/config" class="xedge-button-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

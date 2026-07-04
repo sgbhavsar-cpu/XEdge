@@ -1,0 +1,702 @@
+"""Schema-driven config tree + forms (ADR-007 follow-up, FR-WU-003/010):
+replaces the raw-YAML textarea as the primary way to edit configuration
+through the browser. A left-side tree (Core Settings, then Drivers ->
+each instance -> Tag Groups -> each group -> Tags) navigates to a form per
+node, built from xedge.api.schema_forms + the JSON Schema files already
+used to validate xedge.yaml — so a new driver type or field automatically
+gets a working, correctly-typed form with no new template code.
+
+Each tree node is edited as its own flat form (see schema_forms' module
+docstring for why); child collections are shown as a small table with
+edit/delete links plus an "add" link, not inlined into the parent's form.
+Every write re-validates against the core schema, and for driver-owned
+nodes (a driver / its tag groups / its tags) *also* against that driver
+type's own schema (config/schema/drivers/<type>.schema.json) — the core
+schema alone only checks a driver entry's `id`/`type`/`enabled`, never its
+`config`/`tag_groups` shape, so without this a bad Modbus address or a
+missing OPC UA endpoint_url would only surface later when the driver fails
+to start, not at save time.
+
+The raw-YAML editor from the previous round is kept as an "Advanced" escape
+hatch (some things — like reordering tag groups, or config this UI doesn't
+have a screen for yet — are still easiest to hand-edit), reachable from the
+tree, not the default view.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import yaml
+from fastapi import APIRouter, Form, Request, Response, status
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+
+from xedge.api.auth import SESSION_COOKIE_NAME, SessionManager
+from xedge.api.schema_forms import build_object_fields, unflatten
+from xedge.core.config import ConfigValidationError, ConfigValidator
+from xedge.core.driver_config import driver_type_schema_path
+
+_TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+# Kept in sync by hand with xedge.core.main._build_registry()'s registered
+# types — a UI-only list of type *strings* so this module doesn't need to
+# import driver implementation classes just to populate a dropdown.
+KNOWN_DRIVER_TYPES = ["modbus_tcp", "modbus_rtu_tcp", "modbus_rtu_serial", "opcua_client"]
+
+# "id" is treated as immutable once a tag group/tag exists — these routes
+# key lookups and URLs off it, and changing it here would desync both
+# without a redirect this module doesn't implement. Excluded from both the
+# rendered form (build_object_fields) and the parsed submission
+# (unflatten) so it can never be edited away by this UI.
+_SKIP_ID = frozenset({"id"})
+_SKIP_ID_AND_TAGS = frozenset({"id", "tags"})
+
+CORE_SECTIONS = [
+    ("logging", "Logging"),
+    ("watchdog", "Watchdog"),
+    ("northbound", "Northbound (MQTT)"),
+    ("opcua_server", "OPC UA Server"),
+    ("store", "Store & Forward"),
+    ("config_management", "Config Management"),
+    ("api", "REST API / Web UI"),
+]
+
+
+class ConfigNotFoundError(Exception):
+    """Raised when a tree-node lookup (driver/tag_group/tag id) misses —
+    turned into a 404 by the route layer."""
+
+
+def _full_config(config_path: Path) -> dict[str, Any]:
+    """Read the config directly from the file the forms write to — not
+    from ConfigVersionHistory, which is only populated asynchronously by
+    the hot-reload poll loop (xedge.core.hot_reload) and would otherwise
+    show stale data for a brief window (the poll interval, e.g. 2s) right
+    after any write, including to a request that immediately follows a
+    redirect to the entity it just created. The file never contains
+    resolved secrets (only `${SECRET:name}` placeholders — resolution
+    happens elsewhere, at driver-start time), so this is exactly as safe
+    to render as version_history was."""
+    if not config_path.is_file():
+        return {"schema_version": "0.1"}
+    loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    return loaded if isinstance(loaded, dict) else {"schema_version": "0.1"}
+
+
+def _find_driver(config: dict[str, Any], driver_id: str) -> dict[str, Any]:
+    drivers: list[dict[str, Any]] = config.get("drivers", [])
+    for entry in drivers:
+        if entry.get("id") == driver_id:
+            return entry
+    raise ConfigNotFoundError(f"No driver with id {driver_id!r}")
+
+
+def _find_tag_group(driver_entry: dict[str, Any], group_id: str) -> dict[str, Any]:
+    groups: list[dict[str, Any]] = driver_entry.get("tag_groups", [])
+    for group in groups:
+        if group.get("id") == group_id:
+            return group
+    raise ConfigNotFoundError(f"No tag group with id {group_id!r}")
+
+
+def _find_tag(group_entry: dict[str, Any], tag_id: str) -> dict[str, Any]:
+    tags: list[dict[str, Any]] = group_entry.get("tags", [])
+    for tag in tags:
+        if tag.get("id") == tag_id:
+            return tag
+    raise ConfigNotFoundError(f"No tag with id {tag_id!r}")
+
+
+def create_config_ui_router(
+    *,
+    session_manager: SessionManager,
+    config_path: Path,
+    core_schema_path: Path,
+) -> APIRouter:
+    router = APIRouter(prefix="/ui/config")
+    templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+    core_validator = ConfigValidator.from_file(core_schema_path)
+    core_schema = json.loads(core_schema_path.read_text(encoding="utf-8"))
+    _driver_schema_cache: dict[str, dict[str, Any]] = {}
+
+    def driver_type_schema(driver_type: str) -> dict[str, Any]:
+        cached = _driver_schema_cache.get(driver_type)
+        if cached is None:
+            schema_path = driver_type_schema_path(driver_type)
+            cached = json.loads(schema_path.read_text(encoding="utf-8"))
+            _driver_schema_cache[driver_type] = cached
+        return cached
+
+    def is_authenticated(request: Request) -> bool:
+        token = request.cookies.get(SESSION_COOKIE_NAME)
+        return session_manager.refresh_if_valid(token) is not None
+
+    def require_auth_redirect(request: Request) -> Response | None:
+        if not is_authenticated(request):
+            return RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
+        return None
+
+    def render(request: Request, template: str, context: dict[str, Any]) -> Response:
+        base_context = {
+            "core_sections": CORE_SECTIONS,
+            "drivers": _full_config(config_path).get("drivers", []),
+            "error": context.pop("error", None),
+            "success": context.pop("success", False),
+        }
+        base_context.update(context)
+        return templates.TemplateResponse(request, template, base_context)
+
+    def _save_full_config(new_config: dict[str, Any]) -> str | None:
+        """Validate against the core schema and write, letting hot-reload
+        apply it — same rule as the raw-YAML editor and the JSON API's PUT
+        /api/v1/config (ADR-007: one write path, not a UI-only mutation
+        mechanism). Returns an error message, or None on success."""
+        try:
+            core_validator.validate(new_config)
+        except ConfigValidationError as exc:
+            return str(exc)
+        config_path.write_text(yaml.safe_dump(new_config, sort_keys=False), encoding="utf-8")
+        return None
+
+    def _validate_driver_section(
+        driver_type: str, config: dict[str, Any], tag_groups: list[Any]
+    ) -> str | None:
+        """The core schema doesn't check a driver's own config/tag_groups
+        shape (only id/type/enabled) — validate against that driver type's
+        own schema too, the same one xedge.core.driver_config uses at
+        startup, so a bad value is caught at save time, not when the
+        driver fails to start."""
+        schema_path = driver_type_schema_path(driver_type)
+        if not schema_path.is_file():
+            return f"Unknown driver type {driver_type!r} (no schema found)"
+        try:
+            ConfigValidator(driver_type_schema(driver_type)).validate(
+                {"config": config, "tag_groups": tag_groups}
+            )
+        except ConfigValidationError as exc:
+            return str(exc)
+        return None
+
+    # ---- Landing page ----
+
+    @router.get("", response_class=HTMLResponse)
+    def config_root(request: Request) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        return render(request, "config_root.html", {})
+
+    # ---- Core sections ----
+
+    @router.get("/core/{section}", response_class=HTMLResponse)
+    def core_section_form(request: Request, section: str) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        section_names = {key for key, _ in CORE_SECTIONS}
+        if section not in section_names:
+            return render(request, "config_root.html", {"error": f"Unknown section {section!r}"})
+        section_schema = core_schema["properties"][section]
+        current = _full_config(config_path)
+        fields = build_object_fields(section_schema, current.get(section, {}))
+        label = dict(CORE_SECTIONS)[section]
+        return render(
+            request, "config_section.html", {"section": section, "label": label, "fields": fields}
+        )
+
+    @router.post("/core/{section}", response_class=HTMLResponse)
+    async def core_section_save(request: Request, section: str) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        raw_form = await request.form()
+        form_data: dict[str, str] = {k: v for k, v in raw_form.items() if isinstance(v, str)}
+        section_schema = core_schema["properties"][section]
+        current = _full_config(config_path)
+        new_section = unflatten(form_data, section_schema)
+        # Preserve any secret currently set if the form's password field
+        # was left blank (FR-WU-006's "leave blank to keep").
+        _merge_preserving_absent_secrets(section_schema, current.get(section, {}), new_section)
+        current[section] = new_section
+        error = _save_full_config(current)
+        label = dict(CORE_SECTIONS)[section]
+        fields = build_object_fields(section_schema, new_section)
+        return render(
+            request,
+            "config_section.html",
+            {
+                "section": section,
+                "label": label,
+                "fields": fields,
+                "error": error,
+                "success": error is None,
+            },
+        )
+
+    # ---- Drivers: list / add / edit / delete ----
+
+    @router.get("/drivers/new", response_class=HTMLResponse)
+    def driver_new_form(request: Request) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        return render(
+            request,
+            "driver_new.html",
+            {"driver_types": KNOWN_DRIVER_TYPES, "error": None, "id_value": "", "type_value": ""},
+        )
+
+    @router.post("/drivers/new", response_class=HTMLResponse)
+    async def driver_new_submit(
+        request: Request, id: str = Form(...), type: str = Form(...)
+    ) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        drivers = current.setdefault("drivers", [])
+        if any(d.get("id") == id for d in drivers):
+            return render(
+                request,
+                "driver_new.html",
+                {
+                    "driver_types": KNOWN_DRIVER_TYPES,
+                    "error": f"A driver with id {id!r} already exists",
+                    "id_value": id,
+                    "type_value": type,
+                },
+            )
+        if type not in KNOWN_DRIVER_TYPES:
+            return render(
+                request,
+                "driver_new.html",
+                {
+                    "driver_types": KNOWN_DRIVER_TYPES,
+                    "error": f"Unknown driver type {type!r}",
+                    "id_value": id,
+                    "type_value": type,
+                },
+            )
+        drivers.append({"id": id, "type": type, "enabled": True, "config": {}, "tag_groups": []})
+        error = _save_full_config(current)
+        if error is not None:
+            drivers.pop()
+            return render(
+                request,
+                "driver_new.html",
+                {
+                    "driver_types": KNOWN_DRIVER_TYPES,
+                    "error": error,
+                    "id_value": id,
+                    "type_value": type,
+                },
+            )
+        return RedirectResponse(f"/ui/config/drivers/{id}", status_code=status.HTTP_303_SEE_OTHER)
+
+    @router.get("/drivers/{driver_id}", response_class=HTMLResponse)
+    def driver_form(request: Request, driver_id: str) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_driver(current, driver_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+        type_schema = driver_type_schema(entry["type"])
+        fields = build_object_fields(type_schema["properties"]["config"], entry.get("config", {}))
+        return render(
+            request,
+            "driver_edit.html",
+            {
+                "driver_id": driver_id,
+                "driver_type": entry["type"],
+                "enabled": entry.get("enabled", True),
+                "fields": fields,
+                "tag_groups": entry.get("tag_groups", []),
+            },
+        )
+
+    @router.post("/drivers/{driver_id}", response_class=HTMLResponse)
+    async def driver_save(request: Request, driver_id: str) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_driver(current, driver_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+
+        raw_form = await request.form()
+        form_data: dict[str, str] = {k: v for k, v in raw_form.items() if isinstance(v, str)}
+        type_schema = driver_type_schema(entry["type"])
+        config_schema = type_schema["properties"]["config"]
+        new_config = unflatten(form_data, config_schema)
+        _merge_preserving_absent_secrets(config_schema, entry.get("config", {}), new_config)
+        entry["enabled"] = "enabled" in form_data
+        entry["config"] = new_config
+
+        error = _validate_driver_section(entry["type"], new_config, entry.get("tag_groups", []))
+        if error is None:
+            error = _save_full_config(current)
+        fields = build_object_fields(config_schema, new_config)
+        return render(
+            request,
+            "driver_edit.html",
+            {
+                "driver_id": driver_id,
+                "driver_type": entry["type"],
+                "enabled": entry["enabled"],
+                "fields": fields,
+                "tag_groups": entry.get("tag_groups", []),
+                "error": error,
+                "success": error is None,
+            },
+        )
+
+    @router.post("/drivers/{driver_id}/delete")
+    def driver_delete(request: Request, driver_id: str) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        current["drivers"] = [d for d in current.get("drivers", []) if d.get("id") != driver_id]
+        _save_full_config(current)
+        return RedirectResponse("/ui/config", status_code=status.HTTP_303_SEE_OTHER)
+
+    # ---- Tag groups ----
+
+    @router.get("/drivers/{driver_id}/tag-groups/new", response_class=HTMLResponse)
+    def tag_group_new_form(request: Request, driver_id: str) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        return render(
+            request, "tag_group_new.html", {"driver_id": driver_id, "error": None, "id_value": ""}
+        )
+
+    @router.post("/drivers/{driver_id}/tag-groups/new", response_class=HTMLResponse)
+    def tag_group_new_submit(request: Request, driver_id: str, id: str = Form(...)) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_driver(current, driver_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+        groups = entry.setdefault("tag_groups", [])
+        if any(g.get("id") == id for g in groups):
+            return render(
+                request,
+                "tag_group_new.html",
+                {
+                    "driver_id": driver_id,
+                    "error": f"A tag group with id {id!r} already exists on this driver",
+                    "id_value": id,
+                },
+            )
+        groups.append({"id": id, "scan_rate_ms": 1000, "tags": []})
+        # New group has an empty tags list, which fails "minItems: 1" per
+        # driver-type schemas — that's expected and surfaced once the
+        # operator tries to save the group without adding a tag; the group
+        # itself is allowed to exist in-progress in the on-disk config
+        # since the core schema doesn't check tag_groups shape at all.
+        _save_full_config(current)
+        return RedirectResponse(
+            f"/ui/config/drivers/{driver_id}/tag-groups/{id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @router.get("/drivers/{driver_id}/tag-groups/{group_id}", response_class=HTMLResponse)
+    def tag_group_form(request: Request, driver_id: str, group_id: str) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_driver(current, driver_id)
+            group = _find_tag_group(entry, group_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+        type_schema = driver_type_schema(entry["type"])
+        group_schema = type_schema["properties"]["tag_groups"]["items"]
+        fields = build_object_fields(group_schema, group, skip=_SKIP_ID_AND_TAGS)
+        return render(
+            request,
+            "tag_group_edit.html",
+            {
+                "driver_id": driver_id,
+                "group_id": group_id,
+                "fields": fields,
+                "tags": group.get("tags", []),
+            },
+        )
+
+    @router.post("/drivers/{driver_id}/tag-groups/{group_id}", response_class=HTMLResponse)
+    async def tag_group_save(request: Request, driver_id: str, group_id: str) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_driver(current, driver_id)
+            group = _find_tag_group(entry, group_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+
+        raw_form = await request.form()
+        form_data: dict[str, str] = {k: v for k, v in raw_form.items() if isinstance(v, str)}
+        type_schema = driver_type_schema(entry["type"])
+        group_schema = type_schema["properties"]["tag_groups"]["items"]
+        new_group_fields = unflatten(form_data, group_schema, skip=_SKIP_ID_AND_TAGS)
+        _replace_editable_fields(group, group_schema, new_group_fields, skip=_SKIP_ID_AND_TAGS)
+
+        error = _validate_driver_section(
+            entry["type"], entry.get("config", {}), entry.get("tag_groups", [])
+        )
+        if error is None:
+            error = _save_full_config(current)
+        fields = build_object_fields(group_schema, group, skip=_SKIP_ID_AND_TAGS)
+        return render(
+            request,
+            "tag_group_edit.html",
+            {
+                "driver_id": driver_id,
+                "group_id": group.get("id", group_id),
+                "fields": fields,
+                "tags": group.get("tags", []),
+                "error": error,
+                "success": error is None,
+            },
+        )
+
+    @router.post("/drivers/{driver_id}/tag-groups/{group_id}/delete")
+    def tag_group_delete(request: Request, driver_id: str, group_id: str) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_driver(current, driver_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+        entry["tag_groups"] = [g for g in entry.get("tag_groups", []) if g.get("id") != group_id]
+        _save_full_config(current)
+        return RedirectResponse(
+            f"/ui/config/drivers/{driver_id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    # ---- Tags ----
+
+    @router.get("/drivers/{driver_id}/tag-groups/{group_id}/tags/new", response_class=HTMLResponse)
+    def tag_new_form(request: Request, driver_id: str, group_id: str) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        return render(
+            request,
+            "tag_new.html",
+            {"driver_id": driver_id, "group_id": group_id, "error": None, "id_value": ""},
+        )
+
+    @router.post("/drivers/{driver_id}/tag-groups/{group_id}/tags/new", response_class=HTMLResponse)
+    def tag_new_submit(
+        request: Request, driver_id: str, group_id: str, id: str = Form(...)
+    ) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_driver(current, driver_id)
+            group = _find_tag_group(entry, group_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+        tags = group.setdefault("tags", [])
+        if any(t.get("id") == id for t in tags):
+            return render(
+                request,
+                "tag_new.html",
+                {
+                    "driver_id": driver_id,
+                    "group_id": group_id,
+                    "error": f"A tag with id {id!r} already exists in this group",
+                    "id_value": id,
+                },
+            )
+        # A minimal, likely-invalid stub — the operator fills in the real
+        # fields (function_code/address or node_id, depending on driver
+        # type) on the edit form that follows; validation runs on that save.
+        tags.append({"id": id})
+        _save_full_config(current)
+        return RedirectResponse(
+            f"/ui/config/drivers/{driver_id}/tag-groups/{group_id}/tags/{id}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @router.get(
+        "/drivers/{driver_id}/tag-groups/{group_id}/tags/{tag_id}", response_class=HTMLResponse
+    )
+    def tag_form(request: Request, driver_id: str, group_id: str, tag_id: str) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_driver(current, driver_id)
+            group = _find_tag_group(entry, group_id)
+            tag = _find_tag(group, tag_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+        type_schema = driver_type_schema(entry["type"])
+        tag_schema = type_schema["properties"]["tag_groups"]["items"]["properties"]["tags"]["items"]
+        fields = build_object_fields(tag_schema, tag, skip=_SKIP_ID)
+        return render(
+            request,
+            "tag_edit.html",
+            {"driver_id": driver_id, "group_id": group_id, "tag_id": tag_id, "fields": fields},
+        )
+
+    @router.post(
+        "/drivers/{driver_id}/tag-groups/{group_id}/tags/{tag_id}", response_class=HTMLResponse
+    )
+    async def tag_save(request: Request, driver_id: str, group_id: str, tag_id: str) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_driver(current, driver_id)
+            group = _find_tag_group(entry, group_id)
+            tag = _find_tag(group, tag_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+
+        raw_form = await request.form()
+        form_data: dict[str, str] = {k: v for k, v in raw_form.items() if isinstance(v, str)}
+        type_schema = driver_type_schema(entry["type"])
+        tag_schema = type_schema["properties"]["tag_groups"]["items"]["properties"]["tags"]["items"]
+        new_tag_fields = unflatten(form_data, tag_schema, skip=_SKIP_ID)
+        _replace_editable_fields(tag, tag_schema, new_tag_fields, skip=_SKIP_ID)
+
+        error = _validate_driver_section(
+            entry["type"], entry.get("config", {}), entry.get("tag_groups", [])
+        )
+        if error is None:
+            error = _save_full_config(current)
+        fields = build_object_fields(tag_schema, tag, skip=_SKIP_ID)
+        return render(
+            request,
+            "tag_edit.html",
+            {
+                "driver_id": driver_id,
+                "group_id": group_id,
+                "tag_id": tag.get("id", tag_id),
+                "fields": fields,
+                "error": error,
+                "success": error is None,
+            },
+        )
+
+    @router.post("/drivers/{driver_id}/tag-groups/{group_id}/tags/{tag_id}/delete")
+    def tag_delete(request: Request, driver_id: str, group_id: str, tag_id: str) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_driver(current, driver_id)
+            group = _find_tag_group(entry, group_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+        group["tags"] = [t for t in group.get("tags", []) if t.get("id") != tag_id]
+        _save_full_config(current)
+        return RedirectResponse(
+            f"/ui/config/drivers/{driver_id}/tag-groups/{group_id}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    # ---- Advanced: raw YAML (escape hatch) ----
+
+    @router.get("/advanced", response_class=HTMLResponse)
+    def advanced_editor(request: Request) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        yaml_text = yaml.safe_dump(_full_config(config_path), sort_keys=False)
+        return render(request, "config_advanced.html", {"yaml_text": yaml_text})
+
+    @router.post("/advanced", response_class=HTMLResponse)
+    def advanced_editor_submit(request: Request, yaml_text: str = Form(...)) -> Response:
+        redirect = require_auth_redirect(request)
+        if redirect is not None:
+            return redirect
+        try:
+            new_config = yaml.safe_load(yaml_text)
+        except yaml.YAMLError as exc:
+            return render(
+                request,
+                "config_advanced.html",
+                {"yaml_text": yaml_text, "error": f"Invalid YAML: {exc}"},
+            )
+        if not isinstance(new_config, dict):
+            return render(
+                request,
+                "config_advanced.html",
+                {"yaml_text": yaml_text, "error": "Config must be a YAML mapping"},
+            )
+        error = _save_full_config(new_config)
+        return render(
+            request,
+            "config_advanced.html",
+            {"yaml_text": yaml_text, "error": error, "success": error is None},
+        )
+
+    return router
+
+
+def _merge_preserving_absent_secrets(
+    schema: dict[str, Any], prior_value: dict[str, Any], new_value: dict[str, Any]
+) -> None:
+    """For each x-secret field in `schema` that unflatten() omitted from
+    `new_value` (because the form's password input was left blank),
+    carry the prior value over — FR-WU-006/007's "blank means unchanged",
+    completing the contract unflatten() started (it strips blanks so the
+    caller, here, can decide what "unchanged" means). Recurses into nested
+    objects (e.g. northbound.mqtt.password lives two levels down from the
+    "northbound" section schema being edited)."""
+    for prop_name, prop_schema in schema.get("properties", {}).items():
+        if prop_schema.get("type") == "object":
+            nested_prior = prior_value.get(prop_name)
+            if not isinstance(nested_prior, dict):
+                continue
+            nested_new = new_value.get(prop_name)
+            if not isinstance(nested_new, dict):
+                continue
+            _merge_preserving_absent_secrets(prop_schema, nested_prior, nested_new)
+            continue
+        if prop_schema.get("x-secret") and prop_name not in new_value and prop_name in prior_value:
+            new_value[prop_name] = prior_value[prop_name]
+
+
+def _replace_editable_fields(
+    target: dict[str, Any],
+    schema: dict[str, Any],
+    new_fields: dict[str, Any],
+    skip: frozenset[str],
+) -> None:
+    """Replace target's editable fields (schema's properties minus `skip`)
+    with `new_fields`, in place. Unlike target.update(new_fields) alone,
+    this also removes a field the operator cleared in the form (unflatten
+    drops empty-optional fields rather than including them as ""), and
+    unlike target.clear() it never touches keys outside the schema/skip
+    (e.g. "id"), which a save must never lose just because the client
+    didn't resubmit it."""
+    for prop_name in schema.get("properties", {}):
+        if prop_name not in skip:
+            target.pop(prop_name, None)
+    target.update(new_fields)

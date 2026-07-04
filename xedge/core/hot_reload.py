@@ -46,16 +46,36 @@ async def apply_driver_changes(
             await supervisor.stop(instance_id)
             logger.info("driver.stopped_removed_from_config", instance_id=instance_id)
 
+    result = dict(new_by_id)
     for instance_id, entry in new_by_id.items():
         if current.get(instance_id) == entry:
             continue  # unchanged: leave it running
+        try:
+            driver_config = build_driver_config(entry)
+        except ConfigValidationError as exc:
+            # A driver entry can be individually invalid (e.g. FR-DF-004's
+            # per-driver-type schema, which the core schema doesn't check)
+            # without the *rest* of the config being rejected — same "the
+            # prior config keeps running" rule as a whole-file validation
+            # failure (FR-CM-005), just scoped to this one instance rather
+            # than aborting every other driver's reconciliation this cycle.
+            logger.error("driver.config_change_rejected", instance_id=instance_id, error=str(exc))
+            # Don't record the (invalid) new entry as "current" — if the
+            # file doesn't change again, mtime-gating in config_watch_loop
+            # means we simply won't retry; if it does change again
+            # (e.g. the operator finishes an in-progress edit), this entry
+            # will look "changed" again next cycle and retry naturally.
+            if instance_id in current:
+                result[instance_id] = current[instance_id]
+            else:
+                del result[instance_id]
+            continue
         if instance_id in current:
             await supervisor.stop(instance_id)
-        driver_config = build_driver_config(entry)
         supervisor.start(driver_config)
         logger.info("driver.restarted_for_config_change", instance_id=instance_id)
 
-    return new_by_id
+    return result
 
 
 async def config_watch_loop(

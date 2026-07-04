@@ -1,0 +1,18 @@
+{% extends "config_layout.html" %}
+{% block title %}xEdge — Add Tag Group{% endblock %}
+{% block config_content %}
+<div class="xedge-card">
+  <h1>Add tag group to {{ driver_id }}</h1>
+  {% if error %}<p class="xedge-error">{{ error }}</p>{% endif %}
+  <form method="post" action="/ui/config/drivers/{{ driver_id }}/tag-groups/new">
+    <div class="xedge-field">
+      <label for="id">Tag group ID</label>
+      <input type="text" id="id" name="id" value="{{ id_value }}" required autofocus>
+    </div>
+    <div class="xedge-form-actions">
+      <button type="submit">Create</button>
+      <a href="/ui/config/drivers/{{ driver_id }}" class="xedge-button-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

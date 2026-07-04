@@ -1,0 +1,53 @@
+{% extends "config_layout.html" %}
+{% import "_form_macros.html" as macros %}
+{% block title %}xEdge — {{ driver_id }}{% endblock %}
+{% block config_content %}
+<div class="xedge-card">
+  <h1>Driver: {{ driver_id }} <span class="xedge-tree-hint">({{ driver_type }})</span></h1>
+  <form method="post" action="/ui/config/drivers/{{ driver_id }}">
+    <div class="xedge-field">
+      <label for="enabled">Enabled</label>
+      <input type="checkbox" id="enabled" name="enabled"{% if enabled %} checked{% endif %}>
+    </div>
+    {% for f in fields %}
+    {{ macros.render_field(f) }}
+    {% endfor %}
+    <div class="xedge-form-actions">
+      <button type="submit">Save</button>
+      <a href="/ui/config" class="xedge-button-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<div class="xedge-card">
+  <h1>Tag groups</h1>
+  <table class="xedge-table">
+    <thead><tr><th>ID</th><th>Scan rate (ms)</th><th>Tags</th><th></th></tr></thead>
+    <tbody>
+      {% for g in tag_groups %}
+      <tr>
+        <td><a href="/ui/config/drivers/{{ driver_id }}/tag-groups/{{ g.id }}">{{ g.id }}</a></td>
+        <td>{{ g.scan_rate_ms }}</td>
+        <td>{{ g.tags|length }}</td>
+        <td>
+          <form method="post" action="/ui/config/drivers/{{ driver_id }}/tag-groups/{{ g.id }}/delete"
+                onsubmit="return confirm('Delete tag group {{ g.id }} and all its tags?');">
+            <button type="submit" class="xedge-button-danger">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4">No tag groups yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <a href="/ui/config/drivers/{{ driver_id }}/tag-groups/new" class="xedge-button-secondary">+ Add tag group</a>
+</div>
+
+<div class="xedge-card">
+  <form method="post" action="/ui/config/drivers/{{ driver_id }}/delete"
+        onsubmit="return confirm('Delete driver {{ driver_id }} and all its tag groups/tags?');">
+    <button type="submit" class="xedge-button-danger">Delete this driver</button>
+  </form>
+</div>
+{% endblock %}

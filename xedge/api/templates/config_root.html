@@ -1,0 +1,14 @@
+{% extends "config_layout.html" %}
+{% block title %}xEdge — Configuration{% endblock %}
+{% block config_content %}
+<div class="xedge-card">
+  <h1>Configuration</h1>
+  <p class="xedge-hint">
+    Choose a section from the tree on the left to view or edit it. Saving
+    validates against the schema and applies through the same hot-reload
+    path as editing <code>xedge.yaml</code> directly — only the driver
+    instance whose config actually changed will restart.
+  </p>
+  <p>{{ drivers|length }} driver{{ "s" if drivers|length != 1 }} configured.</p>
+</div>
+{% endblock %}
