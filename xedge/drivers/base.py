@@ -39,10 +39,17 @@ class TagUpdate:
 
     tag_id: str
     timestamp: datetime
+    """Ingestion timestamp — always set, regardless of whether the source
+    device has its own clock (FR-DP-002)."""
     value: TagValue
     quality: Quality
     source_driver: str
     source_address: str
+    source_timestamp: datetime | None = None
+    """Device-native timestamp, when the protocol carries one and it's
+    trusted (e.g. an OPC UA node's SourceTimestamp). None for protocols with
+    no device clock (e.g. Modbus registers) — the pipeline then falls back
+    to `timestamp` and flags the value as an estimated timestamp."""
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

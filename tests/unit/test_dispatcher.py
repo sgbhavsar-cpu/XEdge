@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 
 from tests.fixtures.fake_connector import FakeConnector
 from xedge.core.pipeline import UnifiedTag
 from xedge.drivers.base import Quality
 from xedge.northbound.dispatcher import NorthboundDispatcher
 from xedge.store.ring_buffer import RingBufferManager
+from xedge.store.sqlite_store import SqliteColdStore
 
 
 def _tag(value: int) -> UnifiedTag:
@@ -100,6 +102,55 @@ async def test_dispatcher_stop_is_noop_when_never_connected() -> None:
     dispatcher = NorthboundDispatcher(connector, buffers)
     await dispatcher.stop()
     assert connector.disconnected_count == 0
+
+
+async def test_dispatcher_replays_cold_store_backlog_on_connect(tmp_path: Path) -> None:
+    cold_store = SqliteColdStore(tmp_path)
+    cold_store.append("d1", _tag(100))
+    cold_store.append("d1", _tag(101))
+    connector = FakeConnector()
+    buffers = RingBufferManager()
+    buffers.push("d1", _tag(1))  # ensures "d1" is a known stream key to replay
+    buffers.drain_all()  # drain it back out so only the replay batch is observed live
+    dispatcher = NorthboundDispatcher(
+        connector, buffers, publish_interval_seconds=0.01, cold_store=cold_store
+    )
+
+    task = asyncio.create_task(dispatcher.run())
+    try:
+        await asyncio.wait_for(_wait_until(lambda: connector.published_batches), timeout=2.0)
+        assert connector.published_batches[0][0].value == 100
+        assert connector.published_batches[0][1].value == 101
+        assert cold_store.count("d1") == 0
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_replay_cold_store_keeps_data_on_publish_failure(tmp_path: Path) -> None:
+    """Deterministic, isolated check of the exact safety property that
+    matters: a failed replay publish must not delete the un-delivered
+    batch. Exercised directly (not through the full run() reconnect loop,
+    whose timing would otherwise race a second, successful replay attempt
+    against this assertion)."""
+    cold_store = SqliteColdStore(tmp_path)
+    cold_store.append("d1", _tag(100))
+    connector = FakeConnector(fail_publish_count=1)
+    buffers = RingBufferManager()
+    buffers.push("d1", _tag(1))
+    buffers.drain_all()  # only "d1" needs to be a known stream key
+    dispatcher = NorthboundDispatcher(connector, buffers, cold_store=cold_store)
+
+    await dispatcher._replay_cold_store()  # noqa: SLF001
+
+    assert connector.published_batches == []
+    assert cold_store.count("d1") == 1  # still there, not lost
+
+    # a second attempt (as the outer loop would do after reconnecting)
+    # succeeds and clears it.
+    await dispatcher._replay_cold_store()  # noqa: SLF001
+    assert connector.published_batches[0][0].value == 100
+    assert cold_store.count("d1") == 0
 
 
 async def _wait_until(predicate: object, poll_interval: float = 0.01) -> None:

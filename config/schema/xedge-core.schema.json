@@ -80,6 +80,89 @@
           }
         }
       }
+    },
+    "opcua_server": {
+      "type": "object",
+      "description": "OPC UA server exposing active tags (FR-UA-001..FR-UA-007). MVP: no security policy beyond None, no user auth — see xedge.northbound.opcua_server module docstring.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "endpoint_url": {
+          "type": "string",
+          "minLength": 1,
+          "description": "e.g. opc.tcp://0.0.0.0:4840/xedge/ (FR-UA-008)."
+        },
+        "server_name": { "type": "string", "default": "xEdge" }
+      }
+    },
+    "store": {
+      "type": "object",
+      "description": "Store-and-forward: RAM ring buffer (hot tier) spilling to SQLite WAL (cold tier) on overflow (FR-SF-001..FR-SF-003, ADR-003).",
+      "additionalProperties": false,
+      "properties": {
+        "directory": {
+          "type": "string",
+          "default": "/data/store",
+          "description": "Cold-tier database directory (system-architecture.md §6.4)."
+        },
+        "ram_max_depth": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10000,
+          "description": "FR-SF-001: samples held per stream before spilling to the cold tier."
+        },
+        "retention_duration_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 604800,
+          "description": "FR-SF-003: default 7 days."
+        },
+        "purge_interval_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 3600,
+          "description": "How often the retention purge sweep runs."
+        }
+      }
+    },
+    "config_management": {
+      "type": "object",
+      "description": "Config hot-reload and version history (FR-CM-002, FR-CM-005, FR-CM-006).",
+      "additionalProperties": false,
+      "properties": {
+        "hot_reload_enabled": { "type": "boolean", "default": true },
+        "poll_interval_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 2.0,
+          "description": "How often xedge.yaml's mtime is checked for changes."
+        },
+        "history_directory": {
+          "type": "string",
+          "default": "/data/config-history",
+          "description": "system-architecture.md §6.4."
+        },
+        "max_versions": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10,
+          "description": "FR-CM-006: last 10 versions retained by default."
+        }
+      }
+    },
+    "api": {
+      "type": "object",
+      "description": "Read-only REST API v1 (FR-CM-003): status, driver list, running config. No auth in the MVP, so it defaults to loopback-only — see xedge.api.server module docstring before setting `host` to anything broader.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Loopback-only by default since there's no auth yet. Set to a specific interface address (not 0.0.0.0) if the API needs to be reachable from elsewhere on the OT network."
+        },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 8080 }
+      }
     }
   }
 }

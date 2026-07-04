@@ -1,0 +1,32 @@
+# OPC UA client reading from a PLC/IED at 192.168.1.60, plus an OPC UA
+# server (FR-UA-001) re-exposing xEdge's active tags for local SCADA/HMI
+# clients. Both are asyncua-backed for the MVP (ADR-006 §7 amendment).
+schema_version: "0.1"
+
+logging:
+  level: INFO
+
+watchdog:
+  enabled: true
+  interval_seconds: 15
+
+drivers:
+  - id: opcua_01
+    type: opcua_client
+    enabled: true
+    config:
+      endpoint_url: "opc.tcp://192.168.1.60:4840/server/"
+      connect_timeout_seconds: 5
+    tag_groups:
+      - id: process_values
+        scan_rate_ms: 1000
+        tags:
+          - id: reactor_temperature
+            node_id: "ns=2;s=ReactorTemperature"
+          - id: reactor_pressure
+            node_id: "ns=2;s=ReactorPressure"
+
+opcua_server:
+  enabled: true
+  endpoint_url: "opc.tcp://0.0.0.0:4840/xedge/"
+  server_name: "xEdge"

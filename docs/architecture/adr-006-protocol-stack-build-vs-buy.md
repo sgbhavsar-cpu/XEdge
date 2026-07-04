@@ -114,3 +114,31 @@ The decision matrix (§3) was accepted as recommended, with these defaults appli
    reference implementations and protocol simulators; formal DNP3 conformance
    certification deferred until a customer requires it (tracked as risk R-09
    in the development plan).
+
+## 7. Amendment: asyncua as an interim OPC UA runtime for the MVP (2026-07-04)
+
+**Context:** building the open62541 asyncio C-extension binding (§3, §6.4) is
+itself a multi-week project with real technical risk (C build toolchain
+across amd64/arm64/armv7, cffi/ctypes surface design, event-loop bridging) —
+disproportionate to gate a software MVP on, when the goal is a working,
+testable edge stack rather than the final production binding.
+
+**Decision:** for the MVP, the OPC UA client and server are implemented
+directly against `asyncua` (pure Python, LGPL-3.0) as the runtime library,
+not merely as a test oracle. The open62541 C-extension binding remains the
+ADR-006 §3 target for the commercial edition (MPL-2.0 is license-cleaner);
+swapping it in later should not require changing `BaseDriver`/
+`NorthboundConnector` call sites, only the OPC UA driver/server's internal
+implementation.
+
+**Consequences:**
+- The GPL edition may ship asyncua as-is (LGPL-3.0 is compatible with GPL
+  v3). The **commercial edition must not ship asyncua** until the LGPL-3.0
+  obligations are reviewed by counsel (dynamic linking / relinking rights)
+  — tracked as an open item (§4 update below) — or until the open62541
+  binding replaces it, whichever comes first.
+- Effort estimate for the eventual open62541 binding (§3 table) is
+  unchanged; this amendment only sequences *when* it's built, not whether.
+- Any OPC UA behavior specific to asyncua's implementation choices (error
+  codes, session defaults) should be treated as incidental, not part of the
+  driver's public contract, so the future swap stays low-risk.

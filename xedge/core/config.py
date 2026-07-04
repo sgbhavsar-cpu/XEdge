@@ -1,14 +1,15 @@
 """Config engine: load, merge, validate, and distribute configuration.
 
 Implements FR-CM-001 (YAML + JSON Schema), FR-CM-002 (layered model),
-FR-CM-005 (validate-or-reject), FR-CM-007 (secrets substitution). Rollback
-(FR-CM-006) and the REST API (FR-CM-003) are later-sprint work; this module
-provides the ConfigStore they will build on.
+FR-CM-005 (validate-or-reject), FR-CM-006 (version history / rollback),
+FR-CM-007 (secrets substitution). The REST API (FR-CM-003) is later-sprint
+work; this module provides the ConfigStore it will build on.
 """
 
 from __future__ import annotations
 
 import copy
+import json
 import os
 import re
 from collections.abc import Callable, Mapping
@@ -61,8 +62,6 @@ class ConfigValidator:
 
 
 def _load_json(f: Any) -> Any:
-    import json
-
     return json.load(f)
 
 
@@ -165,6 +164,56 @@ class ConfigStore:
             listener(self)
 
 
+class ConfigVersionHistory:
+    """Persists the last `max_versions` config snapshots to disk for
+    rollback (FR-CM-006), at `directory` (system-architecture.md §6.4:
+    `/data/config-history/`).
+
+    Stores the merged config **before** secrets substitution — never the
+    resolved plaintext secrets — so `${SECRET:name}` placeholders remain in
+    the on-disk history (SR-DS-001: sensitive values must not leak to disk
+    in plaintext).
+    """
+
+    def __init__(self, directory: Path, max_versions: int = 10) -> None:
+        self._directory = directory
+        self._directory.mkdir(parents=True, exist_ok=True)
+        self._max_versions = max_versions
+
+    def _existing_version_ids(self) -> list[int]:
+        ids = []
+        for path in self._directory.glob("*.json"):
+            try:
+                ids.append(int(path.stem))
+            except ValueError:
+                continue
+        return sorted(ids)
+
+    def _version_path(self, version_id: int) -> Path:
+        return self._directory / f"{version_id}.json"
+
+    def save(self, config: Mapping[str, Any]) -> int:
+        existing = self._existing_version_ids()
+        version_id = (existing[-1] + 1) if existing else 1
+        self._version_path(version_id).write_text(
+            json.dumps(dict(config), indent=2), encoding="utf-8"
+        )
+        existing.append(version_id)
+        while len(existing) > self._max_versions:
+            self._version_path(existing.pop(0)).unlink(missing_ok=True)
+        return version_id
+
+    def list_versions(self) -> list[int]:
+        return self._existing_version_ids()
+
+    def load_version(self, version_id: int) -> dict[str, Any]:
+        path = self._version_path(version_id)
+        if not path.is_file():
+            raise FileNotFoundError(f"No such config version: {version_id}")
+        data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        return data
+
+
 class ConfigEngine:
     """Loads, merges, validates, and produces a ConfigStore.
 
@@ -179,12 +228,30 @@ class ConfigEngine:
         environment_path: Path | None = None,
         runtime_overrides_path: Path | None = None,
         secrets_resolver: SecretsResolver | None = None,
+        version_history: ConfigVersionHistory | None = None,
     ) -> None:
         self._base_path = base_path
         self._environment_path = environment_path
         self._runtime_overrides_path = runtime_overrides_path
         self._validator = ConfigValidator.from_file(schema_path)
         self._secrets = secrets_resolver or SecretsResolver()
+        self._version_history = version_history
+
+    def attach_version_history(
+        self, version_history: ConfigVersionHistory, *, save_current: bool = True
+    ) -> None:
+        """Attach version history after construction — useful when the
+        history directory/retention settings themselves come from the
+        config being loaded (bootstrapping: `load()` once without history,
+        read those settings, then attach). `save_current` re-reads and
+        records the on-disk config as a version immediately, so the config
+        booted with is captured even though the initial `load()` predates
+        this call."""
+        self._version_history = version_history
+        if save_current:
+            merged = self._load_merged()
+            self._validator.validate(merged)
+            version_history.save(merged)
 
     def _load_merged(self) -> dict[str, Any]:
         merged = load_yaml(self._base_path)
@@ -201,6 +268,8 @@ class ConfigEngine:
         """
         merged = self._load_merged()
         self._validator.validate(merged)
+        if self._version_history is not None:
+            self._version_history.save(merged)
         resolved = self._secrets.resolve(merged)
         return ConfigStore(resolved)
 
@@ -212,5 +281,20 @@ class ConfigEngine:
         """
         merged = self._load_merged()
         self._validator.validate(merged)
+        if self._version_history is not None:
+            self._version_history.save(merged)
+        resolved = self._secrets.resolve(merged)
+        store.replace(resolved)
+
+    def rollback(self, store: ConfigStore, version_id: int) -> None:
+        """Restore a prior config version (FR-CM-006). Re-validates before
+        applying — a version that was valid when saved may not validate
+        against a newer schema. The restored config is itself saved as a
+        new version, so history reflects what actually ran, in order."""
+        if self._version_history is None:
+            raise ConfigValidationError("No version history configured; cannot roll back")
+        merged = self._version_history.load_version(version_id)
+        self._validator.validate(merged)
+        self._version_history.save(merged)
         resolved = self._secrets.resolve(merged)
         store.replace(resolved)

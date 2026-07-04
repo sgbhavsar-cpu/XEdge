@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://xedge.example.com/schema/drivers/modbus_tcp.schema.json",
-  "title": "Modbus TCP Driver Configuration",
-  "description": "Per-driver-type schema for `type: modbus_tcp` entries (FR-DF-004, FR-SA-002, FR-SA-004, FR-SA-009).",
+  "$id": "https://xedge.example.com/schema/drivers/modbus_rtu_tcp.schema.json",
+  "title": "Modbus RTU-over-TCP Driver Configuration",
+  "description": "Per-driver-type schema for `type: modbus_rtu_tcp` entries (FR-DF-004, FR-SA-003, FR-SA-004, FR-SA-009). RTU framing (address+PDU+CRC) carried over TCP, distinct from Modbus TCP's MBAP framing.",
   "type": "object",
   "required": ["config", "tag_groups"],
   "additionalProperties": false,
@@ -14,7 +14,13 @@
       "properties": {
         "host": { "type": "string", "minLength": 1 },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 502 },
-        "unit_id": { "type": "integer", "minimum": 0, "maximum": 255, "default": 1 },
+        "unit_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 247,
+          "default": 1,
+          "description": "Bus address, FR-SA-001."
+        },
         "connect_timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "default": 5 },
         "read_timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "default": 3 }
       }
@@ -27,15 +33,9 @@
         "additionalProperties": false,
         "properties": {
           "id": { "type": "string", "minLength": 1 },
-          "scan_rate_ms": {
-            "type": "integer",
-            "minimum": 50,
-            "maximum": 86400000,
-            "description": "FR-SA-009: 50ms minimum, 24h maximum."
-          },
+          "scan_rate_ms": { "type": "integer", "minimum": 50, "maximum": 86400000 },
           "deadband": {
             "type": "object",
-            "description": "FR-DP-006: applies to every numeric tag in this group.",
             "required": ["type", "value"],
             "additionalProperties": false,
             "properties": {
@@ -64,7 +64,6 @@
                 "address": { "type": "integer", "minimum": 0, "maximum": 65535 },
                 "scaling": {
                   "type": "object",
-                  "description": "FR-DP-003: engineering_value = raw * scale + offset.",
                   "additionalProperties": false,
                   "properties": {
                     "scale": { "type": "number", "default": 1.0 },

@@ -1,22 +1,25 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://xedge.example.com/schema/drivers/modbus_tcp.schema.json",
-  "title": "Modbus TCP Driver Configuration",
-  "description": "Per-driver-type schema for `type: modbus_tcp` entries (FR-DF-004, FR-SA-002, FR-SA-004, FR-SA-009).",
+  "$id": "https://xedge.example.com/schema/drivers/opcua_client.schema.json",
+  "title": "OPC UA Client Driver Configuration",
+  "description": "Per-driver-type schema for `type: opcua_client` entries (FR-DF-004, FR-SA-005..FR-SA-008). MVP scope: polling mode only, no security (ADR-006 §7 amendment — asyncua-backed).",
   "type": "object",
   "required": ["config", "tag_groups"],
   "additionalProperties": false,
   "properties": {
     "config": {
       "type": "object",
-      "required": ["host"],
+      "required": ["endpoint_url"],
       "additionalProperties": false,
       "properties": {
-        "host": { "type": "string", "minLength": 1 },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 502 },
-        "unit_id": { "type": "integer", "minimum": 0, "maximum": 255, "default": 1 },
+        "endpoint_url": {
+          "type": "string",
+          "minLength": 1,
+          "description": "e.g. opc.tcp://192.168.1.50:4840/freeopcua/server/"
+        },
         "connect_timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "default": 5 },
-        "read_timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "default": 3 }
+        "username": { "type": "string" },
+        "password": { "type": "string" }
       }
     },
     "tag_groups": {
@@ -29,13 +32,12 @@
           "id": { "type": "string", "minLength": 1 },
           "scan_rate_ms": {
             "type": "integer",
-            "minimum": 50,
+            "minimum": 100,
             "maximum": 86400000,
-            "description": "FR-SA-009: 50ms minimum, 24h maximum."
+            "description": "FR-UA-003: 100ms minimum sampling interval."
           },
           "deadband": {
             "type": "object",
-            "description": "FR-DP-006: applies to every numeric tag in this group.",
             "required": ["type", "value"],
             "additionalProperties": false,
             "properties": {
@@ -48,23 +50,17 @@
             "minItems": 1,
             "items": {
               "type": "object",
-              "required": ["id", "function_code", "address"],
+              "required": ["id", "node_id"],
               "additionalProperties": false,
               "properties": {
                 "id": { "type": "string", "minLength": 1 },
-                "function_code": {
+                "node_id": {
                   "type": "string",
-                  "enum": [
-                    "read_coils",
-                    "read_discrete_inputs",
-                    "read_holding_registers",
-                    "read_input_registers"
-                  ]
+                  "minLength": 1,
+                  "description": "OPC UA NodeId string, e.g. 'ns=2;i=1001' or 'ns=2;s=Temperature'."
                 },
-                "address": { "type": "integer", "minimum": 0, "maximum": 65535 },
                 "scaling": {
                   "type": "object",
-                  "description": "FR-DP-003: engineering_value = raw * scale + offset.",
                   "additionalProperties": false,
                   "properties": {
                     "scale": { "type": "number", "default": 1.0 },

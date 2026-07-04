@@ -11,7 +11,7 @@ import asyncio
 import enum
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from xedge.drivers.base import BaseDriver, DriverConfig, DriverMetrics, TagUpdate
 from xedge.observability.logging import get_logger
@@ -82,12 +82,26 @@ class DriverSupervisor:
         self._output_queue = output_queue
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._status: dict[str, DriverInstanceStatus] = {}
+        # Current live driver instance per instance_id, so status()/
+        # all_status() can report real, up-to-date metrics (get_metrics())
+        # rather than the always-default value baked into DriverInstanceStatus
+        # at construction.
+        self._drivers: dict[str, BaseDriver] = {}
 
     def status(self, instance_id: str) -> DriverInstanceStatus:
-        return self._status[instance_id]
+        return self._with_live_metrics(self._status[instance_id])
 
     def all_status(self) -> dict[str, DriverInstanceStatus]:
-        return dict(self._status)
+        return {
+            instance_id: self._with_live_metrics(status)
+            for instance_id, status in self._status.items()
+        }
+
+    def _with_live_metrics(self, status: DriverInstanceStatus) -> DriverInstanceStatus:
+        driver = self._drivers.get(status.instance_id)
+        if driver is None:
+            return status
+        return replace(status, metrics=driver.get_metrics())
 
     def start(self, config: DriverConfig) -> None:
         """Start supervising a driver instance. Raises if already running."""
@@ -126,6 +140,7 @@ class DriverSupervisor:
 
         while True:
             driver = self._registry.create(config.driver_type)
+            self._drivers[instance_id] = driver
             status.state = DriverState.STARTING
             run_started_at = time.monotonic()
             try:

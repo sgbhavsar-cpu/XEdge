@@ -13,19 +13,39 @@ import signal
 import sys
 from importlib import resources
 from pathlib import Path
+from typing import Any
+
+import uvicorn
 
 from xedge import __version__
-from xedge.core.config import ConfigEngine, ConfigStore
+from xedge.api.server import create_app
+from xedge.core.config import ConfigEngine, ConfigStore, ConfigVersionHistory
 from xedge.core.driver_config import build_driver_config
-from xedge.core.pipeline import normalize
+from xedge.core.hot_reload import config_watch_loop
+from xedge.core.pipeline import (
+    DeadbandFilter,
+    TagPipelineConfig,
+    build_tag_pipeline_configs,
+    normalize,
+)
 from xedge.core.supervisor import DriverRegistry, DriverSupervisor
 from xedge.core.watchdog import watchdog_loop
-from xedge.drivers.base import TagUpdate
+from xedge.drivers.base import TagUpdate, TagValue
+from xedge.drivers.modbus.rtu_over_tcp import ModbusRtuOverTcpDriver
+from xedge.drivers.modbus.serial import ModbusRtuSerialDriver
 from xedge.drivers.modbus.tcp import ModbusTcpDriver
+from xedge.drivers.opcua.client import OpcUaClientDriver
 from xedge.northbound.dispatcher import NorthboundDispatcher
 from xedge.northbound.mqtt import MqttSparkplugConnector, SparkplugConnectorConfig
+from xedge.northbound.opcua_server import OpcUaServerConfig, OpcUaTagServer
 from xedge.observability.logging import configure_logging, get_logger
 from xedge.store.ring_buffer import RingBufferManager
+from xedge.store.sqlite_store import SqliteColdStore, purge_loop
+
+logger = get_logger(__name__)
+
+_MODBUS_DRIVER_TYPES = frozenset({"modbus_tcp", "modbus_rtu_tcp", "modbus_rtu_serial"})
+_MODBUS_BIT_FUNCTION_CODES = frozenset({"read_coils", "read_discrete_inputs"})
 
 _SCHEMA_FILENAME = "xedge-core.schema.json"
 _TAG_QUEUE_MAX_DEPTH = 10_000
@@ -63,11 +83,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _build_registry() -> DriverRegistry:
-    """Known driver types (FR-DF-001: plugin-based, but Sprint 2 has exactly
-    one concrete driver so registration is still explicit here rather than
-    via a discovered entry-point mechanism)."""
+    """Known driver types (FR-DF-001: plugin-based; registration is
+    explicit here rather than via a discovered entry-point mechanism)."""
     registry = DriverRegistry()
     registry.register("modbus_tcp", ModbusTcpDriver)
+    registry.register("modbus_rtu_tcp", ModbusRtuOverTcpDriver)
+    registry.register("modbus_rtu_serial", ModbusRtuSerialDriver)
+    registry.register("opcua_client", OpcUaClientDriver)
     return registry
 
 
@@ -82,19 +104,28 @@ def _start_configured_drivers(
 
 
 async def _pipeline_to_buffer(
-    queue: asyncio.Queue[TagUpdate], ring_buffers: RingBufferManager
+    queue: asyncio.Queue[TagUpdate],
+    ring_buffers: RingBufferManager,
+    tag_configs: dict[str, TagPipelineConfig] | None = None,
+    deadband_filter: DeadbandFilter | None = None,
+    opcua_server: OpcUaTagServer | None = None,
 ) -> None:
-    """Pipeline consumer (XEDGE-014/017): normalize each TagUpdate and push
-    it into its driver's ring buffer for the northbound dispatcher to drain.
+    """Pipeline consumer (XEDGE-014/017): normalize each TagUpdate (scaling,
+    timestamp resolution), reflect the live value into the OPC UA server (if
+    configured — every value, deadband does not apply to "current state"),
+    apply deadband suppression, and push surviving updates into their
+    driver's ring buffer for the northbound dispatcher to drain.
 
     Buffering key is `source_driver`, not a tag-group id — see
     xedge.store.ring_buffer module docstring for why (tag_group id isn't
     threaded through TagUpdate/UnifiedTag yet).
     """
-    logger = get_logger(__name__)
+    tag_configs = tag_configs if tag_configs is not None else {}
+    deadband_filter = deadband_filter if deadband_filter is not None else DeadbandFilter()
     while True:
         update = await queue.get()
-        tag = normalize(update)
+        config = tag_configs.get(update.tag_id)
+        tag = normalize(update, config)
         logger.debug(
             "tag.update",
             tag_id=tag.tag_id,
@@ -102,11 +133,60 @@ async def _pipeline_to_buffer(
             quality=tag.quality.value,
             source_driver=tag.source_driver,
         )
+        if opcua_server is not None:
+            await opcua_server.update_tag(tag)
+        if not deadband_filter.should_publish(tag, config.deadband if config else None):
+            continue
         ring_buffers.push(tag.source_driver, tag)
 
 
+def _infer_tag_initial_values(drivers: list[dict[str, Any]]) -> dict[str, TagValue]:
+    """Guess a representative initial value (of the right *type*) for each
+    configured tag, for OpcUaServerConfig.initial_values — see that field's
+    docstring for why the type must be right from the start.
+
+    Modbus bit-reading function codes are bool; a scaled Modbus register is
+    float; anything else defaults to float (a reasonable guess for generic
+    process values, including OPC UA client tags, whose real node type
+    isn't known before connecting)."""
+    values: dict[str, TagValue] = {}
+    for driver in drivers:
+        instance_id = driver.get("id")
+        driver_type = driver.get("type")
+        for group in driver.get("tag_groups", []):
+            for tag in group.get("tags", []):
+                tag_id = f"{instance_id}/{tag['id']}"
+                if (
+                    driver_type in _MODBUS_DRIVER_TYPES
+                    and tag.get("function_code") in _MODBUS_BIT_FUNCTION_CODES
+                ):
+                    values[tag_id] = False
+                elif driver_type in _MODBUS_DRIVER_TYPES and not tag.get("scaling"):
+                    values[tag_id] = 0
+                else:
+                    values[tag_id] = 0.0
+    return values
+
+
+def _build_opcua_server(store: ConfigStore) -> OpcUaTagServer | None:
+    opcua_config = store.get_section("opcua_server", {})
+    if not opcua_config.get("enabled", False):
+        return None
+    endpoint_url = opcua_config.get("endpoint_url")
+    if not endpoint_url:
+        return None
+    initial_values = _infer_tag_initial_values(store.get_section("drivers", []))
+    return OpcUaTagServer(
+        OpcUaServerConfig(
+            endpoint_url=endpoint_url,
+            server_name=opcua_config.get("server_name", "xEdge"),
+            initial_values=initial_values,
+        )
+    )
+
+
 def _build_northbound_dispatcher(
-    store: ConfigStore, ring_buffers: RingBufferManager
+    store: ConfigStore, ring_buffers: RingBufferManager, cold_store: SqliteColdStore
 ) -> NorthboundDispatcher | None:
     northbound_config = store.get_section("northbound", {})
     if not northbound_config.get("enabled", True):
@@ -133,7 +213,26 @@ def _build_northbound_dispatcher(
         connector,
         ring_buffers,
         publish_interval_seconds=northbound_config.get("publish_interval_seconds", 1.0),
+        cold_store=cold_store,
     )
+
+
+async def _run_api_server(server: uvicorn.Server) -> None:
+    """Isolate REST API startup/serve failures from the rest of the app.
+
+    uvicorn.Server.serve() calls sys.exit() internally on a bind failure
+    (e.g. the port is already in use) — that raises SystemExit, a
+    BaseException, which if left uncaught inside an unawaited asyncio.Task
+    can propagate up through the event loop and crash the entire process.
+    A REST API bind failure must not take down driver polling or
+    northbound publishing, the same way a driver or dispatcher failure
+    doesn't take down the API."""
+    try:
+        await server.serve()
+    except SystemExit as exc:
+        logger.error("api.startup_failed", exit_code=exc.code)
+    except Exception as exc:  # noqa: BLE001 — isolate any other API failure
+        logger.error("api.failed", error=str(exc))
 
 
 async def _wait_for_shutdown_signal() -> None:
@@ -166,8 +265,14 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
 
     logging_config = store.get_section("logging", {})
     configure_logging(level=logging_config.get("level", "INFO"))
-    logger = get_logger(__name__)
     logger.info("xedge.starting", version=__version__, config_path=str(config_path))
+
+    config_mgmt = store.get_section("config_management", {})
+    version_history = ConfigVersionHistory(
+        Path(config_mgmt.get("history_directory", "/data/config-history")),
+        max_versions=config_mgmt.get("max_versions", 10),
+    )
+    engine.attach_version_history(version_history)
 
     watchdog_config = store.get_section("watchdog", {})
     watchdog_task = asyncio.create_task(
@@ -181,12 +286,69 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
     registry = _build_registry()
     supervisor = DriverSupervisor(registry, tag_queue)
     _start_configured_drivers(store, registry, supervisor)
+    current_drivers = {
+        entry["id"]: entry
+        for entry in store.get_section("drivers", [])
+        if entry.get("enabled", True)
+    }
+    watch_task = (
+        asyncio.create_task(
+            config_watch_loop(
+                engine,
+                store,
+                config_path,
+                registry,
+                supervisor,
+                current_drivers,
+                poll_interval_seconds=config_mgmt.get("poll_interval_seconds", 2.0),
+            )
+        )
+        if config_mgmt.get("hot_reload_enabled", True)
+        else None
+    )
 
-    ring_buffers = RingBufferManager()
-    buffer_task = asyncio.create_task(_pipeline_to_buffer(tag_queue, ring_buffers))
+    opcua_server = _build_opcua_server(store)
+    if opcua_server is not None:
+        await opcua_server.start()
 
-    dispatcher = _build_northbound_dispatcher(store, ring_buffers)
+    store_config = store.get_section("store", {})
+    cold_store = SqliteColdStore(Path(store_config.get("directory", "/data/store")))
+
+    ring_buffers = RingBufferManager(
+        max_depth=store_config.get("ram_max_depth", 10_000), on_evict=cold_store.append
+    )
+    tag_configs = build_tag_pipeline_configs(store.get_section("drivers", []))
+    deadband_filter = DeadbandFilter()
+    buffer_task = asyncio.create_task(
+        _pipeline_to_buffer(tag_queue, ring_buffers, tag_configs, deadband_filter, opcua_server)
+    )
+    purge_task = asyncio.create_task(
+        purge_loop(
+            cold_store,
+            ring_buffers.stream_keys,
+            retention_duration_seconds=store_config.get("retention_duration_seconds", 604_800),
+            interval_seconds=store_config.get("purge_interval_seconds", 3_600),
+        )
+    )
+
+    dispatcher = _build_northbound_dispatcher(store, ring_buffers, cold_store)
     dispatcher_task = asyncio.create_task(dispatcher.run()) if dispatcher is not None else None
+
+    api_config = store.get_section("api", {})
+    api_server: uvicorn.Server | None = None
+    api_task: asyncio.Task[None] | None = None
+    if api_config.get("enabled", True):
+        app = create_app(supervisor, version_history, dispatcher)
+        api_server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=api_config.get("host", "127.0.0.1"),
+                port=api_config.get("port", 8080),
+                log_config=None,
+                access_log=False,
+            )
+        )
+        api_task = asyncio.create_task(_run_api_server(api_server))
 
     logger.info("xedge.ready")
     try:
@@ -195,14 +357,24 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
     finally:
         watchdog_task.cancel()
         buffer_task.cancel()
-        tasks_to_await = [watchdog_task, buffer_task]
+        purge_task.cancel()
+        tasks_to_await = [watchdog_task, buffer_task, purge_task]
         if dispatcher_task is not None:
             dispatcher_task.cancel()
             tasks_to_await.append(dispatcher_task)
+        if watch_task is not None:
+            watch_task.cancel()
+            tasks_to_await.append(watch_task)
+        if api_server is not None and api_task is not None:
+            api_server.should_exit = True
+            tasks_to_await.append(api_task)
         await asyncio.gather(*tasks_to_await, return_exceptions=True)
         if dispatcher is not None:
             await dispatcher.stop()
+        if opcua_server is not None:
+            await opcua_server.stop()
         await supervisor.stop_all()
+        cold_store.close()
         logger.info("xedge.stopped")
 
     return 0

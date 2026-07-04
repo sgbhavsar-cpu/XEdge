@@ -1,21 +1,39 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://xedge.example.com/schema/drivers/modbus_tcp.schema.json",
-  "title": "Modbus TCP Driver Configuration",
-  "description": "Per-driver-type schema for `type: modbus_tcp` entries (FR-DF-004, FR-SA-002, FR-SA-004, FR-SA-009).",
+  "$id": "https://xedge.example.com/schema/drivers/modbus_rtu_serial.schema.json",
+  "title": "Modbus RTU Serial Driver Configuration",
+  "description": "Per-driver-type schema for `type: modbus_rtu_serial` entries (FR-DF-004, FR-SA-001, FR-SA-004, FR-SA-009). RS-232/RS-485 over a real serial port.",
   "type": "object",
   "required": ["config", "tag_groups"],
   "additionalProperties": false,
   "properties": {
     "config": {
       "type": "object",
-      "required": ["host"],
+      "required": ["port"],
       "additionalProperties": false,
       "properties": {
-        "host": { "type": "string", "minLength": 1 },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 502 },
-        "unit_id": { "type": "integer", "minimum": 0, "maximum": 255, "default": 1 },
-        "connect_timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "default": 5 },
+        "port": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Serial device path, e.g. /dev/ttyUSB0, /dev/ttyAMA0 (IR-HW-001)."
+        },
+        "baud_rate": {
+          "type": "integer",
+          "minimum": 1200,
+          "maximum": 115200,
+          "default": 9600,
+          "description": "FR-SA-001: 1200-115200."
+        },
+        "parity": { "type": "string", "enum": ["none", "even", "odd"], "default": "none" },
+        "data_bits": { "type": "integer", "enum": [7, 8], "default": 8 },
+        "stop_bits": { "type": "integer", "enum": [1, 2], "default": 1 },
+        "unit_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 247,
+          "default": 1,
+          "description": "Bus address, FR-SA-001."
+        },
         "read_timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "default": 3 }
       }
     },
@@ -27,15 +45,9 @@
         "additionalProperties": false,
         "properties": {
           "id": { "type": "string", "minLength": 1 },
-          "scan_rate_ms": {
-            "type": "integer",
-            "minimum": 50,
-            "maximum": 86400000,
-            "description": "FR-SA-009: 50ms minimum, 24h maximum."
-          },
+          "scan_rate_ms": { "type": "integer", "minimum": 50, "maximum": 86400000 },
           "deadband": {
             "type": "object",
-            "description": "FR-DP-006: applies to every numeric tag in this group.",
             "required": ["type", "value"],
             "additionalProperties": false,
             "properties": {
@@ -64,7 +76,6 @@
                 "address": { "type": "integer", "minimum": 0, "maximum": 65535 },
                 "scaling": {
                   "type": "object",
-                  "description": "FR-DP-003: engineering_value = raw * scale + offset.",
                   "additionalProperties": false,
                   "properties": {
                     "scale": { "type": "number", "default": 1.0 },

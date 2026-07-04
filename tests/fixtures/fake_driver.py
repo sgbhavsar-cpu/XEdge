@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from xedge.drivers.base import (
     BaseDriver,
     DriverConfig,
+    DriverMetrics,
     Quality,
     TagUpdate,
     TagValue,
@@ -64,3 +65,6 @@ class FakeDriver(BaseDriver):
     async def write(self, tag_id: str, value: TagValue) -> WriteResult:
         self.written.append((tag_id, value))
         return WriteResult(success=True, tag_id=tag_id)
+
+    def get_metrics(self) -> DriverMetrics:
+        return DriverMetrics(tag_read_count=self.emitted_count)

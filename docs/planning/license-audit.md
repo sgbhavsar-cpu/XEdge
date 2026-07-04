@@ -44,7 +44,10 @@ gate is passed):
 | pysparkplug | **test oracle only** (ADR-006) | Apache-2.0 | ✅ Clear | Bundles the officially-generated Sparkplug B protobuf classes; used in tests to decode our in-house encoder's output. Installed with `--no-deps` (its own paho-mqtt<2 pin conflicts with our real paho-mqtt 2.x dependency; only its payload-decode classes are used, never its MQTT client) |
 | amqtt | **test-only MQTT broker** (ADR-006) | MIT | ✅ Clear | Pure-Python asyncio broker; stands in for a real broker (Mosquitto) in integration tests so CI needs no external service |
 | tahu (Sparkplug B ref impl) | **not used** | Apache-2.0 | N/A | Not installed; the in-house encoder is built from the Eclipse spec + public field-number tables, not this codebase |
-| asyncua | **test oracle only** (ADR-006) | LGPL-3.0 | ⚠ Requires legal review before any packaging that links it | Used in CI as an OPC UA client/server simulator; not linked into the shipped runtime, which uses open62541 |
+| asyncua | **MVP OPC UA runtime** (ADR-006 §7 amendment) | LGPL-3.0 | ⚠ GPL edition only until legal review; commercial edition MUST NOT ship it | Used directly as the OPC UA client/server implementation for the MVP (interim — open62541 binding is still the ADR-006 §3 target for the commercial edition) |
+| fastapi | REST API v1 | MIT | ✅ Clear | |
+| uvicorn | REST API v1 ASGI server | BSD-3-Clause | ✅ Clear | |
+| httpx | **test-only** (FastAPI TestClient transport) | BSD-3-Clause | ✅ Clear | Not a runtime dependency; only exercised via `fastapi.testclient.TestClient` and directly in the live REST API smoke test |
 | open62541 | OPC UA client + server (ADR-006) | MPL-2.0 | ✅ Clear (file-level copyleft; compatible with proprietary linking) | In-house asyncio C-extension binding required (no off-the-shelf async Python binding exists) |
 | lib60870-C | **black-box oracle only** (ADR-006) | GPL-2.0 (OSS ed.) / Commercial | ⚠ GPL — do not link into commercial edition | IEC 104 stack is built in-house from the purchased IEC 60870-5-104 spec |
 | OpenDNP3 / pydnp3 | **archived — do not use** | Apache-2.0 (dead upstream) | N/A | Upstream unmaintained; in-house lean-build master planned (ADR-006 gate) or commercial Rust `dnp3` crate fallback |
@@ -61,9 +64,12 @@ gate is passed):
 
 ## 4. Open items
 
-1. **asyncua legal review** — confirm CI-only usage (test oracle, not linked
-   into any shipped artifact) is sufficient to avoid LGPL-3.0 obligations on
-   the commercial edition. Track before Sprint 8 (OPC UA client work begins).
+1. **asyncua legal review** — the MVP ships asyncua directly as the OPC UA
+   runtime (ADR-006 §7 amendment, 2026-07-04), not merely as a CI test
+   oracle. Confirm LGPL-3.0 obligations (dynamic linking / relinking rights)
+   before this reaches the commercial edition; until reviewed, treat asyncua
+   as GPL-edition-only. Building the open62541 binding removes this
+   dependency entirely.
 2. **IEC 60870-5-104 spec purchase** — required before Sprint 19 (in-house
    IEC 104 stack); budget approved per ADR-006 §6.
 3. **IEEE 1815 (DNP3) spec purchase** — required before Sprint 20, contingent

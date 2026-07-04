@@ -70,6 +70,28 @@ async def test_supervisor_stop_disconnects_driver(tag_queue: asyncio.Queue[TagUp
     assert supervisor.status("fake_01").state == DriverState.STOPPED
 
 
+async def test_status_reports_live_metrics_from_the_running_driver(
+    tag_queue: asyncio.Queue[TagUpdate],
+) -> None:
+    driver = FakeDriver(emit_interval_seconds=0.001)
+    registry = DriverRegistry()
+    registry.register("fake", lambda: driver)
+    supervisor = DriverSupervisor(registry, tag_queue)
+
+    supervisor.start(DriverConfig(instance_id="fake_01", driver_type="fake", config={}))
+    try:
+        for _ in range(200):
+            if driver.emitted_count >= 3:
+                break
+            await asyncio.sleep(0.01)
+        status = supervisor.status("fake_01")
+        assert status.metrics.tag_read_count == driver.emitted_count
+        # all_status() must report the same live value, not a stale default
+        assert supervisor.all_status()["fake_01"].metrics.tag_read_count == driver.emitted_count
+    finally:
+        await supervisor.stop_all()
+
+
 def test_registry_rejects_duplicate_registration() -> None:
     registry = DriverRegistry()
     registry.register("fake", lambda: FakeDriver())

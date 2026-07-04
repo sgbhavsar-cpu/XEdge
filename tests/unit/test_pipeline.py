@@ -1,10 +1,18 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from xedge.core.pipeline import normalize
+from xedge.core.pipeline import (
+    DeadbandConfig,
+    DeadbandFilter,
+    ScalingConfig,
+    TagPipelineConfig,
+    UnifiedTag,
+    normalize,
+)
 from xedge.drivers.base import Quality, TagUpdate
 
 
@@ -48,7 +56,8 @@ def test_normalize_preserves_metadata_without_aliasing() -> None:
         metadata={"modbus_exception": None, "request_latency_ms": 12},
     )
     tag = normalize(update)
-    assert tag.metadata == {"modbus_exception": None, "request_latency_ms": 12}
+    assert tag.metadata["modbus_exception"] is None
+    assert tag.metadata["request_latency_ms"] == 12
     tag.metadata["mutated"] = True
     assert "mutated" not in update.metadata
 
@@ -66,3 +75,208 @@ def test_normalize_bad_quality_passthrough() -> None:
     tag = normalize(update)
     assert tag.quality == Quality.BAD
     assert tag.metadata["modbus_exception"] == 2
+
+
+class TestTimestampResolution:
+    def test_no_source_timestamp_falls_back_to_ingestion_and_flags_estimated(self) -> None:
+        ingestion_ts = datetime.now(UTC)
+        update = TagUpdate(
+            tag_id="t1",
+            timestamp=ingestion_ts,
+            value=1,
+            quality=Quality.GOOD,
+            source_driver="d1",
+            source_address="0",
+        )
+        tag = normalize(update)
+        assert tag.timestamp == ingestion_ts
+        assert tag.metadata["timestamp_estimated"] is True
+
+    def test_source_timestamp_used_when_present_and_not_flagged(self) -> None:
+        ingestion_ts = datetime.now(UTC)
+        source_ts = ingestion_ts - timedelta(seconds=5)
+        update = TagUpdate(
+            tag_id="t1",
+            timestamp=ingestion_ts,
+            source_timestamp=source_ts,
+            value=1,
+            quality=Quality.GOOD,
+            source_driver="d1",
+            source_address="0",
+        )
+        tag = normalize(update)
+        assert tag.timestamp == source_ts
+        assert "timestamp_estimated" not in tag.metadata
+
+
+class TestEngineeringUnitScaling:
+    def test_scaling_applies_scale_and_offset(self) -> None:
+        update = TagUpdate(
+            tag_id="t1",
+            timestamp=datetime.now(UTC),
+            value=100,
+            quality=Quality.GOOD,
+            source_driver="d1",
+            source_address="0",
+        )
+        config = TagPipelineConfig(
+            scaling=ScalingConfig(scale=0.1, offset=-10.0), engineering_unit="°C"
+        )
+        tag = normalize(update, config)
+        assert tag.value == pytest.approx(0.0)  # 100 * 0.1 + -10.0
+        assert tag.data_type == "FLOAT64"
+        assert tag.engineering_unit == "°C"
+
+    def test_scaling_does_not_apply_to_bool(self) -> None:
+        update = TagUpdate(
+            tag_id="t1",
+            timestamp=datetime.now(UTC),
+            value=True,
+            quality=Quality.GOOD,
+            source_driver="d1",
+            source_address="0",
+        )
+        config = TagPipelineConfig(scaling=ScalingConfig(scale=2.0, offset=1.0))
+        tag = normalize(update, config)
+        assert tag.value is True
+        assert tag.data_type == "BOOL"
+
+    def test_no_config_leaves_value_unscaled(self) -> None:
+        update = TagUpdate(
+            tag_id="t1",
+            timestamp=datetime.now(UTC),
+            value=42,
+            quality=Quality.GOOD,
+            source_driver="d1",
+            source_address="0",
+        )
+        tag = normalize(update)
+        assert tag.value == 42
+        assert tag.data_type == "INT64"
+
+
+class TestDeadbandFilter:
+    def _tag(
+        self, value: object, quality: Quality = Quality.GOOD, tag_id: str = "t1"
+    ) -> UnifiedTag:
+        return UnifiedTag(
+            tag_id=tag_id,
+            timestamp=datetime.now(UTC),
+            value=value,  # type: ignore[arg-type]
+            data_type="FLOAT64",
+            quality=quality,
+            source_driver="d1",
+            source_address="0",
+        )
+
+    def test_first_value_always_published(self) -> None:
+        deadband_filter = DeadbandFilter()
+        assert (
+            deadband_filter.should_publish(self._tag(10.0), DeadbandConfig("absolute", 5.0)) is True
+        )
+
+    def test_quality_change_always_published_even_within_deadband(self) -> None:
+        deadband_filter = DeadbandFilter()
+        deadband_filter.should_publish(self._tag(10.0), DeadbandConfig("absolute", 5.0))
+        assert (
+            deadband_filter.should_publish(
+                self._tag(10.0, quality=Quality.BAD), DeadbandConfig("absolute", 5.0)
+            )
+            is True
+        )
+
+    def test_absolute_deadband_suppresses_small_changes(self) -> None:
+        deadband_filter = DeadbandFilter()
+        deadband = DeadbandConfig("absolute", 5.0)
+        deadband_filter.should_publish(self._tag(100.0), deadband)
+        assert deadband_filter.should_publish(self._tag(102.0), deadband) is False
+        assert deadband_filter.should_publish(self._tag(106.0), deadband) is True
+
+    def test_percentage_deadband_suppresses_small_relative_changes(self) -> None:
+        deadband_filter = DeadbandFilter()
+        deadband = DeadbandConfig("percentage", 5.0)  # 5%
+        deadband_filter.should_publish(self._tag(100.0), deadband)
+        assert deadband_filter.should_publish(self._tag(104.0), deadband) is False  # 4% change
+        assert deadband_filter.should_publish(self._tag(106.0), deadband) is True  # 6% change
+
+    def test_percentage_deadband_from_zero_treats_any_nonzero_as_significant(self) -> None:
+        deadband_filter = DeadbandFilter()
+        deadband = DeadbandConfig("percentage", 5.0)
+        deadband_filter.should_publish(self._tag(0.0), deadband)
+        assert deadband_filter.should_publish(self._tag(0.001), deadband) is True
+
+    def test_no_deadband_configured_publishes_on_any_change(self) -> None:
+        deadband_filter = DeadbandFilter()
+        deadband_filter.should_publish(self._tag(1.0), None)
+        assert deadband_filter.should_publish(self._tag(1.0), None) is False
+        assert deadband_filter.should_publish(self._tag(1.0000001), None) is True
+
+    def test_separate_tags_tracked_independently(self) -> None:
+        deadband_filter = DeadbandFilter()
+        deadband = DeadbandConfig("absolute", 5.0)
+        deadband_filter.should_publish(self._tag(100.0, tag_id="a"), deadband)
+        # "b" has never been seen -> first value -> always published
+        assert deadband_filter.should_publish(self._tag(100.0, tag_id="b"), deadband) is True
+
+    def test_non_numeric_values_use_exact_equality(self) -> None:
+        deadband_filter = DeadbandFilter()
+        deadband = DeadbandConfig("absolute", 5.0)
+        tag1 = replace(self._tag("RUNNING"), data_type="STRING")
+        deadband_filter.should_publish(tag1, deadband)
+        tag2 = replace(tag1, value="STOPPED")
+        assert deadband_filter.should_publish(tag2, deadband) is True
+        tag3 = replace(tag1, value="STOPPED")
+        assert deadband_filter.should_publish(tag3, deadband) is False
+
+
+class TestBuildTagPipelineConfigs:
+    def test_builds_scaling_deadband_and_unit_per_tag(self) -> None:
+        from xedge.core.pipeline import build_tag_pipeline_configs
+
+        drivers = [
+            {
+                "id": "modbus_tcp_01",
+                "type": "modbus_tcp",
+                "tag_groups": [
+                    {
+                        "id": "analog",
+                        "scan_rate_ms": 1000,
+                        "deadband": {"type": "absolute", "value": 0.5},
+                        "tags": [
+                            {
+                                "id": "temperature_01",
+                                "function_code": "read_holding_registers",
+                                "address": 0,
+                                "scaling": {"scale": 0.1, "offset": -273.15},
+                                "engineering_unit": "°C",
+                            },
+                            {
+                                "id": "unscaled_tag",
+                                "function_code": "read_holding_registers",
+                                "address": 1,
+                            },
+                        ],
+                    }
+                ],
+            }
+        ]
+        configs = build_tag_pipeline_configs(drivers)
+
+        scaled = configs["modbus_tcp_01/temperature_01"]
+        assert scaled.scaling is not None
+        assert scaled.scaling.scale == 0.1
+        assert scaled.scaling.offset == -273.15
+        assert scaled.engineering_unit == "°C"
+        assert scaled.deadband is not None
+        assert scaled.deadband.kind == "absolute"
+        assert scaled.deadband.value == 0.5
+
+        unscaled = configs["modbus_tcp_01/unscaled_tag"]
+        assert unscaled.scaling is None
+        assert unscaled.engineering_unit is None
+        assert unscaled.deadband is not None  # inherited from the tag group
+
+    def test_no_tag_groups_returns_empty(self) -> None:
+        from xedge.core.pipeline import build_tag_pipeline_configs
+
+        assert build_tag_pipeline_configs([{"id": "d1", "type": "modbus_tcp"}]) == {}

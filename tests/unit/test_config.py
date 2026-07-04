@@ -7,6 +7,7 @@ import pytest
 from xedge.core.config import (
     ConfigEngine,
     ConfigValidationError,
+    ConfigVersionHistory,
     SecretResolutionError,
     SecretsResolver,
     deep_merge,
@@ -121,3 +122,147 @@ def test_config_store_reload_rejects_invalid_and_keeps_old(
         engine.reload(store)
 
     assert store.get_section("schema_version") == "0.1"
+
+
+class TestConfigVersionHistory:
+    def test_save_assigns_incrementing_version_ids(self, tmp_path: Path) -> None:
+        history = ConfigVersionHistory(tmp_path / "history")
+        v1 = history.save({"a": 1})
+        v2 = history.save({"a": 2})
+        assert v1 == 1
+        assert v2 == 2
+        assert history.list_versions() == [1, 2]
+
+    def test_load_version_returns_saved_content(self, tmp_path: Path) -> None:
+        history = ConfigVersionHistory(tmp_path / "history")
+        version_id = history.save({"schema_version": "0.1", "drivers": []})
+        assert history.load_version(version_id) == {"schema_version": "0.1", "drivers": []}
+
+    def test_load_version_unknown_raises(self, tmp_path: Path) -> None:
+        history = ConfigVersionHistory(tmp_path / "history")
+        with pytest.raises(FileNotFoundError):
+            history.load_version(999)
+
+    def test_prunes_oldest_beyond_max_versions(self, tmp_path: Path) -> None:
+        history = ConfigVersionHistory(tmp_path / "history", max_versions=3)
+        for i in range(5):
+            history.save({"n": i})
+        assert history.list_versions() == [3, 4, 5]
+        assert history.load_version(3) == {"n": 2}
+
+    def test_persists_across_instances(self, tmp_path: Path) -> None:
+        history1 = ConfigVersionHistory(tmp_path / "history")
+        history1.save({"a": 1})
+        history2 = ConfigVersionHistory(tmp_path / "history")
+        assert history2.list_versions() == [1]
+
+
+class TestConfigEngineVersionHistoryAndRollback:
+    def test_load_saves_a_version(self, tmp_path: Path, core_schema_path: Path) -> None:
+        base = tmp_path / "base.yaml"
+        base.write_text("schema_version: '0.1'\n", encoding="utf-8")
+        history = ConfigVersionHistory(tmp_path / "history")
+        engine = ConfigEngine(base_path=base, schema_path=core_schema_path, version_history=history)
+        engine.load()
+        assert history.list_versions() == [1]
+
+    def test_reload_saves_a_new_version(self, tmp_path: Path, core_schema_path: Path) -> None:
+        base = tmp_path / "base.yaml"
+        base.write_text("schema_version: '0.1'\n", encoding="utf-8")
+        history = ConfigVersionHistory(tmp_path / "history")
+        engine = ConfigEngine(base_path=base, schema_path=core_schema_path, version_history=history)
+        store = engine.load()
+
+        base.write_text("schema_version: '0.2'\n", encoding="utf-8")
+        engine.reload(store)
+        assert history.list_versions() == [1, 2]
+
+    def test_secrets_are_not_persisted_to_version_history(
+        self, tmp_path: Path, core_schema_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MY_SECRET", "hunter2")
+        base = tmp_path / "base.yaml"
+        base.write_text(
+            "schema_version: '0.1'\ndrivers:\n"
+            "  - id: d1\n    type: modbus_tcp\n    config:\n"
+            "      password: '${SECRET:my_secret}'\n",
+            encoding="utf-8",
+        )
+        history = ConfigVersionHistory(tmp_path / "history")
+        engine = ConfigEngine(base_path=base, schema_path=core_schema_path, version_history=history)
+        store = engine.load()
+
+        # the live store has the resolved secret...
+        assert store.get_section("drivers")[0]["config"]["password"] == "hunter2"
+        # ...but the on-disk history keeps the placeholder, not the plaintext.
+        saved = history.load_version(1)
+        assert saved["drivers"][0]["config"]["password"] == "${SECRET:my_secret}"
+
+    def test_rollback_restores_prior_version(self, tmp_path: Path, core_schema_path: Path) -> None:
+        base = tmp_path / "base.yaml"
+        base.write_text("schema_version: '0.1'\n", encoding="utf-8")
+        history = ConfigVersionHistory(tmp_path / "history")
+        engine = ConfigEngine(base_path=base, schema_path=core_schema_path, version_history=history)
+        store = engine.load()  # version 1: schema_version 0.1
+
+        base.write_text("schema_version: '0.2'\n", encoding="utf-8")
+        engine.reload(store)  # version 2: schema_version 0.2
+        assert store.get_section("schema_version") == "0.2"
+
+        engine.rollback(store, version_id=1)
+        assert store.get_section("schema_version") == "0.1"
+        # rollback itself becomes a new version
+        assert history.list_versions() == [1, 2, 3]
+        assert history.load_version(3) == {"schema_version": "0.1"}
+
+    def test_rollback_without_history_configured_raises(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        base = tmp_path / "base.yaml"
+        base.write_text("schema_version: '0.1'\n", encoding="utf-8")
+        engine = ConfigEngine(base_path=base, schema_path=core_schema_path)
+        store = engine.load()
+        with pytest.raises(ConfigValidationError, match="No version history"):
+            engine.rollback(store, version_id=1)
+
+    def test_rollback_to_invalid_version_raises_and_keeps_current(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        base = tmp_path / "base.yaml"
+        base.write_text("schema_version: '0.1'\n", encoding="utf-8")
+        history = ConfigVersionHistory(tmp_path / "history")
+        engine = ConfigEngine(base_path=base, schema_path=core_schema_path, version_history=history)
+        store = engine.load()
+        with pytest.raises(FileNotFoundError):
+            engine.rollback(store, version_id=999)
+        assert store.get_section("schema_version") == "0.1"
+
+    def test_attach_version_history_saves_current_config_immediately(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        base = tmp_path / "base.yaml"
+        base.write_text("schema_version: '0.1'\n", encoding="utf-8")
+        engine = ConfigEngine(base_path=base, schema_path=core_schema_path)
+        engine.load()  # bootstrap load, no history attached yet
+
+        history = ConfigVersionHistory(tmp_path / "history")
+        engine.attach_version_history(history)
+        assert history.list_versions() == [1]
+        assert history.load_version(1) == {"schema_version": "0.1"}
+
+    def test_attach_version_history_without_save_current_does_not_save(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        base = tmp_path / "base.yaml"
+        base.write_text("schema_version: '0.1'\n", encoding="utf-8")
+        engine = ConfigEngine(base_path=base, schema_path=core_schema_path)
+        store = engine.load()  # bootstrap load, no history attached yet
+
+        history = ConfigVersionHistory(tmp_path / "history")
+        engine.attach_version_history(history, save_current=False)
+        assert history.list_versions() == []
+
+        # subsequent reload uses the newly attached history
+        base.write_text("schema_version: '0.2'\n", encoding="utf-8")
+        engine.reload(store)
+        assert history.list_versions() == [1]

@@ -1,9 +1,9 @@
-"""A minimal in-house Modbus TCP server used only to test our own driver and
-codec end-to-end without external dependencies. Built directly against the
-Modbus spec (same provenance as xedge.drivers.modbus.codec) — this is test
-infrastructure, not a shipped artifact, so ADR-006's clean-room rule (which
-governs the shipped driver) doesn't apply here; it exists alongside the
-pymodbus-backed oracle test for fast, deterministic coverage.
+"""In-house Modbus TCP/RTU-over-TCP servers used only to test our own driver
+and codec end-to-end without external dependencies. Built directly against
+the Modbus spec (same provenance as xedge.drivers.modbus.codec) — this is
+test infrastructure, not a shipped artifact, so ADR-006's clean-room rule
+(which governs the shipped driver) doesn't apply here; it exists alongside
+the pymodbus-backed oracle tests for fast, deterministic coverage.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import struct
 
-from xedge.drivers.modbus import codec
+from xedge.drivers.modbus import codec, rtu_codec
 
 
 def _pack_bits(values: list[bool]) -> bytes:
@@ -23,9 +23,9 @@ def _pack_bits(values: list[bool]) -> bytes:
     return bytes(data)
 
 
-class FakeModbusServer:
-    """In-memory Modbus TCP server: holding/input registers, coils, discrete
-    inputs, plus per-(function_code, address) forced exception responses."""
+class _ModbusDatastore:
+    """Shared register/coil datastore and PDU request handling, independent
+    of framing (MBAP vs. RTU)."""
 
     def __init__(self) -> None:
         self.holding_registers: dict[int, int] = {}
@@ -33,36 +33,8 @@ class FakeModbusServer:
         self.coils: dict[int, bool] = {}
         self.discrete_inputs: dict[int, bool] = {}
         self.exceptions: dict[tuple[int, int], int] = {}
-        self.host = "127.0.0.1"
-        self.port = 0
-        self._server: asyncio.base_events.Server | None = None
 
-    async def start(self) -> None:
-        self._server = await asyncio.start_server(self._handle_client, self.host, 0)
-        self.port = self._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
-
-    async def stop(self) -> None:
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-
-    async def _handle_client(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        try:
-            while True:
-                header = await reader.readexactly(codec.MBAP_HEADER_LENGTH)
-                remainder = await reader.readexactly(codec.frame_remainder_length(header))
-                transaction_id, unit_id, pdu = codec.decode_mbap(header + remainder)
-                response_pdu = self._handle_request(pdu)
-                writer.write(codec.encode_mbap(transaction_id, unit_id, response_pdu))
-                await writer.drain()
-        except (asyncio.IncompleteReadError, ConnectionResetError):
-            pass
-        finally:
-            writer.close()
-
-    def _handle_request(self, pdu: bytes) -> bytes:
+    def handle_request(self, pdu: bytes) -> bytes:
         function_code = pdu[0]
         address, quantity = struct.unpack(">HH", pdu[1:5])
 
@@ -90,3 +62,79 @@ class FakeModbusServer:
         return bytes(
             [function_code | codec.EXCEPTION_RESPONSE_FLAG, codec.ExceptionCode.ILLEGAL_FUNCTION]
         )
+
+
+class FakeModbusServer(_ModbusDatastore):
+    """In-memory Modbus TCP (MBAP-framed) server."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.host = "127.0.0.1"
+        self.port = 0
+        self._server: asyncio.base_events.Server | None = None
+
+    async def start(self) -> None:
+        self._server = await asyncio.start_server(self._handle_client, self.host, 0)
+        self.port = self._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+
+    async def stop(self) -> None:
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+
+    async def _handle_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        try:
+            while True:
+                header = await reader.readexactly(codec.MBAP_HEADER_LENGTH)
+                remainder = await reader.readexactly(codec.frame_remainder_length(header))
+                transaction_id, unit_id, pdu = codec.decode_mbap(header + remainder)
+                response_pdu = self.handle_request(pdu)
+                writer.write(codec.encode_mbap(transaction_id, unit_id, response_pdu))
+                await writer.drain()
+        except (asyncio.IncompleteReadError, ConnectionResetError):
+            pass
+        finally:
+            writer.close()
+
+
+class FakeModbusRtuServer(_ModbusDatastore):
+    """In-memory Modbus RTU-over-TCP (address+PDU+CRC framed) server."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.host = "127.0.0.1"
+        self.port = 0
+        self._server: asyncio.base_events.Server | None = None
+
+    async def start(self) -> None:
+        self._server = await asyncio.start_server(self._handle_client, self.host, 0)
+        self.port = self._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+
+    async def stop(self) -> None:
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+
+    async def _handle_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        try:
+            while True:
+                head = await reader.readexactly(2)  # address, function code
+                request_pdu_head = head[1:2]
+                # Read requests (FC01/02/03/04) all have a fixed 4-byte
+                # remainder after the function code: address(2) + quantity(2).
+                remainder = await reader.readexactly(4)
+                request_pdu = request_pdu_head + remainder
+                await reader.readexactly(2)  # request CRC — not re-validated by this fake
+
+                response_pdu = self.handle_request(request_pdu)
+                frame = rtu_codec.encode_rtu_frame(head[0], response_pdu)
+                writer.write(frame)
+                await writer.drain()
+        except (asyncio.IncompleteReadError, ConnectionResetError):
+            pass
+        finally:
+            writer.close()

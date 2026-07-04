@@ -1,9 +1,11 @@
-"""Modbus TCP driver (FR-SA-002, FR-SA-004, FR-SA-008, FR-SA-009).
+"""Modbus RTU-over-TCP driver (FR-SA-003): RTU framing (address + PDU + CRC)
+carried over a plain TCP socket, distinct from Modbus TCP's MBAP framing.
 
-Uses the in-house codec (xedge.drivers.modbus.codec, ADR-006) over a plain
-asyncio TCP connection, framed with the MBAP header. Polling loop and
-TagUpdate construction are shared with the other Modbus transport variants —
-see xedge.drivers.modbus.polling.
+Unlike MBAP (which has an explicit length field), an RTU frame's length must
+be inferred from its own content: address + function code (2 bytes), then
+either an exception PDU (fixed: 1 exception-code byte + 2 CRC bytes) or a
+read response (1 byte-count byte + that many data bytes + 2 CRC bytes) —
+both fully determined by the function code we just requested.
 """
 
 from __future__ import annotations
@@ -11,22 +13,20 @@ from __future__ import annotations
 import asyncio
 
 from xedge.drivers.base import TagValue
-from xedge.drivers.modbus import codec
+from xedge.drivers.modbus import codec, rtu_codec
 from xedge.drivers.modbus.polling import BaseModbusPollingDriver, ModbusDriverStateError
 
 _DEFAULT_CONNECT_TIMEOUT_SECONDS = 5.0
 _DEFAULT_READ_TIMEOUT_SECONDS = 3.0
-_MAX_TRANSACTION_ID = 0x10000
 
-__all__ = ["ModbusDriverStateError", "ModbusTcpDriver"]
+__all__ = ["ModbusRtuOverTcpDriver"]
 
 
-class ModbusTcpDriver(BaseModbusPollingDriver):
+class ModbusRtuOverTcpDriver(BaseModbusPollingDriver):
     def __init__(self) -> None:
         super().__init__()
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
-        self._transaction_id = 0
         self._request_lock = asyncio.Lock()
 
     def _require_connection(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
@@ -58,8 +58,7 @@ class ModbusTcpDriver(BaseModbusPollingDriver):
         request_pdu = codec.encode_read_request(function_code, address, quantity)
 
         async with self._request_lock:
-            self._transaction_id = (self._transaction_id + 1) % _MAX_TRANSACTION_ID
-            frame = codec.encode_mbap(self._transaction_id, cfg.get("unit_id", 1), request_pdu)
+            frame = rtu_codec.encode_rtu_frame(cfg.get("unit_id", 1), request_pdu)
             writer.write(frame)
             await writer.drain()
 
@@ -68,7 +67,7 @@ class ModbusTcpDriver(BaseModbusPollingDriver):
                 timeout=cfg.get("read_timeout_seconds", _DEFAULT_READ_TIMEOUT_SECONDS),
             )
 
-        _, _, response_pdu = codec.decode_mbap(response_frame)
+        _, response_pdu = rtu_codec.decode_rtu_frame(response_frame)
         if codec.is_bit_function(function_code):
             bits = codec.decode_bits_response(response_pdu, quantity)
             return bits[0]
@@ -76,7 +75,12 @@ class ModbusTcpDriver(BaseModbusPollingDriver):
         return registers[0]
 
     async def _read_frame(self, reader: asyncio.StreamReader) -> bytes:
-        header = await reader.readexactly(codec.MBAP_HEADER_LENGTH)
-        remainder_length = codec.frame_remainder_length(header)
-        remainder = await reader.readexactly(remainder_length)
-        return header + remainder
+        head = await reader.readexactly(2)  # unit address, function code (or exception)
+        function_code_byte = head[1]
+        if function_code_byte & codec.EXCEPTION_RESPONSE_FLAG:
+            rest = await reader.readexactly(1 + 2)  # exception code + CRC
+        else:
+            byte_count_byte = await reader.readexactly(1)
+            byte_count = byte_count_byte[0]
+            rest = byte_count_byte + await reader.readexactly(byte_count + 2)  # data + CRC
+        return head + rest

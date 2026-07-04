@@ -26,10 +26,17 @@ drivers:
     tag_groups:
       - id: analog_inputs
         scan_rate_ms: 1000
+        deadband:
+          type: percentage
+          value: 0.5
         tags:
           - id: temperature_01
             function_code: read_holding_registers
             address: 0
+            scaling:
+              scale: 0.1
+              offset: -273.15
+            engineering_unit: "°C"
           - id: pressure_01
             function_code: read_input_registers
             address: 0
@@ -52,3 +59,20 @@ northbound:
     group_id: factory1
     edge_node_id: edge01
     qos: 1
+
+store:
+  directory: /data/store
+  ram_max_depth: 10000
+  retention_duration_seconds: 604800 # 7 days
+  purge_interval_seconds: 3600
+
+config_management:
+  hot_reload_enabled: true
+  poll_interval_seconds: 2.0
+  history_directory: /data/config-history
+  max_versions: 10
+
+api:
+  enabled: true
+  host: 127.0.0.1 # loopback-only until the API has auth (FR-CM-003)
+  port: 8080

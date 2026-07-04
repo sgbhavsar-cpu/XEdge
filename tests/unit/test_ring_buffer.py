@@ -94,3 +94,32 @@ def test_manager_drain_all_covers_every_stream() -> None:
 def test_manager_metrics_for_unknown_stream_is_none() -> None:
     manager = RingBufferManager()
     assert manager.metrics("nonexistent") is None
+
+
+def test_ring_buffer_calls_on_evict_with_evicted_tag() -> None:
+    evicted: list[UnifiedTag] = []
+    buf = RingBuffer(max_depth=2, on_evict=evicted.append)
+    buf.push(_tag(1))
+    buf.push(_tag(2))
+    buf.push(_tag(3))  # evicts tag 1
+    assert [t.value for t in evicted] == [1]
+    assert [t.value for t in buf.drain()] == [2, 3]
+
+
+def test_ring_buffer_no_on_evict_is_a_noop() -> None:
+    buf = RingBuffer(max_depth=1)
+    buf.push(_tag(1))
+    buf.push(_tag(2))  # evicts tag 1; no callback configured, should not raise
+    assert [t.value for t in buf.drain()] == [2]
+
+
+def test_manager_on_evict_receives_stream_key_and_tag() -> None:
+    spilled: list[tuple[str, int]] = []
+    manager = RingBufferManager(
+        max_depth=1, on_evict=lambda key, tag: spilled.append((key, tag.value))
+    )
+    manager.push("driver_a", _tag(1))
+    manager.push("driver_a", _tag(2))  # evicts (driver_a, 1)
+    manager.push("driver_b", _tag(10))
+    manager.push("driver_b", _tag(20))  # evicts (driver_b, 10)
+    assert spilled == [("driver_a", 1), ("driver_b", 10)]
