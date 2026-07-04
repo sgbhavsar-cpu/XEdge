@@ -140,28 +140,41 @@ async def _pipeline_to_buffer(
         ring_buffers.push(tag.source_driver, tag)
 
 
+def _all_tag_ids(drivers: list[dict[str, Any]]) -> frozenset[str]:
+    return frozenset(
+        f"{driver.get('id')}/{tag['id']}"
+        for driver in drivers
+        for group in driver.get("tag_groups", [])
+        for tag in group.get("tags", [])
+    )
+
+
 def _infer_tag_initial_values(drivers: list[dict[str, Any]]) -> dict[str, TagValue]:
     """Guess a representative initial value (of the right *type*) for each
-    configured tag, for OpcUaServerConfig.initial_values — see that field's
+    Modbus tag, for OpcUaServerConfig.initial_values — see that field's
     docstring for why the type must be right from the start.
 
-    Modbus bit-reading function codes are bool; a scaled Modbus register is
-    float; anything else defaults to float (a reasonable guess for generic
-    process values, including OPC UA client tags, whose real node type
-    isn't known before connecting)."""
+    Only produced for Modbus tags, where the type is knowable from config
+    alone (bit-reading function codes are bool; a scaled register is
+    float; else int). Deliberately not guessed for OPC UA client tags (or
+    any other driver type) — their remote node's real type isn't known
+    before connecting, and asyncua permanently fixes a node's DataType
+    from its first-written value, so a wrong guess would silently corrupt
+    the value forever (e.g. a boolean tag showing as 0.0). Those tags are
+    left for OpcUaTagServer to create lazily on first real update instead —
+    see OpcUaServerConfig.tag_ids."""
     values: dict[str, TagValue] = {}
     for driver in drivers:
         instance_id = driver.get("id")
         driver_type = driver.get("type")
+        if driver_type not in _MODBUS_DRIVER_TYPES:
+            continue
         for group in driver.get("tag_groups", []):
             for tag in group.get("tags", []):
                 tag_id = f"{instance_id}/{tag['id']}"
-                if (
-                    driver_type in _MODBUS_DRIVER_TYPES
-                    and tag.get("function_code") in _MODBUS_BIT_FUNCTION_CODES
-                ):
+                if tag.get("function_code") in _MODBUS_BIT_FUNCTION_CODES:
                     values[tag_id] = False
-                elif driver_type in _MODBUS_DRIVER_TYPES and not tag.get("scaling"):
+                elif not tag.get("scaling"):
                     values[tag_id] = 0
                 else:
                     values[tag_id] = 0.0
@@ -175,12 +188,13 @@ def _build_opcua_server(store: ConfigStore) -> OpcUaTagServer | None:
     endpoint_url = opcua_config.get("endpoint_url")
     if not endpoint_url:
         return None
-    initial_values = _infer_tag_initial_values(store.get_section("drivers", []))
+    drivers = store.get_section("drivers", [])
     return OpcUaTagServer(
         OpcUaServerConfig(
             endpoint_url=endpoint_url,
             server_name=opcua_config.get("server_name", "xEdge"),
-            initial_values=initial_values,
+            tag_ids=_all_tag_ids(drivers),
+            initial_values=_infer_tag_initial_values(drivers),
         )
     )
 

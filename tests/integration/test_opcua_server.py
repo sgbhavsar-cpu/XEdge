@@ -152,3 +152,58 @@ async def test_boolean_tag_roundtrip(endpoint_url: str) -> None:
             assert await node.read_value() is True
     finally:
         await server.stop()
+
+
+async def test_lazily_creates_node_on_first_update_using_real_type(endpoint_url: str) -> None:
+    """Regression test: a tag whose type can't be guessed ahead of time
+    (e.g. an OPC UA client tag) must get its node created from the *real*
+    observed value's type on first update, not from a wrong pre-guessed
+    type — found live via manual verification, where an OPC UA client
+    boolean tag re-exposed through xEdge's own OPC UA server showed up as
+    0.0 because it had been pre-built as a float."""
+    tag_id = "opcua_01/mock_pump_running"
+    server = OpcUaTagServer(
+        OpcUaServerConfig(endpoint_url=endpoint_url, tag_ids=frozenset({tag_id}))
+    )
+    await server.start()
+    try:
+        await server.update_tag(_tag(tag_id, True))
+        async with Client(url=endpoint_url) as client:
+            node = await _get_tag_node(
+                client, server.namespace_index, "opcua_01", "mock_pump_running"
+            )
+            assert await node.read_value() is True
+    finally:
+        await server.stop()
+
+
+async def test_tag_id_not_in_tag_ids_or_initial_values_is_ignored(endpoint_url: str) -> None:
+    server = OpcUaTagServer(OpcUaServerConfig(endpoint_url=endpoint_url))
+    await server.start()
+    try:
+        # should not raise and should not create a node for an unknown tag
+        await server.update_tag(_tag("unknown/tag", 1))
+        async with Client(url=endpoint_url) as client:
+            objects = client.get_objects_node()
+            xedge = await objects.get_child([f"{server.namespace_index}:xEdge"])
+            children = await xedge.get_children()
+            assert children == []
+    finally:
+        await server.stop()
+
+
+async def test_initial_values_tags_do_not_need_repeating_in_tag_ids(endpoint_url: str) -> None:
+    tag_id = "modbus_tcp_01/temperature_01"
+    server = OpcUaTagServer(
+        OpcUaServerConfig(endpoint_url=endpoint_url, initial_values={tag_id: 0.0})
+    )
+    await server.start()
+    try:
+        await server.update_tag(_tag(tag_id, 85.3))
+        async with Client(url=endpoint_url) as client:
+            node = await _get_tag_node(
+                client, server.namespace_index, "modbus_tcp_01", "temperature_01"
+            )
+            assert await node.read_value() == pytest.approx(85.3)
+    finally:
+        await server.stop()

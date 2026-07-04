@@ -42,15 +42,27 @@ class OpcUaServerStateError(RuntimeError):
 class OpcUaServerConfig:
     endpoint_url: str
     server_name: str = "xEdge"
+    tag_ids: frozenset[str] = field(default_factory=frozenset)
+    """Every tag_id (e.g. "modbus_tcp_01/temperature_01") the server should
+    eventually expose — the *set* of tags is still fixed by configuration
+    (FR-UA-002: not discovered dynamically), even for tags whose node is
+    created lazily rather than pre-built (see `initial_values`). Tags
+    already listed in `initial_values` don't need to be repeated here."""
     initial_values: dict[str, TagValue] = field(default_factory=dict)
-    """tag_id (e.g. "modbus_tcp_01/temperature_01") -> a representative
-    initial value of the tag's actual type, to pre-build nodes at startup
-    (FR-UA-002: information model built from configuration, not discovered
-    dynamically). asyncua's local address space fixes a node's OPC UA
-    DataType from its first-written value and rejects later writes of a
-    different variant type, so this MUST match what update_tag() will later
-    write for that tag (e.g. 0.0 for a scaled/float tag, False for a coil,
-    0 for a plain integer register)."""
+    """tag_id -> a representative initial value of the tag's actual type,
+    for tags pre-built at startup. asyncua's local address space fixes a
+    node's OPC UA DataType from its first-written value and rejects later
+    writes of a different variant type, so this MUST match what
+    update_tag() will later write for that tag (e.g. 0.0 for a scaled/float
+    tag, False for a coil, 0 for a plain integer register).
+
+    Tags in `tag_ids` but absent here (e.g. an OPC UA client tag, whose
+    remote node's real type can't be known before connecting) get their
+    node created lazily on the first update_tag() call instead, using that
+    update's actual value type — the only way to avoid guessing wrong and
+    corrupting the value (see xedge.core.main._infer_tag_initial_values,
+    which only guesses for driver types where the type is knowable from
+    config alone)."""
 
 
 class OpcUaTagServer:
@@ -58,6 +70,10 @@ class OpcUaTagServer:
         self._config = config
         self._server: Server | None = None
         self._nodes: dict[str, Node] = {}
+        self._driver_folders: dict[str, Node] = {}
+        self._idx: int | None = None
+        self._xedge_folder: Node | None = None
+        self._known_tag_ids = frozenset(config.tag_ids) | config.initial_values.keys()
         self.namespace_index: int | None = None
 
     async def start(self) -> None:
@@ -67,16 +83,10 @@ class OpcUaTagServer:
         server.set_server_name(self._config.server_name)
         idx = await server.register_namespace(_NAMESPACE_URI)
 
-        xedge_folder = await server.get_objects_node().add_folder(idx, "xEdge")
-        driver_folders: dict[str, Node] = {}
+        self._idx = idx
+        self._xedge_folder = await server.get_objects_node().add_folder(idx, "xEdge")
         for tag_id, initial_value in self._config.initial_values.items():
-            driver_id, _, tag_name = tag_id.partition("/")
-            driver_folder = driver_folders.get(driver_id)
-            if driver_folder is None:
-                driver_folder = await xedge_folder.add_folder(idx, driver_id)
-                driver_folders[driver_id] = driver_folder
-            node = await driver_folder.add_variable(idx, tag_name or tag_id, initial_value)
-            self._nodes[tag_id] = node
+            await self._create_node(tag_id, initial_value)
 
         await server.start()
         self._server = server
@@ -84,7 +94,7 @@ class OpcUaTagServer:
         logger.info(
             "opcua_server.started",
             endpoint_url=self._config.endpoint_url,
-            tag_count=len(self._nodes),
+            tag_count=len(self._known_tag_ids),
         )
 
     async def stop(self) -> None:
@@ -92,15 +102,31 @@ class OpcUaTagServer:
             await self._server.stop()
             self._server = None
 
+    async def _create_node(self, tag_id: str, value: TagValue) -> Node:
+        if self._xedge_folder is None or self._idx is None:
+            raise OpcUaServerStateError("start() must be called before _create_node()")
+        driver_id, _, tag_name = tag_id.partition("/")
+        driver_folder = self._driver_folders.get(driver_id)
+        if driver_folder is None:
+            driver_folder = await self._xedge_folder.add_folder(self._idx, driver_id)
+            self._driver_folders[driver_id] = driver_folder
+        node = await driver_folder.add_variable(self._idx, tag_name or tag_id, value)
+        self._nodes[tag_id] = node
+        return node
+
     async def update_tag(self, tag: UnifiedTag) -> None:
-        """Write a pipeline UnifiedTag into its matching OPC UA node, if one
-        was pre-built for it. Silently ignores tags outside the configured
-        set — the information model is fixed at startup (FR-UA-002)."""
+        """Write a pipeline UnifiedTag into its matching OPC UA node,
+        creating the node on first sight if it's a known tag_id without a
+        pre-built node (see OpcUaServerConfig.tag_ids/initial_values).
+        Silently ignores tags outside the configured set — the information
+        model's tag set is fixed at startup (FR-UA-002)."""
         if self._server is None:
             raise OpcUaServerStateError("start() must be called before update_tag()")
         node = self._nodes.get(tag.tag_id)
         if node is None:
-            return
+            if tag.tag_id not in self._known_tag_ids:
+                return
+            node = await self._create_node(tag.tag_id, tag.value)
         data_value = ua_types.DataValue(
             Value=ua_types.Variant(tag.value),
             StatusCode=_quality_to_status_code(tag.quality),
