@@ -18,6 +18,7 @@ from typing import Any
 import uvicorn
 
 from xedge import __version__
+from xedge.api.auth import LoginAttemptTracker, SessionManager, UserStore, load_or_create_secret_key
 from xedge.api.server import create_app
 from xedge.core.config import ConfigEngine, ConfigStore, ConfigVersionHistory
 from xedge.core.driver_config import build_driver_config
@@ -352,7 +353,22 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
     api_server: uvicorn.Server | None = None
     api_task: asyncio.Task[None] | None = None
     if api_config.get("enabled", True):
-        app = create_app(supervisor, version_history, dispatcher)
+        # Web UI auth state (ADR-007): siblings of the store/config-history
+        # dirs under /data, matching system-architecture.md §6.4's layout.
+        webui_dir = Path(store_config.get("directory", "/data/store")).parent / "webui"
+        user_store = UserStore(webui_dir / "users.json")
+        session_manager = SessionManager(load_or_create_secret_key(webui_dir / "session_key"))
+        login_tracker = LoginAttemptTracker()
+        app = create_app(
+            supervisor,
+            version_history,
+            dispatcher,
+            user_store=user_store,
+            session_manager=session_manager,
+            login_tracker=login_tracker,
+            config_path=config_path,
+            schema_path=schema_path,
+        )
         api_server = uvicorn.Server(
             uvicorn.Config(
                 app,

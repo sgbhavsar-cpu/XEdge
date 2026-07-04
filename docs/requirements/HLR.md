@@ -21,6 +21,7 @@
    - 4.6 Configuration Management
    - 4.7 Fleet Management & OTA
    - 4.8 Remote Diagnostics
+   - 4.9 Web UI (Local Device UI)
 5. [Non-Functional Requirements](#5-non-functional-requirements)
 6. [Security Requirements](#6-security-requirements)
 7. [Compliance Requirements](#7-compliance-requirements)
@@ -261,6 +262,27 @@ See [Section 10 — Glossary](#10-glossary).
 
 ---
 
+### 4.9 Web UI (Local Device UI)
+
+Originally scoped as a post-GA, Medium-priority item ("web-based configuration UI");
+re-scoped to a day-one requirement (ADR-007, 2026-07-04) so an operator never needs
+a separate tool, cloud dependency, or hand-edited YAML file just to see or change a
+device's configuration.
+
+| ID | Requirement |
+|---|---|
+| FR-WU-001 | The system SHALL provide a browser-based UI, served by the device itself over HTTP(S), requiring no cloud connectivity, external service, or separate installation to configure or monitor the device. |
+| FR-WU-002 | On first access, if no local user account exists, the UI SHALL present a setup flow to create the single local account and set its password — no default, factory, or hardcoded credential SHALL ever be shipped or written to disk. |
+| FR-WU-003 | The UI SHALL provide full configuration capability: viewing and editing every configuration section the device's JSON Schema describes (drivers, tag groups, northbound, store-and-forward, config management, API), not a read-only subset. |
+| FR-WU-004 | The UI SHALL provide full monitoring capability: live driver status and metrics, live tag values with quality, northbound connection state, and store-and-forward (cold-tier) backlog status. |
+| FR-WU-005 | Configuration changes made through the UI SHALL be validated and applied through the same mechanism as a file-based hot-reload (FR-CM-002/005/006) — the same validation, version history, rollback, and restart-only-affected-drivers behavior SHALL apply regardless of whether the change originated from the UI or a direct file edit. |
+| FR-WU-006 | The UI SHALL NOT display resolved secret values (e.g. passwords, tokens) in the configuration editor; secret-bearing fields SHALL be presented as write-only (a new value can be set, but the current value is never shown or round-tripped in plaintext), consistent with FR-CM-007 and the config version history's existing secrets-safe behavior. |
+| FR-WU-007 | The UI's session SHALL be protected against CSRF and use an HttpOnly, SameSite cookie; failed login attempts SHALL be rate-limited (lockout after 5 consecutive failures), and idle sessions SHALL expire after a configurable timeout (default: 15 minutes, matching the diagnostic CLI's default per security-architecture.md §2.1). |
+| FR-WU-008 | **Interim scope, explicitly not final:** until the full RBAC model (SR-AA-002) is implemented (planned Sprint 14), the UI SHALL operate in single-user mode — one local account with full access to every UI capability — and SHALL display this state clearly (e.g. a persistent banner) so it is never mistaken for a completed security posture. |
+| FR-WU-009 | The UI SHALL default to binding the loopback interface (127.0.0.1) only, matching the same reasoning already applied to the read-only REST API (an unauthenticated-by-default exposure risk becomes a write-capable one once the UI is added, so the safe default is at least as conservative, not less). |
+
+---
+
 ## 5. Non-Functional Requirements
 
 ### 5.1 Performance
@@ -320,8 +342,8 @@ See [Section 10 — Glossary](#10-glossary).
 
 | ID | Requirement |
 |---|---|
-| SR-AA-001 | All management interfaces (REST API, gRPC, diagnostic CLI) SHALL require authentication. Anonymous access SHALL be disabled by default. |
-| SR-AA-002 | The system SHALL implement Role-Based Access Control (RBAC) with the following predefined roles: `admin`, `operator`, `auditor`, `readonly`. Custom roles SHALL be configurable. |
+| SR-AA-001 | All management interfaces (REST API, gRPC, diagnostic CLI, Web UI per FR-WU-002) SHALL require authentication. Anonymous access SHALL be disabled by default. |
+| SR-AA-002 | The system SHALL implement Role-Based Access Control (RBAC) with the following predefined roles: `admin`, `operator`, `auditor`, `readonly`. Custom roles SHALL be configurable. **Interim exception (FR-WU-008):** the Web UI operates single-user/single-role until this is implemented (planned Sprint 14); this is a documented, temporary gap, not an alternate permanent model. |
 | SR-AA-003 | RBAC roles and permissions SHALL be stored in a signed, tamper-evident configuration file; any modification SHALL be audited. |
 | SR-AA-004 | All API tokens SHALL have configurable expiry (default: 24 hours) and SHALL support revocation without system restart. |
 | SR-AA-005 | The system SHALL support X.509 certificate-based authentication for all service-to-service communication, including fleet agent ↔ fleet manager, and device ↔ cloud broker. |
@@ -425,6 +447,7 @@ See [Section 10 — Glossary](#10-glossary).
 | IR-SW-003 | Driver plugin interface: Python ABC (Abstract Base Class) with version marker; C extension drivers wrapped via ctypes/cffi. |
 | IR-SW-004 | Configuration schema: JSON Schema draft-07, published in the repository, used by IDE plugins and config validators. |
 | IR-SW-005 | MQTT/Sparkplug B: conform to Eclipse Sparkplug B Specification v3.0, compatible with Ignition (Cirrus Link), HiveMQ Sparkplug, and AWS IoT SiteWise. |
+| IR-SW-006 | Local Web UI: served by the device itself (ADR-007), server-rendered (Jinja2 + htmx, no separate frontend build pipeline), backed by the same versioned REST API as IR-SW-001 — no separate/undocumented API surface for UI-only operations. |
 
 ### 8.3 External System Interfaces
 

@@ -422,6 +422,58 @@ Hash chain: each audit entry's `hash_chain` field is `SHA-256(prev_hash + this_e
    - All commands RBAC-checked (minimum: `operator` role)
    - Sessions logged in audit trail
 
+### 3.9 Web UI (Local Device UI)
+
+**Responsibility:** browser-based configuration and monitoring, served by the device
+itself, from day one (ADR-007) rather than as a post-GA add-on.
+
+**Position in the process:** not a separate service — mounted onto the same FastAPI
+`app` and `uvicorn.Server` the REST API (§3.7) already runs, in the same supervised
+asyncio process as every other component in this document. There is no additional
+process, container, or port beyond the existing REST API port (which becomes
+read-write and authenticated).
+
+```
+Browser ──HTTP(S), loopback by default──► uvicorn.Server
+                                               │
+                                               ├──► FastAPI routes: /api/v1/* (JSON,
+                                               │     existing + new write endpoints)
+                                               │
+                                               └──► FastAPI routes: /ui/* (Jinja2 +
+                                                     htmx HTML, same auth dependency
+                                                     as /api/v1/*)
+
+Config write (via /ui or /api/v1):
+    validate → write xedge.yaml → existing hot-reload watcher (§3.1) takes over
+    → same version history, rollback, restart-only-affected-drivers behavior
+    as a direct file edit
+```
+
+**Auth (interim, single-user — see ADR-007, HLR §4.9, FR-WU-008):**
+- One local account; password set via a first-login flow, never a shipped default
+- bcrypt (cost ≥ 12), matching SR-AA-006
+- Signed, HttpOnly, SameSite=Strict session cookie; 15-minute idle timeout; 5-attempt
+  lockout
+- No RBAC yet — the single account has every capability. Full RBAC (§3.7's role
+  table) arrives per Sprint 14 in sprint-planning.md; the auth dependency
+  (`require_auth()`) is structured so a `require_permission(...)` layer can be
+  added later without changing every route's call site.
+- Defaults to loopback (127.0.0.1) bind, matching the same posture already
+  established for the read-only REST API — now more load-bearing, since the UI is
+  write-capable.
+
+**Frontend technology (ADR-007):** server-rendered Jinja2 templates + htmx for live
+updates (polling/SSE against the same JSON endpoints), plus a small amount of vanilla
+JS. No Node.js/npm build pipeline; no CDN-fetched assets (htmx is vendored, keeping
+the device fully offline-capable). A richer SPA remains a possible later frontend
+swap on the same REST API — see ADR-007 §2.
+
+**Screens (grow alongside backend capability — see sprint-planning.md's per-sprint
+UI stories, Sprint 3.5 onward):** first-login/login, dashboard (driver list, live tag
+table, northbound + store-and-forward status), config editor (schema-driven forms
+per driver type, raw-YAML fallback, secrets masked per FR-WU-006), and — once later
+sprints land — user management, audit log viewer, and an embedded diagnostic console.
+
 ---
 
 ## 4. Data Model
@@ -587,6 +639,13 @@ Audit log entry created
 └───────────────────────────────────────┘
 ```
 
+> The Web UI (§3.9, ADR-007) is served on the **same port** as the REST API above —
+> it is not a separate listener. Until Sprint 13 (mTLS) lands, the MVP-era REST
+> API + Web UI actually runs on plain HTTP, port 8080/8090, loopback-only by
+> default (see `config/schema/xedge-core.schema.json`'s `api` section) — the
+> `8443/mTLS` state shown here is the Sprint 13+ end state, not what Sprint 3.5
+> ships with.
+
 ### 6.2 Docker Deployment
 
 ```yaml
@@ -647,8 +706,11 @@ services:
 ├── data/
 │   ├── store/                   # Store-and-forward database
 │   ├── config-history/          # Last 10 config versions
-│   └── diagnostics/             # Packet captures, self-test results
+│   ├── diagnostics/             # Packet captures, self-test results
+│   └── webui/
+│       └── users.json           # Single-user account (bcrypt hash) — §3.9, ADR-007
 │
+
 └── var/log/xedge/
     ├── xedge.log                # Structured JSON log (current)
     └── audit.log                # Audit trail (append-only, hash-chained)
@@ -742,6 +804,15 @@ services:
 | Static analysis | ruff, mypy (strict), bandit, cppcheck |
 | Testing | pytest + pytest-asyncio; HIL tests with real hardware in CI |
 
+### 7.9 Web UI
+
+| Component | Technology | Rationale |
+|---|---|---|
+| Server-side rendering | Jinja2 | Ships with/integrates natively into FastAPI; no separate templating dependency |
+| Live updates | htmx (vendored, no CDN) | ~14 KB, no build step, keeps the device offline-capable (ADR-007) |
+| Session auth | Signed HttpOnly cookie (itsdangerous or stdlib `hmac`) | No JWT library needed for a single-user, single-role interim model |
+| Password hashing | bcrypt (same as §7.5) | Reuses the already-planned algorithm/cost factor; no migration needed when RBAC lands |
+
 ---
 
 ## 8. Key Design Decisions
@@ -828,3 +899,27 @@ services:
 - Clean-room discipline required: GPL sources used only as black-box test oracles, never read by implementing engineers
 
 **Full analysis:** [ADR-006 — Protocol Stack Build vs. Buy](adr-006-protocol-stack-build-vs-buy.md) (decision matrix, clean-room rules, effort estimates).
+
+### ADR-007: Local Web UI architecture (day one, not post-GA)
+
+**Decision:** A browser-based configuration and monitoring UI, served by the device
+itself (mounted onto the existing REST API's FastAPI app/uvicorn process — §3.9),
+using server-rendered Jinja2 + htmx rather than a React/SPA build pipeline, with a
+single-user/password-at-first-login auth model until full RBAC (Sprint 14) lands.
+
+**Rationale:**
+- Re-scoped from a post-GA, Medium-priority backlog line to a day-one requirement —
+  operators need to configure/monitor a device without depending on the (not yet
+  built) fleet manager or SSH+YAML access
+- No Node.js/npm toolchain added to an otherwise Python-only CI/build pipeline
+- htmx (vendored, no CDN dependency) keeps the device fully offline-capable
+- Config writes reuse the existing hot-reload/version-history path unmodified —
+  no second, UI-only config-mutation mechanism to keep in sync
+
+**Trade-offs accepted:**
+- No RBAC until Sprint 14 — single local account has full access; mitigated by
+  defaulting to loopback-only bind and a persistent "single-user mode" UI banner
+- Less interactive than a full SPA (no offline-first client state); acceptable
+  given the UI's job is CRUD-over-config plus live status, not a rich application
+
+**Full analysis:** [ADR-007 — Local Web UI Architecture](adr-007-web-ui-architecture.md).

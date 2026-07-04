@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}xEdge{% endblock %}</title>
+<link rel="stylesheet" href="/ui-static/xedge-ui.css">
+</head>
+<body>
+<header class="xedge-header">
+  <span class="xedge-brand">xEdge</span>
+  {% block nav %}{% endblock %}
+</header>
+<main class="xedge-main">
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

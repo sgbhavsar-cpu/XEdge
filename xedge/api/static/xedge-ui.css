@@ -1,0 +1,79 @@
+/* xEdge Web UI — minimal, dependency-free styling (ADR-007). */
+
+:root {
+  color-scheme: light dark;
+  --xedge-border: #8888;
+  --xedge-accent: #2563eb;
+  --xedge-error: #b91c1c;
+  --xedge-success: #15803d;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  margin: 0;
+  padding: 0;
+  line-height: 1.5;
+}
+
+.xedge-header {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.75rem 1.5rem;
+  border-bottom: 1px solid var(--xedge-border);
+}
+
+.xedge-brand { font-weight: 700; font-size: 1.25rem; }
+
+.xedge-nav { display: flex; align-items: center; gap: 1rem; }
+.xedge-nav a { text-decoration: none; color: inherit; opacity: 0.7; }
+.xedge-nav a.active, .xedge-nav a:hover { opacity: 1; text-decoration: underline; }
+.xedge-logout-form { margin-left: auto; }
+.xedge-logout-form button {
+  background: none; border: 1px solid var(--xedge-border); border-radius: 4px;
+  padding: 0.25rem 0.75rem; cursor: pointer; font: inherit; color: inherit;
+}
+
+.xedge-main { max-width: 60rem; margin: 0 auto; padding: 1.5rem; }
+
+.xedge-card {
+  border: 1px solid var(--xedge-border);
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.xedge-card h1 { font-size: 1.1rem; margin: 0 0 0.75rem 0; }
+
+.xedge-hint { opacity: 0.75; font-size: 0.9rem; }
+
+.xedge-error { color: var(--xedge-error); font-weight: 600; }
+.xedge-success { color: var(--xedge-success); font-weight: 600; }
+
+form label { display: block; margin-top: 0.75rem; font-size: 0.9rem; }
+form input[type="password"], form input[type="text"] {
+  width: 100%; padding: 0.5rem; margin-top: 0.25rem;
+  border: 1px solid var(--xedge-border); border-radius: 4px; font: inherit;
+}
+form button {
+  margin-top: 1rem; padding: 0.5rem 1.25rem; border: none; border-radius: 4px;
+  background: var(--xedge-accent); color: white; cursor: pointer; font: inherit;
+}
+
+.xedge-table { width: 100%; border-collapse: collapse; }
+.xedge-table th, .xedge-table td {
+  text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--xedge-border);
+}
+
+#yaml-editor {
+  width: 100%; font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+  font-size: 0.85rem; padding: 0.75rem; border: 1px solid var(--xedge-border);
+  border-radius: 4px; white-space: pre; tab-size: 2;
+}
+
+code {
+  font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+  background: #8882; padding: 0.1rem 0.3rem; border-radius: 3px;
+}

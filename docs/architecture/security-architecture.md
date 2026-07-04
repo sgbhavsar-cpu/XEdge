@@ -47,6 +47,7 @@
 |---|---|---|
 | OPC UA server (4840/TCP) | LAN only | Security policy ≥ Basic256Sha256; certificate auth |
 | REST / gRPC API (8443/TCP) | LAN only | mTLS + RBAC; IP allowlist optional |
+| Web UI (same port as REST API, §3.9) | Loopback by default | Session-cookie auth, CSRF protection, lockout; **write-capable, so treated as at least as sensitive as the REST API, not less** — single-user/no-RBAC until Sprint 14 (ADR-007) |
 | MQTT northbound | Internet (outbound) | mTLS client certificate; MQTT ACLs |
 | Fleet management | Internet (outbound) | mTLS + signed payloads |
 | Serial ports (southbound) | Physical | No software control; physical security + driver input validation |
@@ -75,6 +76,18 @@
 - REST API tokens expire after configurable TTL (default: 24 hours)
 - Token revocation list maintained in memory; flushed on restart (or persisted to disk)
 - Idle session timeout for diagnostic CLI: default 15 minutes
+
+**Interim exception — Web UI, day one through Sprint 14 (ADR-007, HLR §4.9,
+FR-WU-008):** the local Web UI does not yet implement the JWT/RBAC model above.
+Instead: one local account, created via a mandatory first-login password-setup flow
+(no shipped default credential); bcrypt (cost ≥ 12, same algorithm/cost as the
+target model above — no migration needed later); a signed, HttpOnly,
+SameSite=Strict session cookie instead of a JWT (there is only one user/role, so a
+JWT's claims and revocation-list machinery has nothing to add yet); the same
+15-minute idle timeout as the diagnostic CLI; a 5-attempt lockout. This is a
+**documented, temporary narrowing of scope**, not a divergent security model — when
+Sprint 14 ships, the single account is promoted to the `admin` role and the UI
+starts enforcing the full permission matrix below, with no password migration.
 
 ### 2.2 Authorization (RBAC)
 

@@ -85,6 +85,13 @@ async def test_async_main_serves_rest_api_over_real_http(monkeypatch, tmp_path: 
             assert response is not None
             assert response.json() == {"status": "ok"}
 
+            # First-login setup (ADR-007): protected endpoints require an
+            # authenticated session now that the API is write-capable.
+            setup_response = await client.post(
+                f"{base_url}/api/v1/auth/setup", json={"password": "test-password-123"}
+            )
+            assert setup_response.status_code == 200
+
             status_response = await client.get(f"{base_url}/api/v1/status")
             assert status_response.status_code == 200
             assert "version" in status_response.json()

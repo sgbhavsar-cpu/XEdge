@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}xEdge — Dashboard{% endblock %}
+{% block nav %}
+<nav class="xedge-nav">
+  <a href="/ui/dashboard" class="active">Dashboard</a>
+  <a href="/ui/config">Configuration</a>
+  <form method="post" action="/ui/logout" class="xedge-logout-form">
+    <button type="submit">Log out</button>
+  </form>
+</nav>
+{% endblock %}
+{% block content %}
+<div class="xedge-card">
+  <h1>Status</h1>
+  <p>
+    Northbound:
+    <span id="northbound-status" data-connected="{{ northbound_connected }}">
+      {% if northbound_connected is none %}disabled
+      {% elif northbound_connected %}connected
+      {% else %}disconnected{% endif %}
+    </span>
+  </p>
+</div>
+
+<div class="xedge-card">
+  <h1>Drivers</h1>
+  <table class="xedge-table" id="drivers-table">
+    <thead>
+      <tr>
+        <th>Instance</th>
+        <th>Type</th>
+        <th>State</th>
+        <th>Tag reads</th>
+        <th>Errors</th>
+        <th>Last error</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in drivers %}
+      <tr data-instance-id="{{ d.instance_id }}">
+        <td>{{ d.instance_id }}</td>
+        <td>{{ d.driver_type }}</td>
+        <td class="xedge-state">{{ d.state }}</td>
+        <td class="xedge-tag-read-count">{{ d.metrics.tag_read_count }}</td>
+        <td class="xedge-error-count">{{ d.metrics.error_count }}</td>
+        <td class="xedge-last-error">{{ d.last_error or "" }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No drivers configured.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<script src="/ui-static/xedge-ui.js"></script>
+<script>xedgeUi.pollDashboard();</script>
+{% endblock %}

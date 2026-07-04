@@ -83,6 +83,40 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 
 ---
 
+### Sprint 3.5 — Web UI Foundation (Local Device UI)
+
+**Goal:** An operator can open a browser at the device's address, set a password on
+first login, see live driver/tag status, and edit + apply configuration — entirely
+from the device itself, no separate tooling. Milestone M1.5 achieved. See ADR-007
+for the architecture decision (server-rendered Jinja2 + htmx, no frontend build
+pipeline) and the auth model (single user, password set at first login, session
+cookie, no RBAC yet).
+
+**Why here, not Phase 3 or post-GA:** originally planned as a low-priority post-GA
+"React + REST API" line item; re-scoped to day one because operators need to be able
+to configure and monitor a device without depending on the (not-yet-built) fleet
+manager or hand-editing YAML over SSH. Placed immediately after M1 (first real data
+flowing) rather than before Sprint 4's deeper pipeline work, since a UI with nothing
+to show yet has nothing to demo.
+
+| Story | Owner | Points | Description |
+|---|---|---|---|
+| XEDGE-264 | UX/Frontend Eng | 8 | REST API becomes read-write: `PUT /api/v1/config` (validate → write xedge.yaml → let existing hot-reload watcher apply it), `POST /api/v1/drivers/{id}/restart` |
+| XEDGE-265 | UX/Frontend Eng | 8 | Auth backend: local single-user store (bcrypt, cost ≥ 12, matching SR-AA-006), first-login "set up this device" flow when no user exists yet, session-cookie login (HttpOnly, SameSite=Strict), 15-minute idle timeout, 5-attempt lockout |
+| XEDGE-266 | UX/Frontend Eng | 5 | `require_auth()` FastAPI dependency applied to every non-health, non-first-login endpoint; structured so a later `require_permission(...)` (Sprint 14 RBAC) can be added without changing call sites |
+| XEDGE-267 | UX/Frontend Eng | 13 | UI: login / first-login page, dashboard (driver list, live tag values, northbound + store-and-forward status via htmx polling), config editor (schema-aware form generation from the JSON Schema already in `config/schema/`, raw-YAML fallback view) |
+| XEDGE-268 | Core Eng 1 | 5 | Config write path: validate → write `xedge.yaml` → trigger an immediate reload (simple direct call at this sprint, since Sprint 5's `ConfigVersionHistory`/file-watcher hot-reload hasn't landed yet in strict sprint order); secrets never round-tripped as plaintext into the editor (masked, write-only fields). **Note:** once Sprint 5 ships, the UI's write path switches to going through the same watched-file + version-history mechanism with no UI-facing change — see XEDGE-272a |
+| XEDGE-269 | Security | 5 | Threat model addendum: new attack surface from write-capable, authenticated local API; login banner states "single-user mode — full RBAC in a later release" (per ADR-007 §Consequences) |
+| XEDGE-270 | QA | 8 | Integration tests: first-login flow, login/logout, lockout after 5 failures, config write → hot-reload → driver restart round-trip, secrets masking in the editor |
+| XEDGE-271 | DevOps | 3 | Docker image: bundle Jinja2 templates + vendored htmx asset (no CDN fetch — device stays offline-capable); healthcheck unaffected (still hits `/health`) |
+
+**Sprint capacity:** 55 SP
+**Sprint review:** Live demo — factory-fresh device, open browser, set password, see
+Modbus tags updating, edit a scan rate through the UI, watch it hot-reload.
+**🏁 MILESTONE M1.5 — Local Web UI Operational**
+
+---
+
 ### Sprint 4 — Pipeline Engine v1 + Quality Model
 
 **Goal:** Proper normalization, quality stamping, and OPC UA quality code mapping.
@@ -93,11 +127,12 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-034 | Core Eng 2 | 8 | Timestamp resolver: source vs ingestion timestamp logic; nanosecond precision |
 | XEDGE-035 | Core Eng 1 | 8 | Engineering unit scaling: scale/offset per tag; typed value conversion |
 | XEDGE-036 | Core Eng 2 | 8 | Deadband filter: absolute and percentage; bypass for first-value and quality-change |
-| XEDGE-037 | Protocol Eng 1 | 8 | Modbus write support: FC05/FC06/FC15/FC16 codec + client, via REST API (Phase 1: unauthenticated, localhost only) |
+| XEDGE-037 | Protocol Eng 1 | 8 | Modbus write support: FC05/FC06/FC15/FC16 codec + client, via the (now-authenticated, per Sprint 3.5) REST API |
 | XEDGE-038 | QA | 8 | Unit tests: quality mapper, timestamp resolver, deadband filter edge cases |
 | XEDGE-039 | Core Eng 2 | 5 | `UnifiedTag` metadata enrichment: source address, driver ID, request latency |
 | XEDGE-040 | Protocol Eng 3 | 8 | Modbus driver: configurable FC and register maps from YAML config |
 | XEDGE-041 | DevOps | 5 | Performance baseline: measure tag/s throughput on Raspberry Pi 4 with 1000 Modbus tags |
+| XEDGE-272 | UX/Frontend Eng | 5 | Web UI: dashboard tag table gains quality badge, engineering unit suffix, and a manual write control (uses XEDGE-037's write endpoint) for writable tags |
 
 **Sprint capacity:** 66 SP
 
@@ -118,6 +153,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-048 | QA | 8 | Integration tests: config validation errors return human-readable messages; reload works |
 | XEDGE-049 | Lead Arch | 5 | JSON Schema v0.1 published in `/config/schema/` |
 | XEDGE-050 | DevOps | 5 | Dependabot config, pip-audit in CI, first SBOM generation with syft |
+| XEDGE-272a | Core Eng 1 | 3 | Reconcile Sprint 3.5's UI config-write path onto the now-available `ConfigVersionHistory` + file-watcher hot-reload (XEDGE-042/043) — no UI-facing change, just swaps the write path's internals so UI-driven edits get version history/rollback for free |
 
 **Sprint capacity:** 60 SP
 
@@ -137,6 +173,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-056 | QA | 8 | End-to-end test: simulate 5-minute MQTT outage; verify buffered data replayed correctly |
 | XEDGE-057 | All | 5 | Phase 1 retrospective; backlog grooming for Phase 2 |
 | XEDGE-058 | Lead Arch | 3 | ADR-003: SQLite WAL for cold storage (Phase 2 design decision) |
+| XEDGE-273 | UX/Frontend Eng | 5 | Web UI: dashboard buffer-depth gauge per stream (RAM ring buffer occupancy, eviction count) |
 
 **Sprint capacity:** 61 SP  
 **🏁 PHASE 1 COMPLETE**
@@ -157,6 +194,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-064 | QA | 8 | Integration tests: RTU vs RTU-over-TCP framing; simulate bus collision |
 | XEDGE-065 | Protocol Eng 3 | 8 | Modbus driver config: multi-device per driver instance (up to 256 unit IDs) |
 | XEDGE-066 | Core Eng 2 | 8 | Driver framework: multiple instances of same driver type, isolated config/state |
+| XEDGE-274 | UX/Frontend Eng | 5 | Web UI: config editor gains a serial-port picker (enumerates `/dev/ttyS*`, `/dev/ttyUSB*`, `/dev/ttyAMA*`) and RTU-specific fields (baud/parity/bits, unit ID) for the driver-add form |
 
 ---
 
@@ -172,6 +210,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-071 | Protocol Eng 3 | 5 | OPC UA client config: NodeId browsing, NodeSet import from XML |
 | XEDGE-072 | DevOps | 8 | OPC UA simulator (Prosys OPC UA Simulation Server, open62541 demo server, or asyncua as oracle) in CI |
 | XEDGE-073 | QA | 8 | Integration tests: OPC UA subscription CoV vs. polling; reconnect after server restart |
+| XEDGE-275 | UX/Frontend Eng | 8 | Web UI: OPC UA driver config form (endpoint URL, security mode) + a NodeId browser widget (browse the target server's address space from the UI instead of hand-typing NodeId strings) |
 
 ---
 
@@ -187,6 +226,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-079 | Protocol Eng 3 | 8 | OPC UA write routing: incoming write → `WriteRouter` → southbound driver |
 | XEDGE-080 | QA | 8 | OPC UA CTT (Compliance Test Tool) run; document any failures |
 | XEDGE-081 | Lead Arch | 5 | ADR: OPC UA information model versioning strategy |
+| XEDGE-276 | UX/Frontend Eng | 5 | Web UI: dashboard widget showing the OPC UA server's own endpoint URL + connected-session count, so an operator knows what to point their SCADA/HMI at |
 
 ---
 
@@ -204,6 +244,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-087 | QA | 8 | Power-loss test: intentional power cut with 1000 in-flight tags; verify WAL recovery |
 | XEDGE-088 | DevOps | 5 | Performance benchmark: store-forward write/read rate on SD card (Class A2) |
 | XEDGE-089 | All | 3 | **Milestone M2 demo and stakeholder review** |
+| XEDGE-277 | UX/Frontend Eng | 8 | Web UI: cold-tier storage widget (per-stream row counts, storage pressure %, oldest-pending-sample age) and a "replay in progress" indicator during reconnect drains |
 
 **🏁 MILESTONE M2 — MVP Alpha**
 
@@ -220,6 +261,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-094 | Protocol Eng 3 | 8 | Config schema v0.2: retention, virtual tags, deadband refinement |
 | XEDGE-095 | QA | 8 | Unit tests: retention boundary conditions; virtual tag circular dependency detection |
 | XEDGE-096 | Lead Arch | 5 | ADR: virtual tag expression evaluation security (why no eval(); simpleeval sandbox) |
+| XEDGE-278 | UX/Frontend Eng | 8 | Web UI: virtual tag editor (expression input with live syntax/dependency validation against the simpleeval sandbox) and per-tag retention override fields in the config editor |
 
 ---
 
@@ -236,6 +278,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-101 | QA | 8 | Stress test: 50 simultaneous Modbus drivers × 1000 tags each; measure CPU/RAM |
 | XEDGE-102 | Protocol Eng 3 | 5 | REST API: `GET /api/v1/metrics` (Prometheus-compatible endpoint) |
 | XEDGE-103 | All | 5 | Phase 2 retrospective; Phase 3 planning |
+| XEDGE-279 | UX/Frontend Eng | 5 | Web UI: throughput/latency sparkline on the dashboard, sourced from `/api/v1/metrics`; UI performance pass (htmx polling intervals tuned so the UI itself doesn't become a measurable pipeline load) |
 
 **🏁 PHASE 2 COMPLETE**
 
@@ -254,23 +297,30 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-108 | Security | 5 | ACME client: Let's Encrypt compatible for internet-reachable deployments |
 | XEDGE-109 | QA | 8 | Security tests: TLS downgrade attempt; expired cert rejection; untrusted CA rejection |
 | XEDGE-110 | DevOps | 5 | CI: TLS test infra (test CA, signed certs for integration tests) |
+| XEDGE-280 | UX/Frontend Eng | 5 | Web UI now served over HTTPS (reuses XEDGE-104's cert infrastructure); certificate upload/status screen in the UI itself, not just the REST API |
 
 ---
 
 ### Sprint 14 — RBAC + Authentication
 
-**Goal:** Milestone M3 (MVP Beta) achieved.
+**Goal:** Milestone M3 (MVP Beta) achieved. **This is where the Sprint 3.5 single-user
+model (ADR-007) is superseded** by the full multi-user RBAC model originally planned —
+not rebuilt from scratch: bcrypt storage (XEDGE-265) and the 15-min idle timeout /
+5-attempt lockout (also XEDGE-265) carry over unchanged; what's added is *multiple*
+users, *roles*, and a JWT layer sitting where `require_auth()`'s single-user check
+used to be (XEDGE-266 was deliberately structured for this).
 
 | Story | Owner | Points | Description |
 |---|---|---|---|
-| XEDGE-111 | Security | 13 | RBAC engine: permission matrix, role assignment, per-endpoint enforcement decorator |
-| XEDGE-112 | Security | 8 | User management API: CRUD users, assign roles, list active sessions |
-| XEDGE-113 | Security | 8 | JWT token issuance and validation: configurable expiry, revocation list |
-| XEDGE-114 | Security | 5 | bcrypt password storage; login lockout after 5 failures |
-| XEDGE-115 | Security | 5 | Login banner (configurable); session idle timeout (default 15 min) |
-| XEDGE-116 | Core Eng 1 | 5 | REST API: auth middleware applies to all non-health endpoints |
+| XEDGE-111 | Security | 13 | RBAC engine: permission matrix (`admin`/`operator`/`auditor`/`readonly`, security-architecture.md §2.2), role assignment, per-endpoint enforcement decorator — replaces Sprint 3.5's "one user, all permissions" with real per-role checks |
+| XEDGE-112 | Security | 8 | User management API: CRUD users, assign roles, list active sessions — migrates the single Sprint-3.5 local account to `admin` role on upgrade, no forced re-setup |
+| XEDGE-113 | Security | 8 | JWT token issuance and validation: configurable expiry, revocation list — REST API clients (scripts, fleet agent) move to JWT bearer tokens; the Web UI itself keeps its session cookie for browser use (JWT and cookie both validate through the same `require_permission()`) |
+| XEDGE-114 | Security | 3 | ~~bcrypt password storage; login lockout after 5 failures~~ — already shipped in Sprint 3.5 (XEDGE-265); this story reduces to verifying the existing implementation meets the full multi-user requirements unchanged |
+| XEDGE-115 | Security | 3 | ~~Login banner (configurable); session idle timeout (default 15 min)~~ — already shipped in Sprint 3.5; update the banner text now that RBAC (not "single-user mode") is live |
+| XEDGE-116 | Core Eng 1 | 5 | REST API: `require_permission(...)` parameter (planned placeholder from XEDGE-266) filled in for every endpoint |
 | XEDGE-117 | QA | 8 | Security tests: privilege escalation attempt; role-boundary enforcement |
 | XEDGE-118 | All | 5 | **Milestone M3 demo** |
+| XEDGE-281 | UX/Frontend Eng | 8 | Web UI: user management screen (create/disable users, assign roles, view active sessions); UI itself gains role-aware rendering (e.g. `readonly` sees the config editor in view-only mode, not hidden entirely) |
 
 **🏁 MILESTONE M3 — MVP Beta**
 
@@ -287,6 +337,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-123 | Security | 5 | Binary integrity verification: signed manifest checked on startup |
 | XEDGE-124 | QA | 8 | Audit test: verify all required events appear in audit log; hash chain validated |
 | XEDGE-125 | Security | 3 | IEC 62443 SL-1 gap analysis: map all SR 1.x–7.x to current implementation |
+| XEDGE-282 | UX/Frontend Eng | 5 | Web UI: audit log viewer (filterable by actor/event type/time range); every UI-driven config write and login event already lands in this log (XEDGE-119) with no additional wiring |
 
 ---
 
@@ -301,6 +352,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-130 | Core Eng 1 | 5 | Prometheus endpoint: OTel Prometheus exporter on `/metrics` (port 9090) |
 | XEDGE-131 | DevOps | 8 | OTel collector stack in dev Docker-compose: Grafana + Tempo + Loki |
 | XEDGE-132 | QA | 5 | Verify: every alarm event produces a 100%-sampled trace end-to-end |
+| XEDGE-283 | UX/Frontend Eng | 3 | Web UI: dashboard footer link to the configured OTel/Grafana endpoint (if any) — the UI itself doesn't reimplement tracing, just points operators at where the deeper telemetry lives |
 
 ---
 
@@ -316,6 +368,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-138 | Security | 5 | Diagnostic CLI session audit logging: all commands recorded with session ID |
 | XEDGE-139 | QA | 5 | Integration tests: CLI commands via WebSocket; unauthorized command rejection |
 | XEDGE-140 | DevOps | 5 | `xedge-cli` thin client tool for developer workstations |
+| XEDGE-284 | UX/Frontend Eng | 8 | Web UI: embedded diagnostic console (thin wrapper over the wss:// WebSocket from XEDGE-133, reusing the UI's own session — no separate diagnostic-CLI login) for `status`/`driver restart`/`self-test` without leaving the browser |
 
 ---
 
@@ -332,6 +385,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-145 | DevOps | 5 | Container image signing with cosign; policy enforcement in CI |
 | XEDGE-146 | QA | 5 | Security regression test suite (OWASP ZAP against REST API) |
 | XEDGE-147 | All | 5 | **Milestone M4 demo; IEC 62443 SL-1 attestation** |
+| XEDGE-285 | Security | 5 | Web UI explicitly included in scope for XEDGE-144 (rate limiting) and XEDGE-146 (OWASP ZAP scan) — it is not a lower-risk surface than the REST API since it's the same authenticated, write-capable endpoints wrapped in HTML |
 
 **🏁 MILESTONE M4 — Security Baseline**  
 **🏁 PHASE 3 COMPLETE**
@@ -350,6 +404,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-151 | Protocol Eng 2 | 5 | IEC 104 command issuance: types 45–51, 58–64; command result feedback |
 | XEDGE-152 | Protocol Eng 2 | 5 | IEC 104 quality → OPC UA quality mapping (IV, NT, SB, BL, OV flags) |
 | XEDGE-153 | QA | 8 | HIL test: IEC 104 against IEC 104 simulator (e.g., 61850 Playground or QTester104) |
+| XEDGE-286 | UX/Frontend Eng | 5 | Web UI: IEC 104 driver config form (ASDU address, k/w flow-control params) added to the config editor's driver-type list |
 
 ---
 
@@ -365,6 +420,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-157 | Protocol Eng 3 | 5 | DNP3 integrity poll scheduling; event data classes |
 | XEDGE-158 | Protocol Eng 3 | 5 | DNP3 quality flag → OPC UA quality mapping |
 | XEDGE-159 | QA | 8 | HIL test: DNP3 against TMW DNP3 Test Harness or FreyrSCADA DNP3 simulator |
+| XEDGE-287 | UX/Frontend Eng | 5 | Web UI: DNP3 driver config form (outstation address, data object class mapping) added to the config editor |
 
 ---
 
@@ -378,6 +434,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-163 | Protocol Eng 1 | 5 | BACnet Write Present Value (commandable objects) |
 | XEDGE-164 | Protocol Eng 1 | 5 | BACnet quality: reliability property → OPC UA quality mapping |
 | XEDGE-165 | QA | 8 | HIL test: BACnet against YABE (BACnet Explorer) + Sedona VM simulator |
+| XEDGE-288 | UX/Frontend Eng | 8 | Web UI: BACnet device-discovery browser (list discovered devices/objects, click to add as a tag — mirrors the OPC UA NodeId browser from XEDGE-275) |
 
 ---
 
@@ -391,6 +448,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-169 | DevOps | 5 | RS-485 HIL test rig: USB-RS485 adapter + BACnet MSTP test device in lab |
 | XEDGE-170 | QA | 8 | Integration test: MS/TP device read + COV; confirm timing meets spec |
 | XEDGE-171 | Protocol Eng 2 | 8 | Refactor: BACnet driver framework allows IP + MSTP instances simultaneously |
+| XEDGE-289 | UX/Frontend Eng | 3 | Web UI: extend XEDGE-288's BACnet browser/config form with the MS/TP transport fields (MAC address, baud, max-master) alongside IP |
 
 ---
 
@@ -404,6 +462,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-175 | Protocol Eng 2 | 5 | EtherNet/IP write: tag write with confirmation |
 | XEDGE-176 | QA | 8 | HIL test: real CompactLogix (or Studio 5000 Logix Designer emulator) |
 | XEDGE-177 | Protocol Eng 3 | 5 | Config schema: EtherNet/IP driver section with tag-list import from L5X CSV |
+| XEDGE-290 | UX/Frontend Eng | 5 | Web UI: EtherNet/IP driver config form + L5X CSV upload widget (drag-and-drop onto XEDGE-177's import) |
 
 ---
 
@@ -417,6 +476,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-181 | Protocol Eng 3 | 5 | PROFINET quality: IOPS/IOCS → OPC UA quality mapping |
 | XEDGE-182 | DevOps | 5 | PROFINET test rig: Siemens PLCSIM Advanced or ET 200SP simulator |
 | XEDGE-183 | QA | 8 | HIL test: PROFINET IO device cyclic data read; topology change handling |
+| XEDGE-291 | UX/Frontend Eng | 5 | Web UI: PROFINET driver config form + GSDML file upload widget |
 
 ---
 
@@ -431,6 +491,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-188 | QA | 8 | Integration tests: hot-reload of 10 drivers simultaneously; no tag gap > 2 scan cycles |
 | XEDGE-189 | Protocol Eng 1 | 5 | Cross-driver tag reference: allow virtual tag to reference tags from different driver instances |
 | XEDGE-190 | Lead Arch | 5 | ADR: driver isolation model and thread executor design |
+| XEDGE-292 | UX/Frontend Eng | 8 | Web UI: per-driver health page (XEDGE-185's data) with an enable/disable toggle (XEDGE-186) and a "validate before apply" preview (XEDGE-187) in the config editor's save flow |
 
 ---
 
@@ -447,6 +508,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-195 | Core Eng 1 | 5 | Alarm detection engine v1: threshold hi/lo/hi-hi/lo-lo; state change detection |
 | XEDGE-196 | Protocol Eng 3 | 5 | PROFINET: add alarm and diagnostic telegram handling |
 | XEDGE-197 | All | 5 | **Milestone M5 demo** |
+| XEDGE-293 | UX/Frontend Eng | 8 | Web UI: alarm summary widget on the dashboard (active alarms, state, threshold breached) sourced from XEDGE-195's alarm engine |
 
 **🏁 MILESTONE M5 — Protocol Complete**  
 **🏁 PHASE 4 COMPLETE**
@@ -465,6 +527,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-201 | Protocol Eng 1 | 5 | IEC 61850 control: SBO (Select Before Operate) and direct control |
 | XEDGE-202 | Protocol Eng 1 | 5 | IEC 61850 quality: q attribute → OPC UA quality mapping |
 | XEDGE-203 | QA | 8 | HIL test: libiec61850 server simulator; BRCB integrity vs. live report |
+| XEDGE-294 | UX/Frontend Eng | 5 | Web UI: IEC 61850 driver config form (IED address, logical node/RCB selection) |
 
 ---
 
@@ -478,6 +541,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-207 | Protocol Eng 3 | 5 | DLMS authentication: none, low (PAP), high (GMAC-256) |
 | XEDGE-208 | QA | 8 | HIL test: GOOSE stale-data detection; DLMS meter read |
 | XEDGE-209 | Core Eng 1 | 5 | IEC 62443 SL-2 gap analysis: identify remaining gaps for Phase 6 |
+| XEDGE-295 | UX/Frontend Eng | 5 | Web UI: GOOSE/SV and DLMS/COSEM driver config forms; GOOSE stale-data indicator surfaced on the driver health page (XEDGE-292) |
 
 ---
 
@@ -492,6 +556,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-214 | Security | 5 | Fleet agent mTLS: device cert used for fleet manager authentication |
 | XEDGE-215 | DevOps | 5 | Fleet manager Docker deployment: Compose stack with DB backend |
 | XEDGE-216 | QA | 8 | Integration test: 10-device simulated fleet; config push to all; verify all apply |
+| XEDGE-296 | UX/Frontend Eng | 3 | Web UI (local, on-device): small fleet-registration status widget (registered? last heartbeat?) — distinct from and much smaller than the Fleet Manager's own dashboard (Sprint 32), which is a separate cloud-side service the local UI doesn't replace |
 
 ---
 
@@ -505,6 +570,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-220 | Core Eng 2 | 8 | AWS IoT Core connector: X.509 auth, IoT Core MQTT endpoint, Thing shadow integration |
 | XEDGE-221 | Core Eng 2 | 8 | Azure IoT Hub connector: SAS + X.509 auth, DPS provisioning support |
 | XEDGE-222 | QA | 8 | OTA test: update with forced failure at 50%; verify rollback to prior version |
+| XEDGE-297 | UX/Frontend Eng | 5 | Web UI: OTA status widget (current version, update in progress/rollback state) and cloud-connector config forms (AWS IoT Core, Azure IoT Hub) |
 
 ---
 
@@ -520,12 +586,20 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-228 | Core Eng 2 | 5 | Configurable per-stream retention: different `retention_duration` for alarms vs. telemetry |
 | XEDGE-229 | QA | 8 | Integration test: write-back round-trip (NCMD → Modbus FC16 → quality confirmation) |
 | XEDGE-230 | DevOps | 5 | Remote command whitelist: `restart-driver`, `collect-diagnostics`, `run-self-test` |
+| XEDGE-298 | UX/Frontend Eng | 5 | Web UI: alarm shelving controls, and CSV import/export buttons (XEDGE-226/227) in the config editor's tag list view |
 
 ---
 
 ### Sprint 32 — Fleet Dashboard + Phase 5 Close
 
-**Goal:** Milestone M6 (Fleet Ready) achieved.
+**Goal:** Milestone M6 (Fleet Ready) achieved. **Note the distinction from the local
+device Web UI (Sprint 3.5, ADR-007):** this dashboard is a separate, cloud-hosted
+service showing a fleet-wide view across many devices (health grid, OTA rollout
+state, alarm summary aggregated across the fleet); it does not replace or subsume
+the per-device Web UI, which remains the way to actually configure and monitor an
+individual device, including offline/before-fleet-registration. The two share no
+code — the fleet dashboard talks to the Fleet Manager's own REST/WebSocket API
+(IR-ES-003), not to any individual device's local API.
 
 | Story | Owner | Points | Description |
 |---|---|---|---|
@@ -554,6 +628,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-241 | Security | 5 | CIS benchmark hardening guide: OS + xEdge config checklist |
 | XEDGE-242 | QA | 8 | Security regression test suite (OWASP ZAP, manual pen test checklist) |
 | XEDGE-243 | DevOps | 5 | Vulnerability policy published: CVE SLAs, responsible disclosure contact |
+| XEDGE-299 | Security | 5 | Web UI included in SL-2 gap closure: CSRF token review, session-fixation testing, and a11y pass (WCAG 2.1 AA baseline) as part of CIS hardening checklist |
 
 ---
 
@@ -567,6 +642,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 | XEDGE-247 | QA | 8 | Hardware compatibility matrix: test on 6 platforms; document results |
 | XEDGE-248 | QA | 5 | OPC UA CTT (Compliance Test Tool) full run; all mandatory tests pass |
 | XEDGE-249 | QA | 5 | Sparkplug B conformance: HiveMQ Sparkplug Validator + Ignition demo project |
+| XEDGE-300 | Security | 3 | Pen test scope (XEDGE-244) explicitly includes the Web UI's auth flow (first-login, session handling, lockout) and config-write path, not just the JSON REST API |
 
 ---
 
@@ -574,7 +650,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 
 | Story | Owner | Points | Description |
 |---|---|---|---|
-| XEDGE-250 | Tech Writer | 13 | User guide: installation, first-run, Modbus quick-start, OPC UA quick-start |
+| XEDGE-250 | Tech Writer | 13 | User guide: installation, first-run (including the Web UI's first-login password setup), Modbus quick-start, OPC UA quick-start — all walked through via the Web UI screenshots, not just YAML/CLI |
 | XEDGE-251 | Tech Writer | 13 | Operator runbook: troubleshooting, log analysis, common error codes |
 | XEDGE-252 | Tech Writer | 8 | API reference: OpenAPI 3.1 spec published; Swagger UI embedded in fleet manager |
 | XEDGE-253 | Tech Writer | 5 | Compliance guide: IEC 62443 controls summary; NERC CIP evidence walkthrough |
@@ -592,7 +668,7 @@ Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engi
 |---|---|---|---|
 | XEDGE-257 | DevOps | 8 | GA release: signed Docker images (amd64, arm64, armv7) pushed to GHCR |
 | XEDGE-258 | DevOps | 5 | RAUC GA bundle: signed, published to release page |
-| XEDGE-259 | QA | 8 | Final regression test: full protocol suite on 2 hardware platforms |
+| XEDGE-259 | QA | 8 | Final regression test: full protocol suite on 2 hardware platforms, including every driver-type config screen added to the Web UI since Sprint 3.5 |
 | XEDGE-260 | Security | 5 | Final SBOM published (CycloneDX + SPDX); vulnerability scan clean |
 | XEDGE-261 | All | 5 | GA release notes: features, known limitations, upgrade guide from beta |
 | XEDGE-262 | All | 5 | **Milestone M7 demo and stakeholder sign-off** |
@@ -611,6 +687,7 @@ Month:  1    2    3    4    5    6    7    8    9    10   11   12   13   14   15
 Phase:  ╠══PHASE 1══╣╠══PHASE 2══╣╠══PHASE 3══╣╠════PHASE 4════╣╠══PHASE 5══╣╠═PHASE 6═╣
 
 M1      ────────────●
+M1.5    ─────────────●  (Sprint 3.5, same month as M1 — see ADR-007)
 M2           ───────────────────●
 M3                       ───────────────●
 M4                              ────────────────●
@@ -625,6 +702,14 @@ M7                                                                          ─�
 
 Planned for 6-month post-GA release cycle:
 
+> **Revision note (2026-07-04):** "Web-based configuration UI" was previously listed
+> here as a Medium-priority post-GA item. It has moved to a day-one deliverable —
+> Sprint 3.5 (ADR-007) — and every subsequent sprint through Sprint 36 now carries
+> its own UI-coverage story, so the backend and UI never drift more than one sprint
+> apart. A richer SPA frontend (the originally-envisioned React option) remains a
+> possible *later* frontend swap on top of the same REST API, not a removed feature —
+> see ADR-007 §2's migration-path note.
+
 | Feature | Priority |
 |---|---|
 | Edge analytics: configurable aggregation (min/max/avg over window) | High |
@@ -632,6 +717,6 @@ Planned for 6-month post-GA release cycle:
 | Kafka northbound connector | Medium |
 | OPC UA Historical Access server (serves store-forward data) | Medium |
 | IEC 62443 SL-3 capability uplift | Medium |
-| Web-based configuration UI (React + REST API) | Medium |
+| Richer Web UI frontend (SPA, e.g. React) as a swap-in for the Sprint 3.5 server-rendered UI, if justified by operator feedback | Low |
 | Kubernetes / k3s Helm chart + operator | Low |
 | Edge ML inference pipeline (ONNX runtime) | Low |

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}xEdge — Set up this device{% endblock %}
+{% block content %}
+<div class="xedge-card">
+  <h1>Set up this device</h1>
+  <p class="xedge-hint">
+    This device has no account yet. Choose a password to finish setup —
+    single-user mode: this account will have full access until a later
+    release adds multiple roles.
+  </p>
+  {% if error %}<p class="xedge-error">{{ error }}</p>{% endif %}
+  <form method="post" action="/ui/setup">
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" required minlength="8" autofocus>
+    <label for="confirm_password">Confirm password</label>
+    <input type="password" id="confirm_password" name="confirm_password" required minlength="8">
+    <button type="submit">Set password</button>
+  </form>
+</div>
+{% endblock %}

@@ -26,8 +26,14 @@ This document defines the phased development plan for xEdge across an 18-month d
 | Platform / DevOps Engineer | 1 | CI/CD, Docker builds, RAUC OTA, hardware test lab |
 | Security Engineer | 1 | PKI, RBAC, IEC 62443 controls, pen test, compliance tooling |
 | QA / Test Engineer | 1 | Test framework, HIL tests, conformance test suites, coverage |
+| UX / Frontend Engineer | 1 | Local device web UI (day one, ADR-007): auth, config editor, monitoring dashboard; later the fleet manager dashboard |
 
-**Total: 10 engineers**
+**Total: 11 engineers**
+
+> **Revision note (2026-07-04):** the local device Web UI moved from a Phase-3-only,
+> post-GA-adjacent "configuration UI" line item to a **day-one core deliverable**
+> (ADR-007, HLR §4.9). The UX role is promoted from the Phase-3-only extended team
+> to the permanent core team as a result — see Sprint 3.5 in sprint-planning.md.
 
 ### 2.2 Extended Team (Phase-specific)
 
@@ -36,7 +42,6 @@ This document defines the phased development plan for xEdge across an 18-month d
 | Technical Writer | 4–6 | User docs, API docs, compliance documentation |
 | Compliance Consultant | 5–6 | IEC 62443 gap analysis, NERC CIP evidence package, SOC 2 prep |
 | Hardware Integration Specialist | 1, 4, 6 | Vendor HW bring-up, driver conformance testing |
-| UX / UI Designer | 3 | Fleet manager dashboard, configuration UI |
 
 ---
 
@@ -44,8 +49,8 @@ This document defines the phased development plan for xEdge across an 18-month d
 
 | Phase | Duration | Sprints | Key Deliverable |
 |---|---|---|---|
-| **Phase 1: Foundation** | Months 1–3 | S1–S6 | Working Modbus TCP → MQTT Sparkplug B pipeline on real hardware |
-| **Phase 2: Tier-1 Complete** | Months 4–6 | S7–S12 | Full Modbus suite + OPC UA client/server; SD card store-forward; CI green |
+| **Phase 1: Foundation** | Months 1–3 | S1–S6 (incl. S3.5) | Working Modbus TCP → MQTT Sparkplug B pipeline on real hardware; local browser-based configuration + monitoring UI operational from Sprint 3.5 onward (ADR-007) |
+| **Phase 2: Tier-1 Complete** | Months 4–6 | S7–S12 | Full Modbus suite + OPC UA client/server; SD card store-forward; CI green; UI extended to cover every new driver type and store-and-forward status |
 | **Phase 3: Security & Observability** | Months 7–9 | S13–S18 | mTLS everywhere; RBAC; OTel integration; IEC 62443 SL-1 baseline |
 | **Phase 4: Tier-2 Protocols** | Months 10–13 | S19–S26 | DNP3, IEC 104, BACnet, EtherNet/IP, PROFINET drivers |
 | **Phase 5: Fleet & Advanced** | Months 14–16 | S27–S32 | IEC 61850, DLMS, fleet manager, OTA, remote diagnostics, multi-cloud |
@@ -56,6 +61,7 @@ This document defines the phased development plan for xEdge across an 18-month d
 | Milestone | Definition | Date (Target) |
 |---|---|---|
 | **M1 — First Data** | Modbus TCP tags read and published to MQTT broker via Sparkplug B | End of Sprint 4 |
+| **M1.5 — Local Web UI Operational** | Operator can open a browser at the device's IP, complete first-login password setup, view live driver/tag/northbound status, and edit + apply configuration — no separate tooling required (ADR-007) | End of Sprint 3.5 |
 | **M2 — MVP Alpha** | Tier-1 protocols (Modbus + OPC UA), RAM store-forward, basic config, Docker | End of Sprint 10 |
 | **M3 — MVP Beta** | SD card persistence, REST API, structured logging, OPC UA server | End of Sprint 14 |
 | **M4 — Security Baseline** | mTLS, RBAC, audit log, IEC 62443 SL-1 gap analysis complete | End of Sprint 18 |
@@ -104,6 +110,8 @@ This document defines the phased development plan for xEdge across an 18-month d
 | R-08 | Sparkplug B v3.0 specification edge cases | Low | Low | Compliance test suite against Ignition and HiveMQ in Phase 2 |
 | R-09 | In-house protocol stacks (Modbus, IEC 104, DNP3) fail interop with real field devices or miss spec edge cases | Medium | High | Black-box testing against reference implementations (pymodbus, lib60870, opendnp3 binaries) and simulators; HIL tests with real devices; DNP3 go/no-go gate after IEC 104 with commercial `dnp3` crate fallback (ADR-006) |
 | R-10 | open62541 asyncio binding effort underestimated (no off-the-shelf async Python binding exists) | Medium | Medium | Binding layer scoped at 3–5 eng-weeks in Sprint 8; shared client/server design; asyncua available as CI oracle to validate behavior |
+| R-11 | Web UI, moved to day-one scope (ADR-007) after Phase 1 planning was already underway, causes the UI to permanently lag backend capability if not actively tracked | Medium | Medium | Explicit per-sprint UI stories added to every remaining sprint touching driver/security/fleet capability (sprint-planning.md); Phase-level Definition of Done extended to require the UI reflect that phase's new capability before phase close |
+| R-12 | Single-user, no-RBAC auth model (Sprint 3.5) is mistaken for a finished security posture rather than an explicitly interim one, leading to inappropriate production exposure before Sprint 14 RBAC lands | Low | High | Loopback-only default bind (matching the read-only REST API's existing posture); UI login banner states "single-user mode, full RBAC arrives in a later release"; ADR-007 and HLR §4.9 both document the interim nature explicitly |
 
 ---
 
@@ -171,6 +179,9 @@ PR opened
 - CI pipeline green (lint + unit + integration)
 - Hardware test lab set up (simulated Modbus server in CI)
 - Protocol license audit complete; IEC 60870-5-104 and IEEE 1815 specification documents procured
+- **Local browser-based configuration + monitoring UI (Sprint 3.5, ADR-007):** first-login
+  password setup, live dashboard, full config editor — running on the device itself,
+  no cloud/fleet-manager dependency; Milestone M1.5
 
 ---
 
@@ -188,6 +199,11 @@ PR opened
 - REST management API (v1) — config read, driver status
 - Performance benchmarks: ≥ 50k tags/s on Raspberry Pi 4
 - Milestone M2 (MVP Alpha) demo
+- **Web UI kept in lockstep:** every Tier-1 capability added this phase (RTU drivers,
+  OPC UA client/server, SD store-forward) gets a corresponding config/monitoring
+  screen in the same or immediately following sprint — the UI is never allowed to
+  drift more than one sprint behind backend capability (see per-sprint stories in
+  sprint-planning.md)
 
 ---
 
