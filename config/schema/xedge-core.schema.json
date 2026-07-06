@@ -37,6 +37,19 @@
         }
       }
     },
+    "system_tags": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-driver-instance synthetic health/statistics tags (status, status_time, tag_count, read rates, ...) published under each instance's `_system/` sub-namespace, alongside its real tags.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "publish_interval_seconds": {
+          "type": "number",
+          "minimum": 1,
+          "default": 10
+        }
+      }
+    },
     "drivers": {
       "type": "array",
       "description": "Driver instances. Each driver's `config` and `tag_groups` are validated against that driver type's own schema (FR-DF-004) — not enumerated here in Sprint 1.",
@@ -162,6 +175,100 @@
           "description": "Loopback-only by default since there's no auth yet. Set to a specific interface address (not 0.0.0.0) if the API needs to be reachable from elsewhere on the OT network."
         },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 8080 }
+      }
+    },
+    "tls": {
+      "type": "object",
+      "description": "Server-side TLS for the Web UI/REST API (Sprint 13, XEDGE-107/280 — partial scope: HTTPS only, not client-certificate/mutual-TLS enforcement). A self-signed certificate is auto-generated on first boot if `cert_path`/`key_path` don't already hold one.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "common_name": { "type": "string", "default": "xedge.local" },
+        "validity_days": { "type": "integer", "minimum": 1, "default": 825 },
+        "cert_path": {
+          "type": "string",
+          "description": "Defaults to a file alongside the Web UI's users.json/session_key if not set."
+        },
+        "key_path": {
+          "type": "string",
+          "description": "Defaults to a file alongside the Web UI's users.json/session_key if not set."
+        }
+      }
+    },
+    "tracing": {
+      "type": "object",
+      "description": "OpenTelemetry distributed tracing (Sprint 16, XEDGE-126/127). Defaults off — a TracerProvider with nowhere to send spans is pure overhead, and the dev collector stack (Grafana/Tempo/Loki) is out of scope for this pass. When enabled with no otlp_endpoint set, spans print to the console instead of going nowhere.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "otlp_endpoint": {
+          "type": "string",
+          "description": "e.g. http://localhost:4318/v1/traces (OTLP/HTTP). If unset while enabled, spans export to the console instead."
+        },
+        "device_id": {
+          "type": "string",
+          "description": "Optional resource attribute identifying this device in traces/metrics."
+        },
+        "dashboard_url": {
+          "type": "string",
+          "description": "Optional Grafana/collector dashboard URL — shown as a Web UI footer link if set (XEDGE-283); hidden entirely otherwise."
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "description": "Prometheus metrics exposition on GET /metrics (Sprint 16, XEDGE-128/130). Defaults on — the endpoint is cheap to serve and needs no external collector to be useful.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true }
+      }
+    },
+    "rate_limit": {
+      "type": "object",
+      "description": "Per-client-IP request rate limiting (Sprint 18, XEDGE-144/285 — IEC 62443 SR 7.1). Covers the REST API and every Web UI route identically. Defaults on.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "requests_per_minute": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 100,
+          "description": "Per client IP, sliding 60-second window."
+        }
+      }
+    },
+    "fleet": {
+      "type": "object",
+      "description": "Fleet agent (Sprint 29, XEDGE-210/213 — partial scope, see ADR-009): periodic heartbeat to a separate Fleet Manager service, and pull-based config push (this device applies a pending config through the existing hot-reload file-write path, then reports the result on the next heartbeat). Defaults off. Device-to-manager auth is a shared bearer token issued at registration (ADR-009 interim posture) — mTLS (XEDGE-214) is deferred.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "manager_url": {
+          "type": "string",
+          "description": "Base URL of the Fleet Manager service, e.g. https://fleet-manager.local:8090."
+        },
+        "device_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identity this device registers under; required when fleet.enabled is true."
+        },
+        "display_name": { "type": "string" },
+        "join_token": {
+          "type": "string",
+          "x-secret": true,
+          "description": "Pre-shared token proving this device is allowed to register with the Fleet Manager. Only used once — the manager issues a per-device token in response, persisted locally alongside session_key/server_cert.pem."
+        },
+        "heartbeat_interval_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 60,
+          "description": "XEDGE-210: how often the agent reports identity/health and polls for a pending config push."
+        },
+        "verify_tls": {
+          "type": "boolean",
+          "default": true,
+          "description": "Set false to accept a self-signed Fleet Manager certificate (matches xedge-cli's --insecure posture for local/dev deployments)."
+        }
       }
     }
   }

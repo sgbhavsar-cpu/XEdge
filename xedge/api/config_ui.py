@@ -21,6 +21,12 @@ The raw-YAML editor from the previous round is kept as an "Advanced" escape
 hatch (some things — like reordering tag groups, or config this UI doesn't
 have a screen for yet — are still easiest to hand-edit), reachable from the
 tree, not the default view.
+
+RBAC (Sprint 14): every route requires `config:read` (view) or
+`config:write` (any mutating POST) via `xedge.api.ui`'s shared
+`require_permission_redirect` — this module previously hand-rolled its own
+`is_authenticated`/`require_auth_redirect`, now replaced with the same
+helper `xedge.api.server`'s JSON API and `xedge.api.ui`'s pages use.
 """
 
 from __future__ import annotations
@@ -31,20 +37,30 @@ from typing import Any
 
 import yaml
 from fastapi import APIRouter, Form, Request, Response, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from xedge.api.auth import SESSION_COOKIE_NAME, SessionManager
+from xedge.api.auth import SessionManager, UserStore, resolve_session
+from xedge.api.permissions import has_permission
 from xedge.api.schema_forms import build_object_fields, unflatten
+from xedge.api.ui import require_permission_redirect
 from xedge.core.config import ConfigValidationError, ConfigValidator
 from xedge.core.driver_config import driver_type_schema_path
+from xedge.observability.audit_log import AuditLog
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 # Kept in sync by hand with xedge.core.main._build_registry()'s registered
 # types — a UI-only list of type *strings* so this module doesn't need to
 # import driver implementation classes just to populate a dropdown.
-KNOWN_DRIVER_TYPES = ["modbus_tcp", "modbus_rtu_tcp", "modbus_rtu_serial", "opcua_client"]
+KNOWN_DRIVER_TYPES = [
+    "modbus_tcp",
+    "modbus_rtu_tcp",
+    "modbus_rtu_serial",
+    "opcua_client",
+    "bacnet_ip",
+    "loopback",
+]
 
 # "id" is treated as immutable once a tag group/tag exists — these routes
 # key lookups and URLs off it, and changing it here would desync both
@@ -62,6 +78,11 @@ CORE_SECTIONS = [
     ("store", "Store & Forward"),
     ("config_management", "Config Management"),
     ("api", "REST API / Web UI"),
+    ("tls", "TLS"),
+    ("tracing", "Tracing"),
+    ("metrics", "Metrics"),
+    ("rate_limit", "Rate Limiting"),
+    ("fleet", "Fleet Management"),
 ]
 
 
@@ -113,8 +134,11 @@ def _find_tag(group_entry: dict[str, Any], tag_id: str) -> dict[str, Any]:
 def create_config_ui_router(
     *,
     session_manager: SessionManager,
+    user_store: UserStore,
+    audit_log: AuditLog,
     config_path: Path,
     core_schema_path: Path,
+    dashboard_url: str | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/ui/config")
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
@@ -130,14 +154,20 @@ def create_config_ui_router(
             _driver_schema_cache[driver_type] = cached
         return cached
 
-    def is_authenticated(request: Request) -> bool:
-        token = request.cookies.get(SESSION_COOKIE_NAME)
-        return session_manager.refresh_if_valid(token) is not None
+    def require_read(request: Request) -> Response | None:
+        return require_permission_redirect(request, session_manager, user_store, "config:read")
 
-    def require_auth_redirect(request: Request) -> Response | None:
-        if not is_authenticated(request):
-            return RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
-        return None
+    def require_write(request: Request) -> Response | None:
+        return require_permission_redirect(request, session_manager, user_store, "config:write")
+
+    def nav_permissions(request: Request) -> dict[str, bool | str | None]:
+        session = resolve_session(request, session_manager)
+        role = user_store.get_role(session[1]) if session else None
+        return {
+            "can_manage_users": has_permission(role, "user:manage"),
+            "can_view_audit_log": has_permission(role, "audit:read"),
+            "dashboard_url": dashboard_url,
+        }
 
     def render(request: Request, template: str, context: dict[str, Any]) -> Response:
         base_context = {
@@ -145,20 +175,30 @@ def create_config_ui_router(
             "drivers": _full_config(config_path).get("drivers", []),
             "error": context.pop("error", None),
             "success": context.pop("success", False),
+            "authenticated": True,
+            **nav_permissions(request),
         }
         base_context.update(context)
         return templates.TemplateResponse(request, template, base_context)
 
-    def _save_full_config(new_config: dict[str, Any]) -> str | None:
+    def _save_full_config(new_config: dict[str, Any], request: Request) -> str | None:
         """Validate against the core schema and write, letting hot-reload
         apply it — same rule as the raw-YAML editor and the JSON API's PUT
         /api/v1/config (ADR-007: one write path, not a UI-only mutation
-        mechanism). Returns an error message, or None on success."""
+        mechanism). Returns an error message, or None on success.
+
+        The single shared save path for every mutating route in this
+        module, so it's also the single place that records a
+        `config.write` audit event (Sprint 15, XEDGE-119) rather than
+        threading an audit call through every caller."""
         try:
             core_validator.validate(new_config)
         except ConfigValidationError as exc:
             return str(exc)
         config_path.write_text(yaml.safe_dump(new_config, sort_keys=False), encoding="utf-8")
+        session = resolve_session(request, session_manager)
+        if session is not None:
+            audit_log.append(session[1], "config.write")
         return None
 
     def _validate_driver_section(
@@ -184,7 +224,7 @@ def create_config_ui_router(
 
     @router.get("", response_class=HTMLResponse)
     def config_root(request: Request) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_read(request)
         if redirect is not None:
             return redirect
         return render(request, "config_root.html", {})
@@ -193,7 +233,7 @@ def create_config_ui_router(
 
     @router.get("/core/{section}", response_class=HTMLResponse)
     def core_section_form(request: Request, section: str) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_read(request)
         if redirect is not None:
             return redirect
         section_names = {key for key, _ in CORE_SECTIONS}
@@ -209,7 +249,7 @@ def create_config_ui_router(
 
     @router.post("/core/{section}", response_class=HTMLResponse)
     async def core_section_save(request: Request, section: str) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_write(request)
         if redirect is not None:
             return redirect
         raw_form = await request.form()
@@ -221,7 +261,7 @@ def create_config_ui_router(
         # was left blank (FR-WU-006's "leave blank to keep").
         _merge_preserving_absent_secrets(section_schema, current.get(section, {}), new_section)
         current[section] = new_section
-        error = _save_full_config(current)
+        error = _save_full_config(current, request)
         label = dict(CORE_SECTIONS)[section]
         fields = build_object_fields(section_schema, new_section)
         return render(
@@ -240,7 +280,7 @@ def create_config_ui_router(
 
     @router.get("/drivers/new", response_class=HTMLResponse)
     def driver_new_form(request: Request) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_read(request)
         if redirect is not None:
             return redirect
         return render(
@@ -253,7 +293,7 @@ def create_config_ui_router(
     async def driver_new_submit(
         request: Request, id: str = Form(...), type: str = Form(...)
     ) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_write(request)
         if redirect is not None:
             return redirect
         current = _full_config(config_path)
@@ -281,7 +321,7 @@ def create_config_ui_router(
                 },
             )
         drivers.append({"id": id, "type": type, "enabled": True, "config": {}, "tag_groups": []})
-        error = _save_full_config(current)
+        error = _save_full_config(current, request)
         if error is not None:
             drivers.pop()
             return render(
@@ -298,7 +338,7 @@ def create_config_ui_router(
 
     @router.get("/drivers/{driver_id}", response_class=HTMLResponse)
     def driver_form(request: Request, driver_id: str) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_read(request)
         if redirect is not None:
             return redirect
         current = _full_config(config_path)
@@ -322,7 +362,7 @@ def create_config_ui_router(
 
     @router.post("/drivers/{driver_id}", response_class=HTMLResponse)
     async def driver_save(request: Request, driver_id: str) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_write(request)
         if redirect is not None:
             return redirect
         current = _full_config(config_path)
@@ -342,7 +382,7 @@ def create_config_ui_router(
 
         error = _validate_driver_section(entry["type"], new_config, entry.get("tag_groups", []))
         if error is None:
-            error = _save_full_config(current)
+            error = _save_full_config(current, request)
         fields = build_object_fields(config_schema, new_config)
         return render(
             request,
@@ -358,21 +398,47 @@ def create_config_ui_router(
             },
         )
 
+    @router.post("/drivers/{driver_id}/validate")
+    async def driver_validate(request: Request, driver_id: str) -> Response:
+        """Dry-run only (Sprint 25, XEDGE-187/292) — same unflatten +
+        per-driver-type validation the Save & Deploy path uses, but never
+        calls `_save_full_config`. Returns a small JSON body (not a
+        redirect/full page) so the "Validate" button can show the result
+        inline without navigating away, matching the story's "preview...
+        in the config editor's save flow."""
+        redirect = require_read(request)
+        if redirect is not None:
+            return JSONResponse({"valid": False, "error": "Not authorized"}, status_code=403)
+        current = _full_config(config_path)
+        try:
+            entry = _find_driver(current, driver_id)
+        except ConfigNotFoundError as exc:
+            return JSONResponse({"valid": False, "error": str(exc)}, status_code=404)
+
+        raw_form = await request.form()
+        form_data: dict[str, str] = {k: v for k, v in raw_form.items() if isinstance(v, str)}
+        config_schema = driver_type_schema(entry["type"])["properties"]["config"]
+        new_config = unflatten(form_data, config_schema)
+        _merge_preserving_absent_secrets(config_schema, entry.get("config", {}), new_config)
+
+        error = _validate_driver_section(entry["type"], new_config, entry.get("tag_groups", []))
+        return JSONResponse({"valid": error is None, "error": error})
+
     @router.post("/drivers/{driver_id}/delete")
     def driver_delete(request: Request, driver_id: str) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_write(request)
         if redirect is not None:
             return redirect
         current = _full_config(config_path)
         current["drivers"] = [d for d in current.get("drivers", []) if d.get("id") != driver_id]
-        _save_full_config(current)
+        _save_full_config(current, request)
         return RedirectResponse("/ui/config", status_code=status.HTTP_303_SEE_OTHER)
 
     # ---- Tag groups ----
 
     @router.get("/drivers/{driver_id}/tag-groups/new", response_class=HTMLResponse)
     def tag_group_new_form(request: Request, driver_id: str) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_read(request)
         if redirect is not None:
             return redirect
         return render(
@@ -381,7 +447,7 @@ def create_config_ui_router(
 
     @router.post("/drivers/{driver_id}/tag-groups/new", response_class=HTMLResponse)
     def tag_group_new_submit(request: Request, driver_id: str, id: str = Form(...)) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_write(request)
         if redirect is not None:
             return redirect
         current = _full_config(config_path)
@@ -406,14 +472,14 @@ def create_config_ui_router(
         # operator tries to save the group without adding a tag; the group
         # itself is allowed to exist in-progress in the on-disk config
         # since the core schema doesn't check tag_groups shape at all.
-        _save_full_config(current)
+        _save_full_config(current, request)
         return RedirectResponse(
             f"/ui/config/drivers/{driver_id}/tag-groups/{id}", status_code=status.HTTP_303_SEE_OTHER
         )
 
     @router.get("/drivers/{driver_id}/tag-groups/{group_id}", response_class=HTMLResponse)
     def tag_group_form(request: Request, driver_id: str, group_id: str) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_read(request)
         if redirect is not None:
             return redirect
         current = _full_config(config_path)
@@ -438,7 +504,7 @@ def create_config_ui_router(
 
     @router.post("/drivers/{driver_id}/tag-groups/{group_id}", response_class=HTMLResponse)
     async def tag_group_save(request: Request, driver_id: str, group_id: str) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_write(request)
         if redirect is not None:
             return redirect
         current = _full_config(config_path)
@@ -459,7 +525,7 @@ def create_config_ui_router(
             entry["type"], entry.get("config", {}), entry.get("tag_groups", [])
         )
         if error is None:
-            error = _save_full_config(current)
+            error = _save_full_config(current, request)
         fields = build_object_fields(group_schema, group, skip=_SKIP_ID_AND_TAGS)
         return render(
             request,
@@ -476,7 +542,7 @@ def create_config_ui_router(
 
     @router.post("/drivers/{driver_id}/tag-groups/{group_id}/delete")
     def tag_group_delete(request: Request, driver_id: str, group_id: str) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_write(request)
         if redirect is not None:
             return redirect
         current = _full_config(config_path)
@@ -485,7 +551,7 @@ def create_config_ui_router(
         except ConfigNotFoundError as exc:
             return render(request, "config_root.html", {"error": str(exc)})
         entry["tag_groups"] = [g for g in entry.get("tag_groups", []) if g.get("id") != group_id]
-        _save_full_config(current)
+        _save_full_config(current, request)
         return RedirectResponse(
             f"/ui/config/drivers/{driver_id}", status_code=status.HTTP_303_SEE_OTHER
         )
@@ -494,7 +560,7 @@ def create_config_ui_router(
 
     @router.get("/drivers/{driver_id}/tag-groups/{group_id}/tags/new", response_class=HTMLResponse)
     def tag_new_form(request: Request, driver_id: str, group_id: str) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_read(request)
         if redirect is not None:
             return redirect
         return render(
@@ -507,7 +573,7 @@ def create_config_ui_router(
     def tag_new_submit(
         request: Request, driver_id: str, group_id: str, id: str = Form(...)
     ) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_write(request)
         if redirect is not None:
             return redirect
         current = _full_config(config_path)
@@ -532,7 +598,7 @@ def create_config_ui_router(
         # fields (function_code/address or node_id, depending on driver
         # type) on the edit form that follows; validation runs on that save.
         tags.append({"id": id})
-        _save_full_config(current)
+        _save_full_config(current, request)
         return RedirectResponse(
             f"/ui/config/drivers/{driver_id}/tag-groups/{group_id}/tags/{id}",
             status_code=status.HTTP_303_SEE_OTHER,
@@ -542,7 +608,7 @@ def create_config_ui_router(
         "/drivers/{driver_id}/tag-groups/{group_id}/tags/{tag_id}", response_class=HTMLResponse
     )
     def tag_form(request: Request, driver_id: str, group_id: str, tag_id: str) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_read(request)
         if redirect is not None:
             return redirect
         current = _full_config(config_path)
@@ -565,7 +631,7 @@ def create_config_ui_router(
         "/drivers/{driver_id}/tag-groups/{group_id}/tags/{tag_id}", response_class=HTMLResponse
     )
     async def tag_save(request: Request, driver_id: str, group_id: str, tag_id: str) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_write(request)
         if redirect is not None:
             return redirect
         current = _full_config(config_path)
@@ -587,7 +653,7 @@ def create_config_ui_router(
             entry["type"], entry.get("config", {}), entry.get("tag_groups", [])
         )
         if error is None:
-            error = _save_full_config(current)
+            error = _save_full_config(current, request)
         fields = build_object_fields(tag_schema, tag, skip=_SKIP_ID)
         return render(
             request,
@@ -604,7 +670,7 @@ def create_config_ui_router(
 
     @router.post("/drivers/{driver_id}/tag-groups/{group_id}/tags/{tag_id}/delete")
     def tag_delete(request: Request, driver_id: str, group_id: str, tag_id: str) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_write(request)
         if redirect is not None:
             return redirect
         current = _full_config(config_path)
@@ -614,7 +680,7 @@ def create_config_ui_router(
         except ConfigNotFoundError as exc:
             return render(request, "config_root.html", {"error": str(exc)})
         group["tags"] = [t for t in group.get("tags", []) if t.get("id") != tag_id]
-        _save_full_config(current)
+        _save_full_config(current, request)
         return RedirectResponse(
             f"/ui/config/drivers/{driver_id}/tag-groups/{group_id}",
             status_code=status.HTTP_303_SEE_OTHER,
@@ -624,7 +690,7 @@ def create_config_ui_router(
 
     @router.get("/advanced", response_class=HTMLResponse)
     def advanced_editor(request: Request) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_read(request)
         if redirect is not None:
             return redirect
         yaml_text = yaml.safe_dump(_full_config(config_path), sort_keys=False)
@@ -632,7 +698,7 @@ def create_config_ui_router(
 
     @router.post("/advanced", response_class=HTMLResponse)
     def advanced_editor_submit(request: Request, yaml_text: str = Form(...)) -> Response:
-        redirect = require_auth_redirect(request)
+        redirect = require_write(request)
         if redirect is not None:
             return redirect
         try:
@@ -649,7 +715,7 @@ def create_config_ui_router(
                 "config_advanced.html",
                 {"yaml_text": yaml_text, "error": "Config must be a YAML mapping"},
             )
-        error = _save_full_config(new_config)
+        error = _save_full_config(new_config, request)
         return render(
             request,
             "config_advanced.html",

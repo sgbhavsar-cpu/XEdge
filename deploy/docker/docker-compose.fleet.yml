@@ -1,0 +1,35 @@
+# Fleet Manager deployment (Sprint 29, XEDGE-215) — a separate service from
+# any individual xEdge device (ADR-009, Sprint 32's documented split), built
+# from the same image as the device's own Dockerfile since the fleet code
+# ships inside the same `xedge` wheel (just a different console-script
+# entrypoint). SQLite-backed (ADR-009 §4) — no separate database container.
+#
+# Usage: docker compose -f deploy/docker/docker-compose.fleet.yml up
+#
+# join_token/admin_token are auto-generated on first run and persisted into
+# the `fleet-manager-data` volume if not supplied via environment — see
+# xedge/fleet/manager_cli.py. Retrieve them for enrolling a device /
+# scripting the admin API with:
+#   docker compose -f deploy/docker/docker-compose.fleet.yml exec \
+#     fleet-manager cat /data/join_token
+services:
+  fleet-manager:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    entrypoint: ["xedge-fleet-manager"]
+    command: ["--data-dir", "/data", "--host", "0.0.0.0", "--port", "8090"]
+    ports:
+      - "8090:8090"
+    volumes:
+      - fleet-manager-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=5)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  fleet-manager-data:

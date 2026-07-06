@@ -27,11 +27,39 @@ dependencies = [
     # LGPL-3.0 obligations are reviewed for the commercial edition; the
     # open62541 C-extension binding remains the ADR-006 §3 target.
     "asyncua>=1.1",
+    # BACnet/IP client runtime (ADR-006 "buy" decision, Sprint 21/XEDGE-160):
+    # MIT-licensed, pure Python, no required transitive deps — unlike the
+    # in-house clean-room protocol stacks, this is a direct library
+    # integration rather than a from-spec build.
+    "bacpypes3>=0.0.100",
+    # Self-signed server certificate generation for the Web UI/REST API
+    # (Sprint 13, XEDGE-107) — already present as a transitive dependency;
+    # declared explicitly since xedge.api.tls imports it directly.
+    "cryptography>=42.0",
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "jinja2>=3.1",
     "bcrypt>=4.1",
     "python-multipart>=0.0.9",
+    # Distributed tracing/metrics (Sprint 16, XEDGE-126/128). OTLP over
+    # HTTP, not gRPC: the gRPC exporter drags in `grpcio`, a heavy
+    # C-extension with real cross-compilation cost, working against
+    # ADR-007's 1GB-RAM ARM target — HTTP carries the same OTLP protocol
+    # over `requests` (already a transitive dependency of asyncua).
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
+    "opentelemetry-exporter-prometheus>=0.48b0",
+    # Diagnostic WebSocket server (Sprint 17, XEDGE-133) + xedge-cli's WS
+    # client. Already present transitively via uvicorn's WS transport, but
+    # not declared — pin it explicitly so a clean install doesn't rely on
+    # that happening by luck.
+    "websockets>=12",
+    # xedge-cli (Sprint 17, XEDGE-140) and the fleet agent (Sprint 29,
+    # XEDGE-210) both make outbound HTTP calls from production code — this
+    # was previously only declared under the `test` extra (an existing gap,
+    # unrelated to fleet work, found while adding a second real consumer).
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
@@ -46,7 +74,6 @@ test = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
-    "httpx>=0.27",
     # Black-box test oracles / test-only infrastructure (ADR-006) — never
     # imported by xedge itself, never read as reference implementations,
     # not shipped in any edition.
@@ -60,6 +87,8 @@ test = [
 
 [project.scripts]
 xedge = "xedge.core.main:run"
+xedge-cli = "xedge.cli.client:run"
+xedge-fleet-manager = "xedge.fleet.manager_cli:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["xedge"]

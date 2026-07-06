@@ -3,10 +3,11 @@
 {% block nav %}
 <nav class="xedge-nav">
   <a href="/ui/dashboard" class="active">Dashboard</a>
-  <a href="/ui/config">Configuration</a>
-  <form method="post" action="/ui/logout" class="xedge-logout-form">
-    <button type="submit">Log out</button>
-  </form>
+  {% if can_view_config %}<a href="/ui/config">Configuration</a>{% endif %}
+  <a href="/ui/logs">Logs</a>
+  {% if can_manage_users %}<a href="/ui/users">Users</a>{% endif %}
+  {% if can_view_audit_log %}<a href="/ui/audit">Audit Log</a>{% endif %}
+  <a href="/ui/diagnostics">Diagnostics</a>
 </nav>
 {% endblock %}
 {% block content %}
@@ -20,7 +21,22 @@
       {% else %}disconnected{% endif %}
     </span>
   </p>
+  <a href="/ui/config/advanced" class="xedge-button-secondary">Save &amp; Deploy Configuration</a>
 </div>
+
+{% if fleet_enabled %}
+<div class="xedge-card">
+  <h1>Fleet</h1>
+  <table class="xedge-table">
+    <tbody>
+      <tr><th>Registered</th><td id="fleet-registered">&hellip;</td></tr>
+      <tr><th>Manager</th><td id="fleet-manager-url">&hellip;</td></tr>
+      <tr><th>Last heartbeat</th><td id="fleet-last-heartbeat">&hellip;</td></tr>
+      <tr><th>Last config push</th><td id="fleet-last-config-apply">&hellip;</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endif %}
 
 <div class="xedge-card">
   <h1>Drivers</h1>
@@ -38,7 +54,7 @@
     <tbody>
       {% for d in drivers %}
       <tr data-instance-id="{{ d.instance_id }}">
-        <td>{{ d.instance_id }}</td>
+        <td><a href="/ui/dashboard/drivers/{{ d.instance_id }}">{{ d.instance_id }}</a></td>
         <td>{{ d.driver_type }}</td>
         <td class="xedge-state">{{ d.state }}</td>
         <td class="xedge-tag-read-count">{{ d.metrics.tag_read_count }}</td>
@@ -52,5 +68,8 @@
   </table>
 </div>
 <script src="/ui-static/xedge-ui.js"></script>
-<script>xedgeUi.pollDashboard();</script>
+<script>
+  xedgeUi.pollDashboard();
+  {% if fleet_enabled %}xedgeUi.pollFleetStatus();{% endif %}
+</script>
 {% endblock %}

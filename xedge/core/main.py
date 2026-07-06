@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import signal
 import sys
+from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,8 @@ import uvicorn
 from xedge import __version__
 from xedge.api.auth import LoginAttemptTracker, SessionManager, UserStore, load_or_create_secret_key
 from xedge.api.server import create_app
-from xedge.core.config import ConfigEngine, ConfigStore, ConfigVersionHistory
+from xedge.api.tls import load_or_create_server_certificate
+from xedge.core.config import ConfigEngine, ConfigStore, ConfigValidator, ConfigVersionHistory
 from xedge.core.driver_config import build_driver_config
 from xedge.core.hot_reload import config_watch_loop
 from xedge.core.pipeline import (
@@ -30,20 +32,29 @@ from xedge.core.pipeline import (
     normalize,
 )
 from xedge.core.supervisor import DriverRegistry, DriverSupervisor
+from xedge.core.system_tags import SYSTEM_TAG_NAMES, system_tag_id, system_tag_publish_loop
 from xedge.core.watchdog import watchdog_loop
+from xedge.drivers.bacnet.client import BacnetIpDriver
 from xedge.drivers.base import TagUpdate, TagValue
+from xedge.drivers.loopback.driver import LoopbackDriver
 from xedge.drivers.modbus.rtu_over_tcp import ModbusRtuOverTcpDriver
 from xedge.drivers.modbus.serial import ModbusRtuSerialDriver
 from xedge.drivers.modbus.tcp import ModbusTcpDriver
 from xedge.drivers.opcua.client import OpcUaClientDriver
+from xedge.fleet.agent import FleetAgentConfig, FleetAgentStatus, fleet_heartbeat_loop
 from xedge.northbound.dispatcher import NorthboundDispatcher
 from xedge.northbound.mqtt import MqttSparkplugConnector, SparkplugConnectorConfig
 from xedge.northbound.opcua_server import OpcUaServerConfig, OpcUaTagServer
+from xedge.observability.audit_log import AuditLog
 from xedge.observability.logging import configure_logging, get_logger
+from xedge.observability.otel_metrics import configure_metrics
+from xedge.observability.tracing import configure_tracing, get_tracer
+from xedge.store.latest_values import LatestValueStore
 from xedge.store.ring_buffer import RingBufferManager
 from xedge.store.sqlite_store import SqliteColdStore, purge_loop
 
 logger = get_logger(__name__)
+_tracer = get_tracer(__name__)
 
 _MODBUS_DRIVER_TYPES = frozenset({"modbus_tcp", "modbus_rtu_tcp", "modbus_rtu_serial"})
 _MODBUS_BIT_FUNCTION_CODES = frozenset({"read_coils", "read_discrete_inputs"})
@@ -91,6 +102,8 @@ def _build_registry() -> DriverRegistry:
     registry.register("modbus_rtu_tcp", ModbusRtuOverTcpDriver)
     registry.register("modbus_rtu_serial", ModbusRtuSerialDriver)
     registry.register("opcua_client", OpcUaClientDriver)
+    registry.register("bacnet_ip", BacnetIpDriver)
+    registry.register("loopback", LoopbackDriver)
     return registry
 
 
@@ -110,12 +123,14 @@ async def _pipeline_to_buffer(
     tag_configs: dict[str, TagPipelineConfig] | None = None,
     deadband_filter: DeadbandFilter | None = None,
     opcua_server: OpcUaTagServer | None = None,
+    latest_values: LatestValueStore | None = None,
 ) -> None:
     """Pipeline consumer (XEDGE-014/017): normalize each TagUpdate (scaling,
-    timestamp resolution), reflect the live value into the OPC UA server (if
-    configured — every value, deadband does not apply to "current state"),
-    apply deadband suppression, and push surviving updates into their
-    driver's ring buffer for the northbound dispatcher to drain.
+    timestamp resolution), reflect the live value into the OPC UA server and
+    the Web UI's latest-value cache (if configured — every value, deadband
+    does not apply to "current state"), apply deadband suppression, and push
+    surviving updates into their driver's ring buffer for the northbound
+    dispatcher to drain.
 
     Buffering key is `source_driver`, not a tag-group id — see
     xedge.store.ring_buffer module docstring for why (tag_group id isn't
@@ -125,29 +140,54 @@ async def _pipeline_to_buffer(
     deadband_filter = deadband_filter if deadband_filter is not None else DeadbandFilter()
     while True:
         update = await queue.get()
-        config = tag_configs.get(update.tag_id)
-        tag = normalize(update, config)
-        logger.debug(
-            "tag.update",
-            tag_id=tag.tag_id,
-            value=tag.value,
-            quality=tag.quality.value,
-            source_driver=tag.source_driver,
-        )
-        if opcua_server is not None:
-            await opcua_server.update_tag(tag)
-        if not deadband_filter.should_publish(tag, config.deadband if config else None):
-            continue
-        ring_buffers.push(tag.source_driver, tag)
+        with _tracer.start_as_current_span(
+            "pipeline.process", attributes={"tag.id": update.tag_id}
+        ):
+            config = tag_configs.get(update.tag_id)
+            tag = normalize(update, config)
+            logger.debug(
+                "tag.update",
+                tag_id=tag.tag_id,
+                value=tag.value,
+                quality=tag.quality.value,
+                source_driver=tag.source_driver,
+            )
+            if opcua_server is not None:
+                await opcua_server.update_tag(tag)
+            if latest_values is not None:
+                latest_values.update(tag)
+            if not deadband_filter.should_publish(tag, config.deadband if config else None):
+                continue
+            with _tracer.start_as_current_span(
+                "store.write", attributes={"stream_key": tag.source_driver}
+            ):
+                ring_buffers.push(tag.source_driver, tag)
 
 
 def _all_tag_ids(drivers: list[dict[str, Any]]) -> frozenset[str]:
-    return frozenset(
+    real_tag_ids = {
         f"{driver.get('id')}/{tag['id']}"
         for driver in drivers
         for group in driver.get("tag_groups", [])
         for tag in group.get("tags", [])
-    )
+    }
+    system_tag_ids = {
+        system_tag_id(driver.get("id"), name) for driver in drivers for name in SYSTEM_TAG_NAMES
+    }
+    return frozenset(real_tag_ids | system_tag_ids)
+
+
+_SYSTEM_TAG_INITIAL_VALUES: dict[str, TagValue] = {
+    "status": "",
+    "status_time": "",
+    "tag_count": 0,
+    "reads_per_second": 0.0,
+    "reads_per_minute": 0.0,
+    "reads_per_hour": 0.0,
+    "error_count": 0,
+    "consecutive_failures": 0,
+    "uptime_seconds": 0.0,
+}
 
 
 def _infer_tag_initial_values(drivers: list[dict[str, Any]]) -> dict[str, TagValue]:
@@ -168,6 +208,12 @@ def _infer_tag_initial_values(drivers: list[dict[str, Any]]) -> dict[str, TagVal
     for driver in drivers:
         instance_id = driver.get("id")
         driver_type = driver.get("type")
+        # System tags (docs/planning/pendingtasks.md — "Driver system
+        # tags"): every driver type gets these, unlike the Modbus-only
+        # real-tag inference below — their types are fixed by
+        # xedge.core.system_tags.build_system_tags, not guessed from config.
+        for name in SYSTEM_TAG_NAMES:
+            values[system_tag_id(instance_id, name)] = _SYSTEM_TAG_INITIAL_VALUES[name]
         if driver_type not in _MODBUS_DRIVER_TYPES:
             continue
         for group in driver.get("tag_groups", []):
@@ -197,6 +243,26 @@ def _build_opcua_server(store: ConfigStore) -> OpcUaTagServer | None:
             tag_ids=_all_tag_ids(drivers),
             initial_values=_infer_tag_initial_values(drivers),
         )
+    )
+
+
+def _build_fleet_agent_config(store: ConfigStore) -> FleetAgentConfig | None:
+    fleet_config = store.get_section("fleet", {})
+    if not fleet_config.get("enabled", False):
+        return None
+    manager_url = fleet_config.get("manager_url")
+    device_id = fleet_config.get("device_id")
+    join_token = fleet_config.get("join_token")
+    if not manager_url or not device_id or not join_token:
+        logger.error("fleet.config_incomplete", manager_url=bool(manager_url), device_id=device_id)
+        return None
+    return FleetAgentConfig(
+        manager_url=manager_url,
+        device_id=device_id,
+        join_token=join_token,
+        display_name=fleet_config.get("display_name"),
+        heartbeat_interval_seconds=fleet_config.get("heartbeat_interval_seconds", 60),
+        verify_tls=fleet_config.get("verify_tls", True),
     )
 
 
@@ -282,6 +348,9 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
     configure_logging(level=logging_config.get("level", "INFO"))
     logger.info("xedge.starting", version=__version__, config_path=str(config_path))
 
+    tracing_config = store.get_section("tracing", {})
+    configure_tracing(tracing_config, __version__)
+
     config_mgmt = store.get_section("config_management", {})
     version_history = ConfigVersionHistory(
         Path(config_mgmt.get("history_directory", "/data/config-history")),
@@ -334,8 +403,11 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
     )
     tag_configs = build_tag_pipeline_configs(store.get_section("drivers", []))
     deadband_filter = DeadbandFilter()
+    latest_values = LatestValueStore()
     buffer_task = asyncio.create_task(
-        _pipeline_to_buffer(tag_queue, ring_buffers, tag_configs, deadband_filter, opcua_server)
+        _pipeline_to_buffer(
+            tag_queue, ring_buffers, tag_configs, deadband_filter, opcua_server, latest_values
+        )
     )
     purge_task = asyncio.create_task(
         purge_loop(
@@ -346,9 +418,50 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
         )
     )
 
+    system_tags_config = store.get_section("system_tags", {})
+    system_tags_task = (
+        asyncio.create_task(
+            system_tag_publish_loop(
+                supervisor,
+                ring_buffers,
+                latest_values,
+                opcua_server,
+                interval_seconds=system_tags_config.get("publish_interval_seconds", 10.0),
+            )
+        )
+        if system_tags_config.get("enabled", True)
+        else None
+    )
+
     dispatcher = _build_northbound_dispatcher(store, ring_buffers, cold_store)
     dispatcher_task = asyncio.create_task(dispatcher.run()) if dispatcher is not None else None
 
+    fleet_status = FleetAgentStatus()
+    fleet_agent_config = _build_fleet_agent_config(store)
+    fleet_token_path = (
+        Path(store_config.get("directory", "/data/store")).parent / "fleet" / "device_token"
+    )
+    fleet_task = (
+        asyncio.create_task(
+            fleet_heartbeat_loop(
+                fleet_agent_config,
+                fleet_token_path,
+                supervisor,
+                config_path,
+                ConfigValidator.from_file(schema_path),
+                datetime.now(UTC),
+                fleet_status,
+            )
+        )
+        if fleet_agent_config is not None
+        else None
+    )
+
+    metrics_config = store.get_section("metrics", {})
+    if metrics_config.get("enabled", True):
+        configure_metrics(supervisor, dispatcher, ring_buffers, __version__)
+
+    rate_limit_config = store.get_section("rate_limit", {})
     api_config = store.get_section("api", {})
     api_server: uvicorn.Server | None = None
     api_task: asyncio.Task[None] | None = None
@@ -359,6 +472,24 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
         user_store = UserStore(webui_dir / "users.json")
         session_manager = SessionManager(load_or_create_secret_key(webui_dir / "session_key"))
         login_tracker = LoginAttemptTracker()
+        audit_log = AuditLog(webui_dir / "audit.jsonl")
+
+        tls_config = store.get_section("tls", {})
+        tls_enabled = tls_config.get("enabled", True)
+        ssl_certfile: str | None = None
+        ssl_keyfile: str | None = None
+        if tls_enabled:
+            cert_path = Path(tls_config.get("cert_path", webui_dir / "server_cert.pem"))
+            key_path = Path(tls_config.get("key_path", webui_dir / "server_key.pem"))
+            load_or_create_server_certificate(
+                cert_path,
+                key_path,
+                tls_config.get("common_name", "xedge.local"),
+                tls_config.get("validity_days", 825),
+            )
+            ssl_certfile = str(cert_path)
+            ssl_keyfile = str(key_path)
+
         app = create_app(
             supervisor,
             version_history,
@@ -368,6 +499,15 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
             login_tracker=login_tracker,
             config_path=config_path,
             schema_path=schema_path,
+            latest_values=latest_values,
+            audit_log=audit_log,
+            ring_buffers=ring_buffers,
+            cold_store=cold_store,
+            secure_cookies=tls_enabled,
+            dashboard_url=tracing_config.get("dashboard_url"),
+            rate_limit_enabled=rate_limit_config.get("enabled", True),
+            requests_per_minute=rate_limit_config.get("requests_per_minute", 100),
+            fleet_status=fleet_status,
         )
         api_server = uvicorn.Server(
             uvicorn.Config(
@@ -376,6 +516,8 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
                 port=api_config.get("port", 8080),
                 log_config=None,
                 access_log=False,
+                ssl_certfile=ssl_certfile,
+                ssl_keyfile=ssl_keyfile,
             )
         )
         api_task = asyncio.create_task(_run_api_server(api_server))
@@ -389,12 +531,18 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
         buffer_task.cancel()
         purge_task.cancel()
         tasks_to_await = [watchdog_task, buffer_task, purge_task]
+        if system_tags_task is not None:
+            system_tags_task.cancel()
+            tasks_to_await.append(system_tags_task)
         if dispatcher_task is not None:
             dispatcher_task.cancel()
             tasks_to_await.append(dispatcher_task)
         if watch_task is not None:
             watch_task.cancel()
             tasks_to_await.append(watch_task)
+        if fleet_task is not None:
+            fleet_task.cancel()
+            tasks_to_await.append(fleet_task)
         if api_server is not None and api_task is not None:
             api_server.should_exit = True
             tasks_to_await.append(api_task)

@@ -12,10 +12,17 @@ from xedge.api.server import create_app
 from xedge.core.config import ConfigVersionHistory
 from xedge.core.supervisor import DriverConfig, DriverRegistry, DriverSupervisor
 from xedge.drivers.base import TagUpdate
+from xedge.fleet.agent import FleetAgentStatus
+from xedge.observability.audit_log import AuditLog
+from xedge.store.latest_values import LatestValueStore
+from xedge.store.ring_buffer import RingBufferManager
 
 
 def _build_app(
-    tmp_path: Path, core_schema_path: Path, supervisor: DriverSupervisor | None = None
+    tmp_path: Path,
+    core_schema_path: Path,
+    supervisor: DriverSupervisor | None = None,
+    fleet_status: FleetAgentStatus | None = None,
 ) -> FastAPI:
     config_path = tmp_path / "xedge.yaml"
     if not config_path.is_file():
@@ -29,6 +36,10 @@ def _build_app(
         login_tracker=LoginAttemptTracker(),
         config_path=config_path,
         schema_path=core_schema_path,
+        latest_values=LatestValueStore(),
+        audit_log=AuditLog(tmp_path / "webui" / "audit.jsonl"),
+        ring_buffers=RingBufferManager(),
+        fleet_status=fleet_status,
     )
 
 
@@ -110,6 +121,23 @@ def test_login_submit_with_correct_password_reaches_dashboard(
     assert response.url.path == "/ui/dashboard"
 
 
+def test_login_submit_records_client_ip_in_audit_log(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    app = _build_app(tmp_path, core_schema_path)
+    TestClient(app).post(
+        "/ui/setup", data={"password": "correct-password", "confirm_password": "correct-password"}
+    )
+
+    fresh_client = TestClient(app)
+    fresh_client.post("/ui/login", data={"password": "correct-password"})
+
+    events = fresh_client.get("/api/v1/audit").json()
+    login_events = [e for e in events if e["event"] == "auth.login_success"]
+    assert login_events
+    assert login_events[0]["details"]["ip"] is not None
+
+
 def test_login_submit_with_wrong_password_shows_error(
     tmp_path: Path, core_schema_path: Path
 ) -> None:
@@ -120,7 +148,7 @@ def test_login_submit_with_wrong_password_shows_error(
 
     fresh_client = TestClient(app)
     response = fresh_client.post("/ui/login", data={"password": "wrong"})
-    assert "Invalid password" in response.text
+    assert "Invalid username or password" in response.text
 
 
 def test_dashboard_redirects_to_login_when_unauthenticated(
@@ -165,6 +193,67 @@ async def test_dashboard_shows_driver_status_when_authenticated(
         await supervisor.stop_all()
 
 
+def test_dashboard_omits_fleet_card_when_fleet_disabled(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    app = _build_app(tmp_path, core_schema_path, fleet_status=FleetAgentStatus())
+    client = TestClient(app)
+    client.post(
+        "/ui/setup", data={"password": "correct-password", "confirm_password": "correct-password"}
+    )
+    response = client.get("/ui/dashboard")
+    assert "Fleet</h1>" not in response.text
+
+
+def test_dashboard_shows_fleet_card_when_fleet_enabled(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    status = FleetAgentStatus(enabled=True, manager_url="https://fleet.example", device_id="dev1")
+    app = _build_app(tmp_path, core_schema_path, fleet_status=status)
+    client = TestClient(app)
+    client.post(
+        "/ui/setup", data={"password": "correct-password", "confirm_password": "correct-password"}
+    )
+    response = client.get("/ui/dashboard")
+    assert "Fleet</h1>" in response.text
+
+
+def test_fleet_status_endpoint_reports_disabled_by_default(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    app = _build_app(tmp_path, core_schema_path)
+    client = TestClient(app)
+    client.post(
+        "/ui/setup", data={"password": "correct-password", "confirm_password": "correct-password"}
+    )
+    response = client.get("/api/v1/fleet/status")
+    assert response.status_code == 200
+    assert response.json() == {"enabled": False}
+
+
+def test_fleet_status_endpoint_reports_live_agent_state(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    status = FleetAgentStatus(
+        enabled=True,
+        manager_url="https://fleet.example",
+        device_id="dev1",
+        registered=True,
+        last_heartbeat_ok=True,
+    )
+    app = _build_app(tmp_path, core_schema_path, fleet_status=status)
+    client = TestClient(app)
+    client.post(
+        "/ui/setup", data={"password": "correct-password", "confirm_password": "correct-password"}
+    )
+    response = client.get("/api/v1/fleet/status")
+    body = response.json()
+    assert body["enabled"] is True
+    assert body["registered"] is True
+    assert body["device_id"] == "dev1"
+    assert body["last_heartbeat_ok"] is True
+
+
 def test_logout_redirects_to_login_and_clears_session(
     tmp_path: Path, core_schema_path: Path
 ) -> None:
@@ -180,6 +269,133 @@ def test_logout_redirects_to_login_and_clears_session(
     response = fresh_check.get("/ui/dashboard")
     assert response.status_code == 303
     assert response.headers["location"] == "/ui/login"
+
+
+class TestUsersPage:
+    def _authenticated_client(self, app: FastAPI) -> TestClient:
+        client = TestClient(app)
+        client.post(
+            "/ui/setup",
+            data={"password": "correct-password", "confirm_password": "correct-password"},
+        )
+        return client
+
+    def test_users_page_redirects_when_unauthenticated(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = TestClient(app, follow_redirects=False)
+        response = client.get("/ui/users")
+        assert response.status_code == 303
+        assert response.headers["location"] == "/ui/login"
+
+    def test_users_page_shows_admin_when_authenticated_as_admin(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = self._authenticated_client(app)
+        response = client.get("/ui/users")
+        assert response.status_code == 200
+        assert "admin" in response.text
+
+    def test_users_page_denied_for_readonly_role(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        admin_client = self._authenticated_client(app)
+        admin_client.post(
+            "/ui/users/new",
+            data={"username": "viewer", "password": "viewerpass123", "role": "readonly"},
+        )
+
+        viewer_client = TestClient(app, follow_redirects=False)
+        viewer_client.post("/ui/login", data={"username": "viewer", "password": "viewerpass123"})
+        response = viewer_client.get("/ui/users")
+        assert response.status_code == 303
+        assert response.headers["location"] == "/ui/dashboard"
+
+
+class TestAuditPage:
+    def _authenticated_client(self, app: FastAPI) -> TestClient:
+        client = TestClient(app)
+        client.post(
+            "/ui/setup",
+            data={"password": "correct-password", "confirm_password": "correct-password"},
+        )
+        return client
+
+    def test_audit_page_redirects_when_unauthenticated(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = TestClient(app, follow_redirects=False)
+        response = client.get("/ui/audit")
+        assert response.status_code == 303
+        assert response.headers["location"] == "/ui/login"
+
+    def test_audit_page_shows_entries_for_admin(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = self._authenticated_client(app)  # setup produces an auth.setup event
+        response = client.get("/ui/audit")
+        assert response.status_code == 200
+        assert "auth.setup" in response.text
+
+    def test_audit_page_denied_for_operator_role(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        admin_client = self._authenticated_client(app)
+        admin_client.post(
+            "/ui/users/new",
+            data={"username": "opuser", "password": "opuserpass123", "role": "operator"},
+        )
+
+        op_client = TestClient(app, follow_redirects=False)
+        op_client.post("/ui/login", data={"username": "opuser", "password": "opuserpass123"})
+        response = op_client.get("/ui/audit")
+        assert response.status_code == 303
+        assert response.headers["location"] == "/ui/dashboard"
+
+
+class TestDiagnosticsPage:
+    def _authenticated_client(self, app: FastAPI) -> TestClient:
+        client = TestClient(app)
+        client.post(
+            "/ui/setup",
+            data={"password": "correct-password", "confirm_password": "correct-password"},
+        )
+        return client
+
+    def test_diagnostics_page_redirects_when_unauthenticated(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = TestClient(app, follow_redirects=False)
+        response = client.get("/ui/diagnostics")
+        assert response.status_code == 303
+        assert response.headers["location"] == "/ui/login"
+
+    def test_diagnostics_page_reachable_by_readonly_role(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        # tag:read (the broadest permission any diagnostic command needs)
+        # is granted to every role, including readonly — the page itself
+        # isn't gated tighter than that; individual commands still enforce
+        # their own stricter permission over the WebSocket.
+        app = _build_app(tmp_path, core_schema_path)
+        admin_client = self._authenticated_client(app)
+        admin_client.post(
+            "/ui/users/new",
+            data={"username": "viewer", "password": "viewerpass123", "role": "readonly"},
+        )
+
+        viewer_client = TestClient(app)
+        viewer_client.post("/ui/login", data={"username": "viewer", "password": "viewerpass123"})
+        response = viewer_client.get("/ui/diagnostics")
+        assert response.status_code == 200
+        assert "ws/diagnostics" in response.text
 
 
 class TestConfigRootPage:
