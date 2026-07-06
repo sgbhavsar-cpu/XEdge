@@ -206,6 +206,9 @@ class MqttSparkplugConnector(NorthboundConnector):
     def get_metrics(self) -> ConnectorMetrics:
         return self._metrics
 
+    def is_alive(self) -> bool:
+        return self._client is not None and self._client.is_connected()
+
 
 def _to_sparkplug_metric(tag: UnifiedTag) -> SparkplugMetric:
     """Map a UnifiedTag to a Sparkplug B metric per system-architecture.md §4.3:

@@ -8,6 +8,7 @@ waiting on SIGTERM, mirroring how the app behaves in production.
 from __future__ import annotations
 
 import asyncio
+import ssl
 from pathlib import Path
 
 import httpx
@@ -18,6 +19,7 @@ from xedge.core import main as main_module
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 MINIMAL_CONFIG = REPO_ROOT / "config" / "examples" / "modbus-minimal.yaml"
 _TEST_API_PORT = 18765
+_TEST_HTTPS_API_PORT = 18766
 
 
 async def test_async_main_starts_and_shuts_down_cleanly(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
@@ -35,7 +37,15 @@ async def test_async_main_starts_and_shuts_down_cleanly(monkeypatch, tmp_path: P
     config_path.write_text(
         MINIMAL_CONFIG.read_text(encoding="utf-8")
         + f"\nstore:\n  directory: {tmp_path / 'store'}\n"
-        + "\napi:\n  enabled: false\n",
+        + "\napi:\n  enabled: false\n"
+        # Only test_async_main_serves_rest_api_over_real_http exercises the
+        # real configure_metrics() wiring (with a live /metrics assertion) —
+        # every call registers a fresh PrometheusMetricReader against the
+        # shared global prometheus_client registry, and since this whole
+        # file's tests share one pytest process, repeated calls would pile
+        # up duplicate metric registrations across tests that don't
+        # otherwise care about metrics.
+        + "\nmetrics:\n  enabled: false\n",
         encoding="utf-8",
     )
 
@@ -61,7 +71,11 @@ async def test_async_main_serves_rest_api_over_real_http(monkeypatch, tmp_path: 
     config_path.write_text(
         MINIMAL_CONFIG.read_text(encoding="utf-8")
         + f"\nstore:\n  directory: {tmp_path / 'store'}\n"
-        + f"\napi:\n  port: {_TEST_API_PORT}\n",
+        + f"\napi:\n  port: {_TEST_API_PORT}\n"
+        # tls.enabled now defaults to true (Sprint 13, XEDGE-107/280) — this
+        # test is specifically about the plain-HTTP path, so it opts out;
+        # see test_async_main_serves_rest_api_over_https for the HTTPS path.
+        + "\ntls:\n  enabled: false\n",
         encoding="utf-8",
     )
 
@@ -101,6 +115,85 @@ async def test_async_main_serves_rest_api_over_real_http(monkeypatch, tmp_path: 
 
             config_response = await client.get(f"{base_url}/api/v1/config")
             assert config_response.status_code == 200
+
+            # Prometheus metrics (Sprint 16, XEDGE-128/130): unauthenticated,
+            # served from the same app the rest of this test already booted.
+            # modbus-minimal.yaml's one driver is disabled, so there are no
+            # per-driver observations here (see test_otel_metrics.py for
+            # that, with a real driver/ring-buffer present) — this only
+            # proves the endpoint is live and serving valid exposition
+            # format through the real running app.
+            metrics_response = await client.get(f"{base_url}/metrics")
+            assert metrics_response.status_code == 200
+            assert "# HELP" in metrics_response.text
+            assert "# TYPE" in metrics_response.text
+    finally:
+        shutdown_event.set()
+        exit_code = await asyncio.wait_for(task, timeout=5.0)
+        assert exit_code == 0
+
+
+async def test_async_main_serves_rest_api_over_https(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """Live smoke test for Sprint 13 (XEDGE-107/280): tls.enabled defaults to
+    true, so a fresh instance auto-generates a self-signed certificate and
+    serves the Web UI/REST API over HTTPS out of the box — verified here by
+    connecting a real httpx client with that self-signed cert as its own
+    trust anchor (`verify=<cert path>`), the same way a browser would need
+    to explicitly trust it on first visit."""
+    shutdown_event = asyncio.Event()
+
+    async def wait_for_test_shutdown() -> None:
+        await shutdown_event.wait()
+
+    monkeypatch.setattr(main_module, "_wait_for_shutdown_signal", wait_for_test_shutdown)
+
+    store_dir = tmp_path / "store"
+    config_path = tmp_path / "xedge.yaml"
+    config_path.write_text(
+        MINIMAL_CONFIG.read_text(encoding="utf-8")
+        + f"\nstore:\n  directory: {store_dir}\n"
+        + f"\napi:\n  port: {_TEST_HTTPS_API_PORT}\n"
+        + "\nmetrics:\n  enabled: false\n",
+        encoding="utf-8",
+    )
+    cert_path = tmp_path / "webui" / "server_cert.pem"
+
+    task = asyncio.create_task(
+        main_module.async_main(config_path, main_module._DEFAULT_SCHEMA_PATH)
+    )
+    try:
+        base_url = f"https://127.0.0.1:{_TEST_HTTPS_API_PORT}"
+        for _ in range(100):
+            if cert_path.is_file():
+                break
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail("TLS certificate was never generated")
+
+        ssl_context = ssl.create_default_context(cafile=str(cert_path))
+        async with httpx.AsyncClient(verify=ssl_context) as client:
+            response = None
+            for _ in range(100):
+                try:
+                    response = await client.get(f"{base_url}/health", timeout=0.5)
+                    if response.status_code == 200:
+                        break
+                except httpx.TransportError:
+                    pass
+                await asyncio.sleep(0.05)
+            else:
+                pytest.fail("HTTPS REST API never became reachable")
+            assert response is not None
+            assert response.json() == {"status": "ok"}
+
+            setup_response = await client.post(
+                f"{base_url}/api/v1/auth/setup", json={"password": "test-password-123"}
+            )
+            assert setup_response.status_code == 200
+            assert "Secure" in setup_response.headers["set-cookie"]
+
+            status_response = await client.get(f"{base_url}/api/v1/status")
+            assert status_response.status_code == 200
     finally:
         shutdown_event.set()
         exit_code = await asyncio.wait_for(task, timeout=5.0)
@@ -141,7 +234,8 @@ async def test_async_main_survives_rest_api_bind_failure(monkeypatch, tmp_path: 
     config_path = tmp_path / "xedge.yaml"
     config_path.write_text(
         MINIMAL_CONFIG.read_text(encoding="utf-8")
-        + f"\nstore:\n  directory: {tmp_path / 'store'}\n",
+        + f"\nstore:\n  directory: {tmp_path / 'store'}\n"
+        + "\nmetrics:\n  enabled: false\n",
         encoding="utf-8",
     )
 

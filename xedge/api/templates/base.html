@@ -4,15 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}xEdge{% endblock %}</title>
+<link rel="icon" type="image/svg+xml" href="/ui-static/favicon.svg">
 <link rel="stylesheet" href="/ui-static/xedge-ui.css">
 </head>
 <body>
 <header class="xedge-header">
   <span class="xedge-brand">xEdge</span>
   {% block nav %}{% endblock %}
+  {% if authenticated %}
+  <form method="post" action="/ui/logout" class="xedge-topbar-logout">
+    <button type="submit">Log out</button>
+  </form>
+  {% endif %}
 </header>
 <main class="xedge-main">
 {% block content %}{% endblock %}
 </main>
+{% if dashboard_url %}
+<footer class="xedge-footer">
+  <a href="{{ dashboard_url }}" target="_blank" rel="noopener">Tracing / Metrics Dashboard</a>
+</footer>
+{% endif %}
 </body>
 </html>

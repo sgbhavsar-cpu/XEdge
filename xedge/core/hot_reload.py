@@ -38,16 +38,37 @@ async def apply_driver_changes(
     unchanged instances keep running undisturbed — this is the "restart only
     affected drivers" behavior. Returns the new instance_id -> raw config
     entry tracking dict (callers should replace their prior one with it).
+
+    A driver with `enabled: false` is tracked and supervised (via
+    `DriverSupervisor.disable()`, state `DISABLED`) distinctly from one
+    entirely absent from `drivers:` (Sprint 25, XEDGE-186 — "clean shutdown
+    *without removing config*"): both stop the instance, but only a truly
+    absent entry is forgotten by this reconciliation, so a later re-enable
+    is correctly detected as a change against a *remembered* disabled
+    entry, not treated as brand new.
     """
-    new_by_id = {entry["id"]: entry for entry in new_drivers if entry.get("enabled", True)}
+    enabled_by_id = {
+        entry["id"]: entry for entry in new_drivers if entry.get("enabled", True)
+    }
+    disabled_by_id = {
+        entry["id"]: entry for entry in new_drivers if not entry.get("enabled", True)
+    }
+    all_present_ids = enabled_by_id.keys() | disabled_by_id.keys()
 
     for instance_id in list(current):
-        if instance_id not in new_by_id:
+        if instance_id not in all_present_ids:
             await supervisor.stop(instance_id)
             logger.info("driver.stopped_removed_from_config", instance_id=instance_id)
 
-    result = dict(new_by_id)
-    for instance_id, entry in new_by_id.items():
+    result = dict(enabled_by_id)
+    for instance_id, entry in disabled_by_id.items():
+        result[instance_id] = entry
+        if current.get(instance_id) == entry:
+            continue  # already disabled, nothing changed since last cycle
+        await supervisor.disable(instance_id)
+        logger.info("driver.disabled_via_config", instance_id=instance_id)
+
+    for instance_id, entry in enabled_by_id.items():
         if current.get(instance_id) == entry:
             continue  # unchanged: leave it running
         try:

@@ -4,7 +4,7 @@
 {% block config_content %}
 <div class="xedge-card">
   <h1>Driver: {{ driver_id }} <span class="xedge-tree-hint">({{ driver_type }})</span></h1>
-  <form method="post" action="/ui/config/drivers/{{ driver_id }}">
+  <form method="post" action="/ui/config/drivers/{{ driver_id }}" id="driver-edit-form">
     <div class="xedge-field">
       <label for="enabled">Enabled</label>
       <input type="checkbox" id="enabled" name="enabled"{% if enabled %} checked{% endif %}>
@@ -13,11 +13,40 @@
     {{ macros.render_field(f) }}
     {% endfor %}
     <div class="xedge-form-actions">
-      <button type="submit">Save</button>
+      <button type="submit">Save &amp; Deploy</button>
+      <button type="button" id="driver-validate-btn">Validate</button>
       <a href="/ui/config" class="xedge-button-secondary">Cancel</a>
     </div>
+    <p id="driver-validate-result"></p>
   </form>
 </div>
+
+<script>
+  const validateBtn = document.getElementById("driver-validate-btn");
+  const validateForm = document.getElementById("driver-edit-form");
+  const validateResult = document.getElementById("driver-validate-result");
+  validateBtn.addEventListener("click", async () => {
+    validateResult.textContent = "Validating…";
+    validateResult.className = "";
+    try {
+      const response = await fetch(
+        "/ui/config/drivers/{{ driver_id }}/validate",
+        { method: "POST", body: new FormData(validateForm) }
+      );
+      const body = await response.json();
+      if (body.valid) {
+        validateResult.textContent = "Valid — no errors.";
+        validateResult.className = "xedge-success";
+      } else {
+        validateResult.textContent = body.error || "Invalid.";
+        validateResult.className = "xedge-error";
+      }
+    } catch (err) {
+      validateResult.textContent = String(err);
+      validateResult.className = "xedge-error";
+    }
+  });
+</script>
 
 <div class="xedge-card">
   <h1>Tag groups</h1>

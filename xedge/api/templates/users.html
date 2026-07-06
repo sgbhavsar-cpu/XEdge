@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}xEdge — Users{% endblock %}
+{% block nav %}
+<nav class="xedge-nav">
+  <a href="/ui/dashboard">Dashboard</a>
+  {% if can_view_config %}<a href="/ui/config">Configuration</a>{% endif %}
+  <a href="/ui/logs">Logs</a>
+  <a href="/ui/users" class="active">Users</a>
+  {% if can_view_audit_log %}<a href="/ui/audit">Audit Log</a>{% endif %}
+  <a href="/ui/diagnostics">Diagnostics</a>
+</nav>
+{% endblock %}
+{% block content %}
+<div class="xedge-card">
+  <h1>Users</h1>
+  {% if error %}<p class="xedge-error">{{ error }}</p>{% endif %}
+  <table class="xedge-table">
+    <thead><tr><th>Username</th><th>Role</th><th></th><th></th></tr></thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <td>{{ u.username }}</td>
+        <td>
+          {% if u.username == current_username %}
+          {{ u.role }}
+          {% else %}
+          <form method="post" action="/ui/users/{{ u.username }}/role" class="xedge-inline-form">
+            <select name="role" onchange="this.form.submit()">
+              {% for r in roles %}
+              <option value="{{ r }}"{% if r == u.role %} selected{% endif %}>{{ r }}</option>
+              {% endfor %}
+            </select>
+          </form>
+          {% endif %}
+        </td>
+        <td>{% if u.username == current_username %}<span class="xedge-hint">(you)</span>{% endif %}</td>
+        <td>
+          {% if u.username != current_username %}
+          <form method="post" action="/ui/users/{{ u.username }}/delete"
+                onsubmit="return confirm('Delete user {{ u.username }}?');">
+            <button type="submit" class="xedge-button-danger">Delete</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="xedge-card">
+  <h1>Add user</h1>
+  <form method="post" action="/ui/users/new">
+    <div class="xedge-field">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" required autofocus>
+    </div>
+    <div class="xedge-field">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" required minlength="8" autocomplete="new-password">
+    </div>
+    <div class="xedge-field">
+      <label for="role">Role</label>
+      <select id="role" name="role" required>
+        {% for r in roles %}
+        <option value="{{ r }}">{{ r }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="xedge-form-actions">
+      <button type="submit">Create user</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

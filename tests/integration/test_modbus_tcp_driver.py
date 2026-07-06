@@ -153,3 +153,40 @@ async def test_write_returns_not_supported(fake_server: FakeModbusServer) -> Non
         assert result.success is False
     finally:
         await driver.disconnect()
+
+
+async def test_read_produces_driver_read_span(
+    fake_server: FakeModbusServer, otel_test_tracer_provider
+) -> None:
+    fake_server.holding_registers[0] = 100
+    config = _driver_config(
+        fake_server,
+        [{"id": "tag1", "function_code": "read_holding_registers", "address": 0}],
+    )
+    driver = ModbusTcpDriver()
+    await _run_one_cycle(driver, config)
+
+    spans = [s for s in otel_test_tracer_provider.get_finished_spans() if s.name == "driver.read"]
+    assert len(spans) >= 1
+    assert spans[0].attributes["driver.instance_id"] == "modbus_tcp_test"
+    assert spans[0].attributes["tag.id"] == "tag1"
+    assert spans[0].attributes["quality"] == Quality.GOOD.value
+
+
+async def test_modbus_exception_produces_error_span(
+    fake_server: FakeModbusServer, otel_test_tracer_provider
+) -> None:
+    fake_server.exceptions[(codec.FunctionCode.READ_HOLDING_REGISTERS, 0)] = (
+        codec.ExceptionCode.ILLEGAL_DATA_ADDRESS
+    )
+    config = _driver_config(
+        fake_server,
+        [{"id": "tag1", "function_code": "read_holding_registers", "address": 0}],
+    )
+    driver = ModbusTcpDriver()
+    await _run_one_cycle(driver, config)
+
+    spans = [s for s in otel_test_tracer_provider.get_finished_spans() if s.name == "driver.read"]
+    assert len(spans) >= 1
+    assert spans[0].attributes["quality"] == Quality.BAD.value
+    assert spans[0].status.status_code.name == "ERROR"

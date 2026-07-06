@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}xEdge — {{ instance_id }}{% endblock %}
+{% block nav %}
+<nav class="xedge-nav">
+  <a href="/ui/dashboard" class="active">Dashboard</a>
+  {% if can_view_config %}<a href="/ui/config">Configuration</a>{% endif %}
+  <a href="/ui/logs">Logs</a>
+  {% if can_manage_users %}<a href="/ui/users">Users</a>{% endif %}
+  {% if can_view_audit_log %}<a href="/ui/audit">Audit Log</a>{% endif %}
+  <a href="/ui/diagnostics">Diagnostics</a>
+</nav>
+{% endblock %}
+{% block content %}
+<p><a href="/ui/dashboard">&larr; Back to dashboard</a></p>
+
+<div class="xedge-card">
+  <h1>{{ instance_id }} <span class="xedge-tree-hint">({{ driver_type }})</span></h1>
+  <table class="xedge-table">
+    <tbody>
+      <tr><th>State</th><td class="xedge-state">{{ state }}</td></tr>
+      <tr><th>Tag reads</th><td class="xedge-tag-read-count">{{ metrics.tag_read_count }}</td></tr>
+      <tr><th>Errors</th><td class="xedge-error-count">{{ metrics.error_count }}</td></tr>
+      <tr><th>Reconnects</th><td>{{ metrics.reconnect_count }}</td></tr>
+      <tr><th>Consecutive failures</th><td>{{ consecutive_failures }}</td></tr>
+      <tr><th>Last error</th><td class="xedge-last-error">{{ last_error or "" }}</td></tr>
+    </tbody>
+  </table>
+  {% if can_restart_driver %}
+  <button type="button" id="driver-enable-disable-btn" data-instance-id="{{ instance_id }}">
+    {{ "Enable" if state == "disabled" else "Disable" }}
+  </button>
+  <span id="driver-toggle-error" class="xedge-error"></span>
+  {% endif %}
+</div>
+
+<div class="xedge-card">
+  <h1>Driver Health</h1>
+  <p class="xedge-hint">Published northbound and via OPC UA alongside this driver's real tags, under its <code>_system/</code> sub-namespace.</p>
+  <table class="xedge-table">
+    <tbody>
+      <tr><th>Status</th><td id="system-status">&hellip;</td></tr>
+      <tr><th>Status changed</th><td id="system-status_time">&hellip;</td></tr>
+      <tr><th>Tags configured</th><td id="system-tag_count">&hellip;</td></tr>
+      <tr><th>Reads / second</th><td id="system-reads_per_second">&hellip;</td></tr>
+      <tr><th>Reads / minute</th><td id="system-reads_per_minute">&hellip;</td></tr>
+      <tr><th>Reads / hour</th><td id="system-reads_per_hour">&hellip;</td></tr>
+      <tr><th>Error count</th><td id="system-error_count">&hellip;</td></tr>
+      <tr><th>Consecutive failures</th><td id="system-consecutive_failures">&hellip;</td></tr>
+      <tr><th>Uptime (seconds)</th><td id="system-uptime_seconds">&hellip;</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="xedge-card">
+  <h1>Tags</h1>
+  <table class="xedge-table" id="driver-tags-table">
+    <thead>
+      <tr><th>Tag</th><th>Value</th><th>Quality</th><th>Timestamp</th><th>Address</th></tr>
+    </thead>
+    <tbody><tr><td colspan="5">Loading&hellip;</td></tr></tbody>
+  </table>
+</div>
+
+<div class="xedge-card">
+  <h1>Logs</h1>
+  <pre id="log-pane" class="xedge-log-pane"></pre>
+</div>
+
+<script src="/ui-static/xedge-ui.js"></script>
+<script>
+  xedgeUi.pollDriverTags({{ instance_id | tojson }});
+  xedgeUi.startLogTail("log-pane", () => ({ instanceId: {{ instance_id | tojson }}, source: null }));
+
+  const toggleBtn = document.getElementById("driver-enable-disable-btn");
+  if (toggleBtn) {
+    toggleBtn.addEventListener("click", async () => {
+      const instanceId = toggleBtn.dataset.instanceId;
+      const action = toggleBtn.textContent.trim() === "Enable" ? "enable" : "disable";
+      const errorSpan = document.getElementById("driver-toggle-error");
+      errorSpan.textContent = "";
+      try {
+        const response = await fetch(`/api/v1/drivers/${instanceId}/${action}`, { method: "POST" });
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          errorSpan.textContent = body.detail || `Request failed (${response.status})`;
+          return;
+        }
+        location.reload();
+      } catch (err) {
+        errorSpan.textContent = String(err);
+      }
+    });
+  }
+</script>
+{% endblock %}

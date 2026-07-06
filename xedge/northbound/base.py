@@ -49,3 +49,12 @@ class NorthboundConnector(ABC):
 
     def get_metrics(self) -> ConnectorMetrics:
         return ConnectorMetrics()
+
+    def is_alive(self) -> bool:
+        """Best-effort, non-invasive connectivity probe for the diagnostic
+        `network check`/`self-test` commands (Sprint 17, XEDGE-135/137) —
+        distinct from `NorthboundDispatcher.connected`, which only reflects
+        the *last* connect/publish outcome, not a live check. Default
+        `False` for connectors that don't implement one; not abstract, so
+        existing/future connectors aren't forced to add it."""
+        return False

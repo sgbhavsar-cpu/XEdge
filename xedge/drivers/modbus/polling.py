@@ -15,6 +15,8 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+from opentelemetry.trace import Status, StatusCode
+
 from xedge.drivers.base import (
     BaseDriver,
     DriverConfig,
@@ -26,8 +28,10 @@ from xedge.drivers.base import (
 )
 from xedge.drivers.modbus import codec
 from xedge.observability.logging import get_logger
+from xedge.observability.tracing import get_tracer
 
 logger = get_logger(__name__)
+tracer = get_tracer(__name__)
 
 FUNCTION_CODE_BY_NAME: dict[str, codec.FunctionCode] = {
     "read_coils": codec.FunctionCode.READ_COILS,
@@ -93,38 +97,49 @@ class BaseModbusPollingDriver(BaseDriver):
     async def _read_tag(self, instance_id: str, tag: dict[str, Any]) -> TagUpdate:
         function_code = FUNCTION_CODE_BY_NAME[tag["function_code"]]
         address = tag["address"]
-        started_at = time.monotonic()
-        try:
-            value = await self._read_one(function_code, address)
-            latency_ms = (time.monotonic() - started_at) * 1000
-            self._metrics.tag_read_count += 1
-            self._metrics.last_successful_read = datetime.now(UTC)
-            return TagUpdate(
-                tag_id=f"{instance_id}/{tag['id']}",
-                timestamp=datetime.now(UTC),
-                value=value,
-                quality=Quality.GOOD,
-                source_driver=instance_id,
-                source_address=str(address),
-                metadata={"modbus_exception": None, "request_latency_ms": round(latency_ms, 2)},
-            )
-        except codec.ModbusException as exc:
-            # Protocol-level rejection from the device (e.g. illegal address):
-            # mark this tag Bad, keep the connection and polling loop alive.
-            self._metrics.error_count += 1
-            logger.warning(
-                "modbus.tag_exception",
-                instance_id=instance_id,
-                tag_id=tag["id"],
-                exception_code=exc.exception_code,
-            )
-            placeholder_value: TagValue = False if codec.is_bit_function(function_code) else 0
-            return TagUpdate(
-                tag_id=f"{instance_id}/{tag['id']}",
-                timestamp=datetime.now(UTC),
-                value=placeholder_value,
-                quality=Quality.BAD,
-                source_driver=instance_id,
-                source_address=str(address),
-                metadata={"modbus_exception": exc.exception_code},
-            )
+        with tracer.start_as_current_span(
+            "driver.read",
+            attributes={"driver.instance_id": instance_id, "tag.id": tag["id"]},
+        ) as span:
+            started_at = time.monotonic()
+            try:
+                value = await self._read_one(function_code, address)
+                latency_ms = (time.monotonic() - started_at) * 1000
+                self._metrics.tag_read_count += 1
+                self._metrics.last_successful_read = datetime.now(UTC)
+                span.set_attribute("quality", Quality.GOOD.value)
+                return TagUpdate(
+                    tag_id=f"{instance_id}/{tag['id']}",
+                    timestamp=datetime.now(UTC),
+                    value=value,
+                    quality=Quality.GOOD,
+                    source_driver=instance_id,
+                    source_address=str(address),
+                    metadata={
+                        "modbus_exception": None,
+                        "request_latency_ms": round(latency_ms, 2),
+                    },
+                )
+            except codec.ModbusException as exc:
+                # Protocol-level rejection from the device (e.g. illegal address):
+                # mark this tag Bad, keep the connection and polling loop alive.
+                self._metrics.error_count += 1
+                span.set_attribute("quality", Quality.BAD.value)
+                span.set_status(Status(StatusCode.ERROR, str(exc)))
+                span.record_exception(exc)
+                logger.warning(
+                    "modbus.tag_exception",
+                    instance_id=instance_id,
+                    tag_id=tag["id"],
+                    exception_code=exc.exception_code,
+                )
+                placeholder_value: TagValue = False if codec.is_bit_function(function_code) else 0
+                return TagUpdate(
+                    tag_id=f"{instance_id}/{tag['id']}",
+                    timestamp=datetime.now(UTC),
+                    value=placeholder_value,
+                    quality=Quality.BAD,
+                    source_driver=instance_id,
+                    source_address=str(address),
+                    metadata={"modbus_exception": exc.exception_code},
+                )

@@ -135,3 +135,43 @@ async def test_write_returns_not_supported(opcua_test_server: tuple[Server, str,
         assert result.success is False
     finally:
         await driver.disconnect()
+
+
+async def test_read_produces_driver_read_span(
+    opcua_test_server: tuple[Server, str, int], otel_test_tracer_provider
+) -> None:
+    server, endpoint_url, idx = opcua_test_server
+    objects = server.get_objects_node()
+    node = await objects.add_variable(idx, "SpanTest", 1.0)
+
+    config = _driver_config(endpoint_url, [{"id": "span_tag", "node_id": node.nodeid.to_string()}])
+    driver = OpcUaClientDriver()
+    await _run_one_cycle(driver, config)
+
+    spans = [s for s in otel_test_tracer_provider.get_finished_spans() if s.name == "driver.read"]
+    assert len(spans) >= 1
+    assert spans[0].attributes["driver.instance_id"] == "opcua_01"
+    assert spans[0].attributes["tag.id"] == "span_tag"
+    assert spans[0].attributes["quality"] == Quality.GOOD.value
+
+
+async def test_bad_status_code_produces_error_span(
+    opcua_test_server: tuple[Server, str, int], otel_test_tracer_provider
+) -> None:
+    server, endpoint_url, idx = opcua_test_server
+    objects = server.get_objects_node()
+    node = await objects.add_variable(idx, "SpanFaultyValue", 0)
+    await node.write_value(
+        ua.DataValue(
+            ua.Variant(0, ua.VariantType.Int64),
+            StatusCode=ua.StatusCode(ua.StatusCodes.BadDeviceFailure),
+        )
+    )
+
+    config = _driver_config(endpoint_url, [{"id": "faulty", "node_id": node.nodeid.to_string()}])
+    driver = OpcUaClientDriver()
+    await _run_one_cycle(driver, config)
+
+    spans = [s for s in otel_test_tracer_provider.get_finished_spans() if s.name == "driver.read"]
+    assert len(spans) >= 1
+    assert spans[0].attributes["quality"] == Quality.BAD.value

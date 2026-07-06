@@ -21,6 +21,7 @@ from asyncua.client.client import Client
 from asyncua.common.node import Node
 from asyncua.ua.status_codes import StatusCodes
 from asyncua.ua.uaerrors import UaError
+from opentelemetry.trace import Status, StatusCode
 
 from xedge.drivers.base import (
     BaseDriver,
@@ -32,8 +33,10 @@ from xedge.drivers.base import (
     WriteResult,
 )
 from xedge.observability.logging import get_logger
+from xedge.observability.tracing import get_tracer
 
 logger = get_logger(__name__)
+tracer = get_tracer(__name__)
 
 _DEFAULT_CONNECT_TIMEOUT_SECONDS = 5.0
 
@@ -115,43 +118,51 @@ class OpcUaClientDriver(BaseDriver):
 
     async def _read_tag(self, instance_id: str, tag: dict[str, Any], node: Node) -> TagUpdate:
         tag_id = f"{instance_id}/{tag['id']}"
-        try:
-            data_value = await node.read_data_value(raise_on_bad_status=False)
-            status_code = data_value.StatusCode or ua_types.StatusCode(
-                ua_types.UInt32(StatusCodes.Bad)
-            )
-            quality = _map_status_code(status_code)
-            variant = data_value.Value
-            value = _coerce_value(variant.Value) if variant is not None else 0
-            self._metrics.tag_read_count += 1
-            self._metrics.last_successful_read = datetime.now(UTC)
-            return TagUpdate(
-                tag_id=tag_id,
-                timestamp=datetime.now(UTC),
-                source_timestamp=data_value.SourceTimestamp,
-                value=value,
-                quality=quality,
-                source_driver=instance_id,
-                source_address=tag["node_id"],
-                metadata={"opcua_status_code": status_code.name},
-            )
-        except (TimeoutError, UaError, ConnectionError, OSError) as exc:
-            # A read-level failure (e.g. node temporarily unavailable) marks
-            # only this tag Bad; a dead session surfaces on the *next* read
-            # or via the connection itself and is handled by the supervisor.
-            self._metrics.error_count += 1
-            logger.warning(
-                "opcua.read_failed", instance_id=instance_id, tag_id=tag["id"], error=str(exc)
-            )
-            return TagUpdate(
-                tag_id=tag_id,
-                timestamp=datetime.now(UTC),
-                value=0,
-                quality=Quality.BAD,
-                source_driver=instance_id,
-                source_address=tag["node_id"],
-                metadata={"opcua_status_code": None, "opcua_error": str(exc)},
-            )
+        with tracer.start_as_current_span(
+            "driver.read",
+            attributes={"driver.instance_id": instance_id, "tag.id": tag["id"]},
+        ) as span:
+            try:
+                data_value = await node.read_data_value(raise_on_bad_status=False)
+                status_code = data_value.StatusCode or ua_types.StatusCode(
+                    ua_types.UInt32(StatusCodes.Bad)
+                )
+                quality = _map_status_code(status_code)
+                variant = data_value.Value
+                value = _coerce_value(variant.Value) if variant is not None else 0
+                self._metrics.tag_read_count += 1
+                self._metrics.last_successful_read = datetime.now(UTC)
+                span.set_attribute("quality", quality.value)
+                return TagUpdate(
+                    tag_id=tag_id,
+                    timestamp=datetime.now(UTC),
+                    source_timestamp=data_value.SourceTimestamp,
+                    value=value,
+                    quality=quality,
+                    source_driver=instance_id,
+                    source_address=tag["node_id"],
+                    metadata={"opcua_status_code": status_code.name},
+                )
+            except (TimeoutError, UaError, ConnectionError, OSError) as exc:
+                # A read-level failure (e.g. node temporarily unavailable) marks
+                # only this tag Bad; a dead session surfaces on the *next* read
+                # or via the connection itself and is handled by the supervisor.
+                self._metrics.error_count += 1
+                span.set_attribute("quality", Quality.BAD.value)
+                span.set_status(Status(StatusCode.ERROR, str(exc)))
+                span.record_exception(exc)
+                logger.warning(
+                    "opcua.read_failed", instance_id=instance_id, tag_id=tag["id"], error=str(exc)
+                )
+                return TagUpdate(
+                    tag_id=tag_id,
+                    timestamp=datetime.now(UTC),
+                    value=0,
+                    quality=Quality.BAD,
+                    source_driver=instance_id,
+                    source_address=tag["node_id"],
+                    metadata={"opcua_status_code": None, "opcua_error": str(exc)},
+                )
 
 
 def _map_status_code(status_code: ua_types.StatusCode) -> Quality:

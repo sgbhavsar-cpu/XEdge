@@ -92,6 +92,93 @@ async def test_status_reports_live_metrics_from_the_running_driver(
         await supervisor.stop_all()
 
 
+async def test_start_computes_tag_count_from_tag_groups(
+    tag_queue: asyncio.Queue[TagUpdate],
+) -> None:
+    driver = FakeDriver(emit_interval_seconds=0.001)
+    registry = DriverRegistry()
+    registry.register("fake", lambda: driver)
+    supervisor = DriverSupervisor(registry, tag_queue)
+    config = DriverConfig(
+        instance_id="fake_01",
+        driver_type="fake",
+        config={},
+        tag_groups=[
+            {"id": "g1", "tags": [{"id": "t1"}, {"id": "t2"}]},
+            {"id": "g2", "tags": [{"id": "t3"}]},
+        ],
+    )
+
+    supervisor.start(config)
+    try:
+        assert supervisor.status("fake_01").tag_count == 3
+    finally:
+        await supervisor.stop_all()
+
+
+async def test_state_changed_at_updates_on_transition(
+    tag_queue: asyncio.Queue[TagUpdate],
+) -> None:
+    driver = FakeDriver(emit_interval_seconds=0.001)
+    registry = DriverRegistry()
+    registry.register("fake", lambda: driver)
+    supervisor = DriverSupervisor(registry, tag_queue)
+
+    supervisor.start(DriverConfig(instance_id="fake_01", driver_type="fake", config={}))
+    try:
+        for _ in range(200):
+            if supervisor.status("fake_01").state == DriverState.RUNNING:
+                break
+            await asyncio.sleep(0.01)
+        running_changed_at = supervisor.status("fake_01").state_changed_at
+
+        await supervisor.stop("fake_01")
+        stopped_changed_at = supervisor.status("fake_01").state_changed_at
+
+        assert stopped_changed_at > running_changed_at
+    finally:
+        await supervisor.stop_all()
+
+
+async def test_disable_sets_disabled_not_stopped(tag_queue: asyncio.Queue[TagUpdate]) -> None:
+    driver = FakeDriver(emit_interval_seconds=0.001)
+    registry = DriverRegistry()
+    registry.register("fake", lambda: driver)
+    supervisor = DriverSupervisor(registry, tag_queue)
+
+    supervisor.start(DriverConfig(instance_id="fake_01", driver_type="fake", config={}))
+    await asyncio.sleep(0.02)
+    await supervisor.disable("fake_01")
+
+    assert driver.disconnected
+    assert supervisor.status("fake_01").state == DriverState.DISABLED
+
+
+async def test_disabling_an_already_stopped_instance_is_a_safe_no_op(
+    tag_queue: asyncio.Queue[TagUpdate],
+) -> None:
+    driver = FakeDriver(emit_interval_seconds=0.001)
+    registry = DriverRegistry()
+    registry.register("fake", lambda: driver)
+    supervisor = DriverSupervisor(registry, tag_queue)
+
+    supervisor.start(DriverConfig(instance_id="fake_01", driver_type="fake", config={}))
+    await asyncio.sleep(0.02)
+    await supervisor.stop("fake_01")
+    assert supervisor.status("fake_01").state == DriverState.STOPPED
+
+    await supervisor.disable("fake_01")  # no exception
+    assert supervisor.status("fake_01").state == DriverState.DISABLED
+
+
+async def test_disabling_an_unknown_instance_is_a_safe_no_op(
+    tag_queue: asyncio.Queue[TagUpdate],
+) -> None:
+    registry = DriverRegistry()
+    supervisor = DriverSupervisor(registry, tag_queue)
+    await supervisor.disable("nonexistent")  # no exception, no KeyError
+
+
 def test_registry_rejects_duplicate_registration() -> None:
     registry = DriverRegistry()
     registry.register("fake", lambda: FakeDriver())

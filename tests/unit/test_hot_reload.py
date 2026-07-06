@@ -69,14 +69,62 @@ class TestApplyDriverChanges:
         assert updated == {}
         assert supervisor.status("d1").state == DriverState.STOPPED
 
-    async def test_disabled_driver_in_new_config_is_treated_as_removed(
+    async def test_disabled_driver_is_stopped_but_remembered_not_removed(
+        self, registry_and_supervisor
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Sprint 25, XEDGE-186: `enabled: false` must be distinct from
+        "absent from config" — the instance stops, but its entry is
+        remembered (not forgotten) so a later re-enable is detected as a
+        change, and the driver's state reads DISABLED, not just gone."""
+        registry, supervisor = registry_and_supervisor
+        current = await apply_driver_changes([_entry("d1")], {}, registry, supervisor)
+        disabled_entry = {**_entry("d1"), "enabled": False}
+        updated = await apply_driver_changes([disabled_entry], current, registry, supervisor)
+
+        assert updated == {"d1": disabled_entry}
+        assert supervisor.status("d1").state == DriverState.DISABLED
+
+    async def test_removed_driver_entry_is_forgotten_unlike_disabled(
+        self, registry_and_supervisor
+    ) -> None:  # type: ignore[no-untyped-def]
+        registry, supervisor = registry_and_supervisor
+        current = await apply_driver_changes([_entry("d1")], {}, registry, supervisor)
+        updated = await apply_driver_changes([], current, registry, supervisor)
+
+        assert updated == {}
+        assert supervisor.status("d1").state == DriverState.STOPPED
+
+    async def test_re_enabling_a_disabled_driver_restarts_it(
         self, registry_and_supervisor
     ) -> None:  # type: ignore[no-untyped-def]
         registry, supervisor = registry_and_supervisor
         current = await apply_driver_changes([_entry("d1")], {}, registry, supervisor)
         disabled_entry = {**_entry("d1"), "enabled": False}
-        updated = await apply_driver_changes([disabled_entry], current, registry, supervisor)
-        assert updated == {}
+        current = await apply_driver_changes([disabled_entry], current, registry, supervisor)
+        assert supervisor.status("d1").state == DriverState.DISABLED
+
+        updated = await apply_driver_changes([_entry("d1")], current, registry, supervisor)
+        await asyncio.sleep(0.05)  # start() schedules the task; let it reach RUNNING
+
+        assert updated == {"d1": _entry("d1")}
+        assert supervisor.status("d1").state == DriverState.RUNNING
+
+    async def test_already_disabled_driver_is_not_re_disabled_every_cycle(
+        self, registry_and_supervisor
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Calling disable() again every poll cycle would keep resetting
+        state_changed_at even though nothing actually changed — this test
+        pins that the reconciler only acts on the enabled->disabled
+        transition, not on every cycle a disabled entry is still present."""
+        registry, supervisor = registry_and_supervisor
+        current = await apply_driver_changes([_entry("d1")], {}, registry, supervisor)
+        disabled_entry = {**_entry("d1"), "enabled": False}
+        current = await apply_driver_changes([disabled_entry], current, registry, supervisor)
+        state_changed_at = supervisor.status("d1").state_changed_at
+
+        await apply_driver_changes([disabled_entry], current, registry, supervisor)
+
+        assert supervisor.status("d1").state_changed_at == state_changed_at
 
     async def test_one_invalid_driver_entry_does_not_crash_or_block_others(
         self, registry_and_supervisor

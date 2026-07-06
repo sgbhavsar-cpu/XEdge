@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}xEdge — Audit Log{% endblock %}
+{% block nav %}
+<nav class="xedge-nav">
+  <a href="/ui/dashboard">Dashboard</a>
+  {% if can_view_config %}<a href="/ui/config">Configuration</a>{% endif %}
+  <a href="/ui/logs">Logs</a>
+  {% if can_manage_users %}<a href="/ui/users">Users</a>{% endif %}
+  <a href="/ui/audit" class="active">Audit Log</a>
+  <a href="/ui/diagnostics">Diagnostics</a>
+</nav>
+{% endblock %}
+{% block content %}
+<div class="xedge-card">
+  <h1>Audit Log</h1>
+  <p>
+    Chain integrity:
+    {% if chain_verified %}
+    <span class="xedge-success">verified</span>
+    {% else %}
+    <span class="xedge-error">TAMPERED — one or more entries do not match the recorded hash chain</span>
+    {% endif %}
+  </p>
+  <div class="xedge-field">
+    <label for="audit-filter-actor">Filter by actor</label>
+    <input type="text" id="audit-filter-actor" placeholder="e.g. admin">
+    <label for="audit-filter-event">Filter by event prefix</label>
+    <input type="text" id="audit-filter-event" placeholder="e.g. config, auth, user">
+  </div>
+  <table class="xedge-table">
+    <thead><tr><th>Seq</th><th>Timestamp</th><th>Actor</th><th>Event</th><th>Details</th></tr></thead>
+    <tbody id="audit-table-body">
+      {% for e in entries %}
+      <tr data-actor="{{ e.actor }}" data-event="{{ e.event }}">
+        <td>{{ e.seq }}</td>
+        <td>{{ e.timestamp }}</td>
+        <td>{{ e.actor }}</td>
+        <td>{{ e.event }}</td>
+        <td>{{ e.details }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">No audit events recorded yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<script>
+  const actorFilter = document.getElementById("audit-filter-actor");
+  const eventFilter = document.getElementById("audit-filter-event");
+  function applyAuditFilters() {
+    const actor = actorFilter.value.trim().toLowerCase();
+    const event = eventFilter.value.trim().toLowerCase();
+    for (const row of document.querySelectorAll("#audit-table-body tr[data-actor]")) {
+      const matchesActor = !actor || row.dataset.actor.toLowerCase().includes(actor);
+      const matchesEvent = !event || row.dataset.event.toLowerCase().startsWith(event);
+      row.style.display = matchesActor && matchesEvent ? "" : "none";
+    }
+  }
+  actorFilter.addEventListener("input", applyAuditFilters);
+  eventFilter.addEventListener("input", applyAuditFilters);
+</script>
+{% endblock %}

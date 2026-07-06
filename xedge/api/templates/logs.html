@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}xEdge — Logs{% endblock %}
+{% block nav %}
+<nav class="xedge-nav">
+  <a href="/ui/dashboard">Dashboard</a>
+  {% if can_view_config %}<a href="/ui/config">Configuration</a>{% endif %}
+  <a href="/ui/logs" class="active">Logs</a>
+  {% if can_manage_users %}<a href="/ui/users">Users</a>{% endif %}
+  {% if can_view_audit_log %}<a href="/ui/audit">Audit Log</a>{% endif %}
+  <a href="/ui/diagnostics">Diagnostics</a>
+</nav>
+{% endblock %}
+{% block content %}
+<div class="xedge-card">
+  <h1>Logs</h1>
+  <div class="xedge-field">
+    <label for="log-filter">Filter</label>
+    <select id="log-filter">
+      <option value="all">All</option>
+      <option value="northbound">Northbound</option>
+      {% for instance_id in drivers %}
+      <option value="{{ instance_id }}">{{ instance_id }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <pre id="log-pane" class="xedge-log-pane"></pre>
+</div>
+<script src="/ui-static/xedge-ui.js"></script>
+<script>
+  const logFilterSelect = document.getElementById("log-filter");
+  xedgeUi.startLogTail("log-pane", () => {
+    const value = logFilterSelect.value;
+    if (value === "all") return { instanceId: null, source: null };
+    if (value === "northbound") return { instanceId: null, source: "northbound" };
+    return { instanceId: value, source: null };
+  });
+</script>
+{% endblock %}

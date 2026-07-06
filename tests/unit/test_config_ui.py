@@ -11,6 +11,9 @@ from xedge.api.auth import LoginAttemptTracker, SessionManager, UserStore
 from xedge.api.server import create_app
 from xedge.core.config import ConfigVersionHistory
 from xedge.core.supervisor import DriverRegistry, DriverSupervisor
+from xedge.observability.audit_log import AuditLog
+from xedge.store.latest_values import LatestValueStore
+from xedge.store.ring_buffer import RingBufferManager
 
 
 def _build_app(tmp_path: Path, core_schema_path: Path) -> FastAPI:
@@ -26,6 +29,9 @@ def _build_app(tmp_path: Path, core_schema_path: Path) -> FastAPI:
         login_tracker=LoginAttemptTracker(),
         config_path=config_path,
         schema_path=core_schema_path,
+        latest_values=LatestValueStore(),
+        audit_log=AuditLog(tmp_path / "webui" / "audit.jsonl"),
+        ring_buffers=RingBufferManager(),
     )
 
 

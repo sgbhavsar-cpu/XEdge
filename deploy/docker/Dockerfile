@@ -19,7 +19,7 @@ RUN groupadd --gid 10001 xedge \
     && chown -R xedge:xedge /data /var/log/xedge /etc/xedge
 
 COPY --from=builder /install /usr/local
-COPY config/schema /etc/xedge/schema
+COPY deploy/docker/healthcheck.py /usr/local/bin/xedge-healthcheck.py
 
 USER xedge
 WORKDIR /
@@ -27,8 +27,11 @@ WORKDIR /
 VOLUME ["/data"]
 EXPOSE 4840 8080 8443 9090
 
+# tls.enabled defaults to true (Sprint 13) — a stock config serves
+# HTTPS-only on 8080, so the probe itself needs to handle that (see
+# deploy/docker/healthcheck.py), not just assume plain HTTP.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+    CMD ["python", "/usr/local/bin/xedge-healthcheck.py"]
 
 ENTRYPOINT ["xedge"]
 CMD ["--config", "/etc/xedge/xedge.yaml"]

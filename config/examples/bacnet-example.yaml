@@ -1,0 +1,68 @@
+# BACnet/IP client reading from an AHU controller at 192.168.1.60, plus a
+# spare BACnet device from the same panel at 192.168.1.61. Built on bacpypes3
+# (MIT, ADR-006 "buy" decision) — ReadProperty polling only for this MVP, no
+# COV subscriptions, no device discovery: each tag names its target device
+# address and object directly, the same granularity as the Modbus/OPC UA
+# drivers.
+schema_version: "0.1"
+
+logging:
+  level: INFO
+
+watchdog:
+  enabled: true
+  interval_seconds: 15
+
+drivers:
+  - id: bacnet_ahu_01
+    type: bacnet_ip
+    enabled: true
+    config:
+      local_address: "0.0.0.0:47809" # this xEdge instance's own BACnet/IP bind address
+      device_instance: 260001 # this xEdge instance's own BACnet device instance number
+      request_timeout_seconds: 3
+    tag_groups:
+      - id: ahu_process_values
+        scan_rate_ms: 1000
+        deadband:
+          type: percentage
+          value: 0.5
+        tags:
+          - id: supply_air_temperature
+            device_address: "192.168.1.60"
+            object_identifier: "analog-input,1"
+            engineering_unit: "°C"
+          - id: return_air_temperature
+            device_address: "192.168.1.60"
+            object_identifier: "analog-input,2"
+            engineering_unit: "°C"
+          - id: damper_position
+            device_address: "192.168.1.61"
+            object_identifier: "analog-output,1"
+            engineering_unit: "%"
+      - id: ahu_status
+        scan_rate_ms: 2000
+        tags:
+          - id: fan_running
+            device_address: "192.168.1.60"
+            object_identifier: "binary-input,1"
+          - id: occupied_mode
+            device_address: "192.168.1.60"
+            object_identifier: "binary-value,1"
+
+store:
+  directory: /data/store
+  ram_max_depth: 10000
+  retention_duration_seconds: 604800 # 7 days
+  purge_interval_seconds: 3600
+
+config_management:
+  hot_reload_enabled: true
+  poll_interval_seconds: 2.0
+  history_directory: /data/config-history
+  max_versions: 10
+
+api:
+  enabled: true
+  host: 127.0.0.1 # loopback-only until the API has auth (FR-CM-003)
+  port: 8080

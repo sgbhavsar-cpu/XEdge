@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://xedge.example.com/schema/drivers/loopback.schema.json",
+  "title": "Loopback Driver Configuration",
+  "description": "Per-driver-type schema for `type: loopback` entries (FR-DF-004). A synthetic, hardware-free driver (Sprint 17, XEDGE-137) — each tag's value is whatever was last written to it (or its `initial_value` before any write). Useful as a demo/test data source with no field device needed, and used standalone by the diagnostic `self-test` command to prove the driver-to-pipeline path works.",
+  "type": "object",
+  "required": ["config", "tag_groups"],
+  "additionalProperties": false,
+  "properties": {
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "tag_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "scan_rate_ms", "tags"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "scan_rate_ms": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 86400000,
+            "description": "100ms minimum sampling interval, matching the other polling drivers."
+          },
+          "tags": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["id"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "initial_value": {
+                  "description": "Value reported before any write() — defaults to 0.",
+                  "type": ["boolean", "integer", "number", "string"]
+                },
+                "engineering_unit": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

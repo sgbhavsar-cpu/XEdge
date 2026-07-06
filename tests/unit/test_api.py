@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -12,9 +13,12 @@ from tests.fixtures.fake_driver import FakeDriver
 from xedge.api.auth import LoginAttemptTracker, SessionManager, UserStore
 from xedge.api.server import create_app
 from xedge.core.config import ConfigVersionHistory
+from xedge.core.pipeline import UnifiedTag
 from xedge.core.supervisor import DriverConfig, DriverRegistry, DriverSupervisor
-from xedge.drivers.base import TagUpdate
+from xedge.drivers.base import Quality, TagUpdate
 from xedge.northbound.dispatcher import NorthboundDispatcher
+from xedge.observability.audit_log import AuditLog
+from xedge.store.latest_values import LatestValueStore
 from xedge.store.ring_buffer import RingBufferManager
 
 
@@ -38,6 +42,8 @@ def _build_app(
     tmp_path: Path,
     core_schema_path: Path,
     dispatcher: NorthboundDispatcher | None = None,
+    latest_values: LatestValueStore | None = None,
+    secure_cookies: bool = False,
 ) -> FastAPI:
     config_path = tmp_path / "xedge.yaml"
     if not config_path.is_file():
@@ -51,6 +57,10 @@ def _build_app(
         login_tracker=LoginAttemptTracker(),
         config_path=config_path,
         schema_path=core_schema_path,
+        latest_values=latest_values if latest_values is not None else LatestValueStore(),
+        audit_log=AuditLog(tmp_path / "webui" / "audit.jsonl"),
+        ring_buffers=RingBufferManager(),
+        secure_cookies=secure_cookies,
     )
 
 
@@ -72,6 +82,43 @@ def test_health_endpoint_never_requires_auth(tmp_path: Path, core_schema_path: P
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+class TestSecureCookies:
+    """secure_cookies (Sprint 13, XEDGE-107/280) controls the session
+    cookie's Secure flag — set by xedge.core.main from the `tls` config
+    section. FastAPI's TestClient only resends a Secure-flagged cookie when
+    constructed with an https:// base_url; a plain TestClient(app) silently
+    drops it, same as a real browser would over plain HTTP."""
+
+    def test_secure_cookie_persists_over_an_https_test_client(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path, secure_cookies=True)
+        client = TestClient(app, base_url="https://testserver")
+
+        setup_response = client.post("/api/v1/auth/setup", json={"password": "hunter2hunter2"})
+        assert setup_response.status_code == 200
+        assert "Secure" in setup_response.headers["set-cookie"]
+
+        status_response = client.get("/api/v1/status")
+        assert status_response.status_code == 200
+
+    def test_secure_cookie_is_dropped_by_a_plain_http_test_client(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path, secure_cookies=True)
+        client = TestClient(app)  # base_url defaults to http://testserver
+
+        setup_response = client.post("/api/v1/auth/setup", json={"password": "hunter2hunter2"})
+        assert setup_response.status_code == 200
+
+        status_response = client.get("/api/v1/status")
+        assert status_response.status_code == 401
 
 
 class TestAuthEndpoints:
@@ -222,6 +269,58 @@ async def test_drivers_endpoint_lists_status_and_live_metrics(
         await supervisor.stop_all()
 
 
+async def test_driver_tags_endpoint_splits_system_tags_from_real_tags(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    supervisor, _driver = await _running_supervisor()
+    history = ConfigVersionHistory(tmp_path)
+    latest_values = LatestValueStore()
+    now = datetime.now(UTC)
+    latest_values.update(
+        UnifiedTag(
+            tag_id="d1/counter",
+            timestamp=now,
+            value=42,
+            data_type="INT64",
+            quality=Quality.GOOD,
+            source_driver="d1",
+            source_address="0",
+        )
+    )
+    latest_values.update(
+        UnifiedTag(
+            tag_id="d1/_system/status",
+            timestamp=now,
+            value="running",
+            data_type="STRING",
+            quality=Quality.GOOD,
+            source_driver="d1",
+            source_address="status",
+        )
+    )
+    app = _build_app(supervisor, history, tmp_path, core_schema_path, latest_values=latest_values)
+    client = _authenticated_client(app)
+    try:
+        response = client.get("/api/v1/drivers/d1/tags")
+        assert response.status_code == 200
+        body = response.json()
+        assert [t["tag_id"] for t in body["tags"]] == ["d1/counter"]
+        assert body["system"] == {"status": "running"}
+    finally:
+        await supervisor.stop_all()
+
+
+def test_driver_tags_endpoint_404s_for_unknown_instance(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+    history = ConfigVersionHistory(tmp_path)
+    app = _build_app(supervisor, history, tmp_path, core_schema_path)
+    client = _authenticated_client(app)
+    response = client.get("/api/v1/drivers/nope/tags")
+    assert response.status_code == 404
+
+
 def test_config_endpoint_returns_empty_when_no_versions_saved(
     tmp_path: Path, core_schema_path: Path
 ) -> None:
@@ -291,3 +390,423 @@ class TestConfigWriteEndpoint:
         client = TestClient(app)
         response = client.put("/api/v1/config", json={"schema_version": "0.1"})
         assert response.status_code == 401
+
+
+class TestUserManagementEndpoints:
+    def test_list_users_returns_admin_initially(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        response = client.get("/api/v1/users")
+        assert response.status_code == 200
+        assert response.json() == [{"username": "admin", "role": "admin"}]
+
+    def test_create_list_and_delete_user(self, tmp_path: Path, core_schema_path: Path) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        create_response = client.post(
+            "/api/v1/users", json={"username": "bob", "password": "bobpass123", "role": "operator"}
+        )
+        assert create_response.status_code == 201
+
+        usernames = {u["username"] for u in client.get("/api/v1/users").json()}
+        assert usernames == {"admin", "bob"}
+
+        delete_response = client.delete("/api/v1/users/bob")
+        assert delete_response.status_code == 200
+        assert {u["username"] for u in client.get("/api/v1/users").json()} == {"admin"}
+
+    def test_create_user_with_unknown_role_rejected(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        response = client.post(
+            "/api/v1/users",
+            json={"username": "bob", "password": "bobpass123", "role": "not-a-role"},
+        )
+        assert response.status_code == 422
+
+    def test_set_user_role(self, tmp_path: Path, core_schema_path: Path) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        client.post(
+            "/api/v1/users", json={"username": "bob", "password": "bobpass123", "role": "operator"}
+        )
+        response = client.post("/api/v1/users/bob/role", json={"role": "readonly"})
+        assert response.status_code == 200
+        users_by_name = {u["username"]: u["role"] for u in client.get("/api/v1/users").json()}
+        assert users_by_name["bob"] == "readonly"
+
+    def test_cannot_delete_own_account(self, tmp_path: Path, core_schema_path: Path) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        response = client.delete("/api/v1/users/admin")
+        assert response.status_code == 400
+
+    def test_non_admin_gets_403_on_user_management(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        admin_client = _authenticated_client(app)
+        admin_client.post(
+            "/api/v1/users",
+            json={"username": "ron", "password": "ronpass123", "role": "readonly"},
+        )
+
+        ron_client = TestClient(app)
+        login_response = ron_client.post(
+            "/api/v1/auth/login", json={"username": "ron", "password": "ronpass123"}
+        )
+        assert login_response.status_code == 200
+
+        assert ron_client.get("/api/v1/users").status_code == 403
+
+
+class TestPermissionMatrixEnforcement:
+    def test_operator_can_read_and_write_config_but_not_manage_users(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        admin_client = _authenticated_client(app)
+        admin_client.post(
+            "/api/v1/users",
+            json={"username": "opuser", "password": "opuserpass123", "role": "operator"},
+        )
+
+        op_client = TestClient(app)
+        op_client.post(
+            "/api/v1/auth/login", json={"username": "opuser", "password": "opuserpass123"}
+        )
+
+        assert op_client.get("/api/v1/config").status_code == 200
+        assert op_client.put("/api/v1/config", json={"schema_version": "0.1"}).status_code == 200
+        assert op_client.get("/api/v1/users").status_code == 403
+
+    def test_readonly_can_read_tags_but_not_config(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        admin_client = _authenticated_client(app)
+        admin_client.post(
+            "/api/v1/users",
+            json={"username": "viewer", "password": "viewerpass123", "role": "readonly"},
+        )
+
+        viewer_client = TestClient(app)
+        viewer_client.post(
+            "/api/v1/auth/login", json={"username": "viewer", "password": "viewerpass123"}
+        )
+
+        assert viewer_client.get("/api/v1/status").status_code == 200
+        assert viewer_client.get("/api/v1/config").status_code == 403
+        assert (
+            viewer_client.put("/api/v1/config", json={"schema_version": "0.1"}).status_code == 403
+        )
+
+
+class TestAuditLogEndpoint:
+    def test_requires_audit_read_permission(self, tmp_path: Path, core_schema_path: Path) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        admin_client = _authenticated_client(app)
+        admin_client.post(
+            "/api/v1/users",
+            json={"username": "opuser", "password": "opuserpass123", "role": "operator"},
+        )
+        admin_client.post(
+            "/api/v1/users",
+            json={"username": "auditor1", "password": "auditor1pass123", "role": "auditor"},
+        )
+
+        op_client = TestClient(app)
+        op_client.post(
+            "/api/v1/auth/login", json={"username": "opuser", "password": "opuserpass123"}
+        )
+        assert op_client.get("/api/v1/audit").status_code == 403
+
+        auditor_client = TestClient(app)
+        auditor_client.post(
+            "/api/v1/auth/login", json={"username": "auditor1", "password": "auditor1pass123"}
+        )
+        assert auditor_client.get("/api/v1/audit").status_code == 200
+
+        assert admin_client.get("/api/v1/audit").status_code == 200
+
+    def test_login_and_config_write_and_user_creation_all_produce_audit_events(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)  # setup -> auth.setup, auth.login_success not logged here (setup path)
+
+        client.put("/api/v1/config", json={"schema_version": "0.1"})
+        client.post(
+            "/api/v1/users",
+            json={"username": "bob", "password": "bobpass123", "role": "operator"},
+        )
+
+        events = [e["event"] for e in client.get("/api/v1/audit").json()]
+        assert "auth.setup" in events
+        assert "config.write" in events
+        assert "user.created" in events
+
+    def test_failed_login_produces_audit_event(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        admin_client = _authenticated_client(app)
+
+        attacker_client = TestClient(app)
+        attacker_client.post("/api/v1/auth/login", json={"username": "admin", "password": "wrong"})
+
+        events = [e["event"] for e in admin_client.get("/api/v1/audit").json()]
+        assert "auth.login_failure" in events
+
+    def test_login_audit_events_capture_client_ip(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        admin_client = _authenticated_client(app)
+        admin_client.post("/api/v1/auth/login", json={"password": "hunter2hunter2"})
+
+        events = admin_client.get("/api/v1/audit").json()
+        login_events = [e for e in events if e["event"] == "auth.login_success"]
+        assert login_events
+        assert login_events[0]["details"]["ip"] is not None
+
+
+class TestDriverHealthEnableDisableValidate:
+    """Sprint 25, XEDGE-185/186/187.
+
+    `DriverSupervisor.start()`/`stop()` must run on the same event loop
+    that later awaits their task — TestClient's WebSocket/request dispatch
+    runs the ASGI app in its own portal thread with its own loop (the same
+    constraint already documented in tests/integration/test_diagnostics_ws.py).
+    So every driver here starts *disabled in config* and is only ever
+    actually started via the `/enable` HTTP endpoint itself — never by
+    calling `supervisor.start()` directly from the test's own context —
+    keeping every supervised task's lifecycle on TestClient's one loop.
+    """
+
+    def _build_app_with_driver(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> tuple[FastAPI, DriverSupervisor]:
+        config_path = tmp_path / "xedge.yaml"
+        config_path.write_text(
+            "schema_version: '0.1'\ndrivers:\n  - id: modbus_sim_01\n    type: modbus_tcp\n"
+            "    enabled: false\n    config:\n      host: 127.0.0.1\n"
+            "      port: 1502\n    tag_groups: []\n",
+            encoding="utf-8",
+        )
+        from xedge.drivers.modbus.tcp import ModbusTcpDriver
+
+        registry = DriverRegistry()
+        registry.register("modbus_tcp", ModbusTcpDriver)
+        supervisor = DriverSupervisor(registry, asyncio.Queue(maxsize=100))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        return app, supervisor
+
+    def test_health_returns_live_status_for_running_driver(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app, _supervisor = self._build_app_with_driver(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        client.post("/api/v1/drivers/modbus_sim_01/enable")
+
+        response = client.get("/api/v1/drivers/modbus_sim_01/health")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["instance_id"] == "modbus_sim_01"
+        assert body["driver_type"] == "modbus_tcp"
+        assert "tag_count" in body
+        assert "last_read_age_seconds" in body
+
+    def test_health_synthesizes_disabled_state_for_never_started_driver(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app, _supervisor = self._build_app_with_driver(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.get("/api/v1/drivers/modbus_sim_01/health")
+
+        assert response.status_code == 200
+        assert response.json()["state"] == "disabled"
+
+    def test_health_requires_tag_read_permission(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app, _supervisor = self._build_app_with_driver(tmp_path, core_schema_path)
+        admin_client = _authenticated_client(app)
+        admin_client.post(
+            "/api/v1/users",
+            json={"username": "viewer", "password": "viewerpass123", "role": "readonly"},
+        )
+        viewer_client = TestClient(app)
+        viewer_client.post(
+            "/api/v1/auth/login", json={"username": "viewer", "password": "viewerpass123"}
+        )
+
+        assert viewer_client.get("/api/v1/drivers/modbus_sim_01/health").status_code == 200
+
+    def test_health_unknown_driver_returns_404(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app, _supervisor = self._build_app_with_driver(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        assert client.get("/api/v1/drivers/nonexistent/health").status_code == 404
+
+    def test_disable_persists_config_and_updates_live_state(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app, _supervisor = self._build_app_with_driver(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        client.post("/api/v1/drivers/modbus_sim_01/enable")
+
+        response = client.post("/api/v1/drivers/modbus_sim_01/disable")
+
+        assert response.status_code == 200
+        health = client.get("/api/v1/drivers/modbus_sim_01/health").json()
+        assert health["state"] == "disabled"
+        config_path = tmp_path / "xedge.yaml"
+        assert "modbus_sim_01" in config_path.read_text()
+        assert "enabled: false" in config_path.read_text()
+
+    def test_enable_starts_a_previously_disabled_driver(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app, _supervisor = self._build_app_with_driver(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.post("/api/v1/drivers/modbus_sim_01/enable")
+
+        assert response.status_code == 200
+        config_path = tmp_path / "xedge.yaml"
+        assert "enabled: true" in config_path.read_text()
+
+    def test_enable_disable_require_driver_restart_permission(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app, _supervisor = self._build_app_with_driver(tmp_path, core_schema_path)
+        admin_client = _authenticated_client(app)
+        admin_client.post(
+            "/api/v1/users",
+            json={"username": "viewer", "password": "viewerpass123", "role": "readonly"},
+        )
+        viewer_client = TestClient(app)
+        viewer_client.post(
+            "/api/v1/auth/login", json={"username": "viewer", "password": "viewerpass123"}
+        )
+
+        assert viewer_client.post("/api/v1/drivers/modbus_sim_01/disable").status_code == 403
+
+    def test_disable_and_enable_are_audit_logged(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app, _supervisor = self._build_app_with_driver(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        client.post("/api/v1/drivers/modbus_sim_01/enable")
+        client.post("/api/v1/drivers/modbus_sim_01/disable")
+
+        events = [e["event"] for e in client.get("/api/v1/audit").json()]
+        assert "driver.disabled" in events
+        assert "driver.enabled" in events
+
+    def test_validate_accepts_good_config_without_writing_or_affecting_live_driver(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app, _supervisor = self._build_app_with_driver(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        config_path = tmp_path / "xedge.yaml"
+        before = config_path.read_text()
+
+        response = client.post(
+            "/api/v1/drivers/modbus_sim_01/validate",
+            json={
+                "type": "modbus_tcp",
+                "config": {"host": "127.0.0.1", "port": 502},
+                "tag_groups": [],
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"valid": True, "errors": []}
+        assert config_path.read_text() == before  # no file write
+
+    def test_validate_rejects_bad_config(self, tmp_path: Path, core_schema_path: Path) -> None:
+        app, _supervisor = self._build_app_with_driver(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.post(
+            "/api/v1/drivers/modbus_sim_01/validate",
+            json={"type": "modbus_tcp", "config": {}, "tag_groups": []},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["valid"] is False
+        assert body["errors"]
+
+    def test_validate_requires_config_read_permission(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app, _supervisor = self._build_app_with_driver(tmp_path, core_schema_path)
+        admin_client = _authenticated_client(app)
+        admin_client.post(
+            "/api/v1/users",
+            json={"username": "auditor1", "password": "auditor1pass123", "role": "auditor"},
+        )
+        auditor_client = TestClient(app)
+        auditor_client.post(
+            "/api/v1/auth/login", json={"username": "auditor1", "password": "auditor1pass123"}
+        )
+
+        response = auditor_client.post(
+            "/api/v1/drivers/modbus_sim_01/validate",
+            json={"type": "modbus_tcp", "config": {"host": "x", "port": 502}, "tag_groups": []},
+        )
+        assert response.status_code == 200  # auditor has config:read
+
+
+class TestPrometheusMetricsEndpoint:
+    def test_metrics_endpoint_requires_no_auth(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        anonymous_client = TestClient(app)
+
+        response = anonymous_client.get("/metrics")
+
+        assert response.status_code == 200
+        assert "# HELP" in response.text
+        assert "# TYPE" in response.text

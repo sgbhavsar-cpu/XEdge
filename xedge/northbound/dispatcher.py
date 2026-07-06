@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import asyncio
 
-from xedge.northbound.base import NorthboundConnector
+from opentelemetry.trace import Status, StatusCode
+
+from xedge.northbound.base import ConnectorMetrics, NorthboundConnector
 from xedge.observability.logging import get_logger
+from xedge.observability.tracing import get_tracer
 from xedge.store.ring_buffer import RingBufferManager
 from xedge.store.sqlite_store import SqliteColdStore
 
 logger = get_logger(__name__)
+tracer = get_tracer(__name__)
 
 _INITIAL_BACKOFF_SECONDS = 1.0
 _MAX_BACKOFF_SECONDS = 300.0
@@ -52,6 +56,12 @@ class NorthboundDispatcher:
     def connected(self) -> bool:
         return self._connected
 
+    def get_metrics(self) -> ConnectorMetrics:
+        return self._connector.get_metrics()
+
+    def is_alive(self) -> bool:
+        return self._connector.is_alive()
+
     async def run(self) -> None:
         backoff = _INITIAL_BACKOFF_SECONDS
         while True:
@@ -74,10 +84,15 @@ class NorthboundDispatcher:
             if not batch:
                 continue
 
-            result = await self._connector.publish(batch)
-            if not result.success:
-                logger.warning("northbound.publish_failed", error=result.error_message)
-                self._connected = False
+            with tracer.start_as_current_span(
+                "northbound.publish",
+                attributes={"batch_size": len(batch), "publish_kind": "live"},
+            ) as span:
+                result = await self._connector.publish(batch)
+                if not result.success:
+                    span.set_status(Status(StatusCode.ERROR, result.error_message or ""))
+                    logger.warning("northbound.publish_failed", error=result.error_message)
+                    self._connected = False
 
     async def _replay_cold_store(self) -> None:
         """Publish every stream's cold-store backlog, oldest first, before
@@ -95,15 +110,24 @@ class NorthboundDispatcher:
                 if not rows:
                     break
                 batch = [tag for _, tag in rows]
-                result = await self._connector.publish(batch)
-                if not result.success:
-                    logger.warning(
-                        "northbound.replay_publish_failed",
-                        stream_key=stream_key,
-                        error=result.error_message,
-                    )
-                    self._connected = False
-                    return
+                with tracer.start_as_current_span(
+                    "northbound.publish",
+                    attributes={
+                        "batch_size": len(batch),
+                        "publish_kind": "replay",
+                        "stream_key": stream_key,
+                    },
+                ) as span:
+                    result = await self._connector.publish(batch)
+                    if not result.success:
+                        span.set_status(Status(StatusCode.ERROR, result.error_message or ""))
+                        logger.warning(
+                            "northbound.replay_publish_failed",
+                            stream_key=stream_key,
+                            error=result.error_message,
+                        )
+                        self._connected = False
+                        return
                 cold_store.delete_ids(stream_key, [row_id for row_id, _ in rows])
                 logger.info("northbound.replayed_batch", stream_key=stream_key, count=len(batch))
 

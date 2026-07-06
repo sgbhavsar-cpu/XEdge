@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}xEdge — Diagnostics{% endblock %}
+{% block nav %}
+<nav class="xedge-nav">
+  <a href="/ui/dashboard">Dashboard</a>
+  {% if can_view_config %}<a href="/ui/config">Configuration</a>{% endif %}
+  <a href="/ui/logs">Logs</a>
+  {% if can_manage_users %}<a href="/ui/users">Users</a>{% endif %}
+  {% if can_view_audit_log %}<a href="/ui/audit">Audit Log</a>{% endif %}
+  <a href="/ui/diagnostics" class="active">Diagnostics</a>
+</nav>
+{% endblock %}
+{% block content %}
+<div class="xedge-card">
+  <h1>Diagnostics Console</h1>
+  <p class="xedge-field-help">
+    Commands: <code>status</code>, <code>driver list</code>,
+    <code>driver restart &lt;id&gt;</code>, <code>driver logs &lt;id&gt; [limit]</code>,
+    <code>tag read &lt;tag_id&gt;</code>, <code>store-forward status</code>,
+    <code>network check</code>, <code>config show</code>, <code>config validate</code>,
+    <code>self-test</code>, <code>compliance cip-007</code>. Availability
+    depends on your account's role — a denied command shows an error here,
+    not a dropped connection.
+  </p>
+  <pre id="diagnostics-output" class="xedge-log-pane"></pre>
+  <form id="diagnostics-form" class="xedge-field">
+    <input type="text" id="diagnostics-input" placeholder="e.g. status" autocomplete="off" style="width: 100%;">
+  </form>
+</div>
+<script>
+  const output = document.getElementById("diagnostics-output");
+  const form = document.getElementById("diagnostics-form");
+  const input = document.getElementById("diagnostics-input");
+
+  function appendLine(text) {
+    output.textContent += text + "\n";
+    output.scrollTop = output.scrollHeight;
+  }
+
+  const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(`${wsProtocol}//${location.host}/ws/diagnostics`);
+
+  socket.addEventListener("open", () => appendLine("-- connected --"));
+  socket.addEventListener("close", () => appendLine("-- disconnected --"));
+  socket.addEventListener("error", () => appendLine("-- connection error --"));
+  socket.addEventListener("message", (event) => {
+    let parsed;
+    try {
+      parsed = JSON.parse(event.data);
+    } catch {
+      appendLine(event.data);
+      return;
+    }
+    appendLine(JSON.stringify(parsed, null, 2));
+  });
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const line = input.value.trim();
+    if (!line) return;
+    const parts = line.split(/\s+/);
+    const command = parts[0];
+    const args = parts.slice(1);
+    appendLine(`> ${line}`);
+    socket.send(JSON.stringify({ command, args }));
+    input.value = "";
+  });
+</script>
+{% endblock %}

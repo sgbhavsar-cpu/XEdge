@@ -243,7 +243,7 @@ For each CIP standard, xEdge generates exportable evidence:
 |---|---|
 | CIP-002 (Asset ID) | Device inventory JSON export with hardware ID, software version, criticality flags |
 | CIP-005 (ESP Access) | Network port configuration export; access log for all interactive sessions |
-| CIP-007 (Systems Security) | Failed login reports; port scan results from self-test; patch history |
+| CIP-007 (Systems Security) | Failed login reports; port scan results from self-test; patch history — implemented (Sprint 18, XEDGE-143) as the `compliance cip-007` diagnostic command (`xedge/api/diagnostics.py`, reachable via `xedge-cli` or `/ui/diagnostics`), returning the audit log's failed/successful login history plus current version + dependency versions in place of a real patch/upgrade history (no OTA/upgrade-tracking system exists yet to back that literally — see the SL-1 gap analysis) |
 | CIP-010 (Config Mgmt) | Config change audit log; OTA update history with before/after hashes |
 | CIP-011 (Info Protection) | Encryption status report; data classification tags |
 
@@ -251,7 +251,13 @@ For each CIP standard, xEdge generates exportable evidence:
 
 ## 4. Hardening Guide (Summary)
 
-Full hardening guide published separately as `docs/security/hardening-guide.md`. Key points:
+Full hardening guide published separately as `docs/security/hardening-guide.md`
+(written Sprint 18, XEDGE-142 — the file referenced here now actually
+exists). An honest SR-by-SR gap analysis against §3.1's table above,
+including concrete named follow-ups, is at
+`docs/security/iec62443-sl1-gap-analysis.md` (Sprint 18, XEDGE-141 — also
+closes the never-written Sprint 15 gap-analysis story XEDGE-125). Key
+points:
 
 **OS hardening:**
 - Minimal Linux image (Yocto kirkstone or Ubuntu Core)

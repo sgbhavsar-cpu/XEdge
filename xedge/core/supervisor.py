@@ -12,6 +12,7 @@ import enum
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 
 from xedge.drivers.base import BaseDriver, DriverConfig, DriverMetrics, TagUpdate
 from xedge.observability.logging import get_logger
@@ -34,6 +35,12 @@ class DriverState(enum.Enum):
     RUNNING = "running"
     BACKOFF = "backoff"
     FAILED = "failed"
+    # Deliberately disabled via config (`enabled: false`) or the
+    # enable/disable REST endpoints (Sprint 25, XEDGE-186) — distinct from
+    # STOPPED (a generic cancellation) so the Web UI/API can tell "an
+    # operator turned this off on purpose" from "this driver was removed
+    # from config" or "this driver crashed."
+    DISABLED = "disabled"
 
 
 @dataclass(slots=True)
@@ -44,6 +51,19 @@ class DriverInstanceStatus:
     consecutive_failures: int = 0
     last_error: str | None = None
     metrics: DriverMetrics = field(default_factory=DriverMetrics)
+    # Total tags across this instance's tag_groups (FR-WU-* system tags) — set
+    # once at start() from its DriverConfig, not recomputed on every status
+    # read, since it only changes when hot-reload stops+restarts the instance
+    # for a config change (xedge.core.hot_reload.apply_driver_changes).
+    tag_count: int = 0
+    state_changed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+def _set_state(status: DriverInstanceStatus, new_state: DriverState) -> None:
+    """Update `state` and stamp `state_changed_at` together — system tags'
+    `status_time` depends on these never drifting apart."""
+    status.state = new_state
+    status.state_changed_at = datetime.now(UTC)
 
 
 class DriverRegistry:
@@ -108,10 +128,12 @@ class DriverSupervisor:
         if config.instance_id in self._tasks:
             raise ValueError(f"Driver instance already running: {config.instance_id!r}")
 
+        tag_count = sum(len(group.get("tags", [])) for group in config.tag_groups)
         self._status[config.instance_id] = DriverInstanceStatus(
             instance_id=config.instance_id,
             driver_type=config.driver_type,
             state=DriverState.STARTING,
+            tag_count=tag_count,
         )
         task = asyncio.ensure_future(self._supervise(config))
         self._tasks[config.instance_id] = task
@@ -127,11 +149,20 @@ class DriverSupervisor:
         except asyncio.CancelledError:
             pass
         if instance_id in self._status:
-            self._status[instance_id].state = DriverState.STOPPED
+            _set_state(self._status[instance_id], DriverState.STOPPED)
 
     async def stop_all(self) -> None:
         for instance_id in list(self._tasks):
             await self.stop(instance_id)
+
+    async def disable(self, instance_id: str) -> None:
+        """Like `stop()`, but the resulting state is `DISABLED` rather than
+        `STOPPED` — a deliberate, config-driven "off," not a generic
+        cancellation. Safe to call on an already-stopped/disabled/unknown
+        instance (same no-op-if-absent behavior `stop()` already has)."""
+        await self.stop(instance_id)
+        if instance_id in self._status:
+            _set_state(self._status[instance_id], DriverState.DISABLED)
 
     async def _supervise(self, config: DriverConfig) -> None:
         instance_id = config.instance_id
@@ -141,29 +172,29 @@ class DriverSupervisor:
         while True:
             driver = self._registry.create(config.driver_type)
             self._drivers[instance_id] = driver
-            status.state = DriverState.STARTING
+            _set_state(status, DriverState.STARTING)
             run_started_at = time.monotonic()
             try:
                 await driver.configure(config)
                 await driver.connect()
-                status.state = DriverState.RUNNING
+                _set_state(status, DriverState.RUNNING)
                 logger.info(
                     "driver.started", instance_id=instance_id, driver_type=config.driver_type
                 )
                 await driver.run(self._output_queue)
                 # A driver's run() returning normally (rather than raising or
                 # being cancelled) is treated as a request to stop supervising.
-                status.state = DriverState.STOPPED
+                _set_state(status, DriverState.STOPPED)
                 await driver.disconnect()
                 return
             except asyncio.CancelledError:
-                status.state = DriverState.STOPPED
+                _set_state(status, DriverState.STOPPED)
                 await _safe_disconnect(driver, instance_id)
                 raise
             except Exception as exc:  # noqa: BLE001 — isolate any driver-raised failure
                 status.consecutive_failures += 1
                 status.last_error = str(exc)
-                status.state = DriverState.BACKOFF
+                _set_state(status, DriverState.BACKOFF)
                 logger.error(
                     "driver.failed",
                     instance_id=instance_id,
@@ -180,7 +211,7 @@ class DriverSupervisor:
                 try:
                     await asyncio.sleep(backoff)
                 except asyncio.CancelledError:
-                    status.state = DriverState.STOPPED
+                    _set_state(status, DriverState.STOPPED)
                     raise
                 backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF_SECONDS)
 
