@@ -86,6 +86,36 @@ async def test_modbus_exception_marks_tag_bad(fake_rtu_server: FakeModbusRtuServ
     assert updates[0].metadata["modbus_exception"] == codec.ExceptionCode.ILLEGAL_DATA_ADDRESS
 
 
+async def test_write_holding_register(fake_rtu_server: FakeModbusRtuServer) -> None:
+    config = _driver_config(
+        fake_rtu_server, [{"id": "reg_01", "function_code": "read_holding_registers", "address": 2}]
+    )
+    driver = ModbusRtuOverTcpDriver()
+    await driver.configure(config)
+    await driver.connect()
+    try:
+        result = await driver.write("reg_01", 777)
+        assert result.success is True
+        assert fake_rtu_server.holding_registers[2] == 777
+    finally:
+        await driver.disconnect()
+
+
+async def test_write_coil(fake_rtu_server: FakeModbusRtuServer) -> None:
+    config = _driver_config(
+        fake_rtu_server, [{"id": "coil_03", "function_code": "read_coils", "address": 3}]
+    )
+    driver = ModbusRtuOverTcpDriver()
+    await driver.configure(config)
+    await driver.connect()
+    try:
+        result = await driver.write("coil_03", True)
+        assert result.success is True
+        assert fake_rtu_server.coils[3] is True
+    finally:
+        await driver.disconnect()
+
+
 async def test_connect_to_unreachable_host_raises() -> None:
     driver = ModbusRtuOverTcpDriver()
     config = DriverConfig(

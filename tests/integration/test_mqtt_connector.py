@@ -9,14 +9,21 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 
 import paho.mqtt.client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion
 from pysparkplug._payload import NBirth, NData
 
+from tests.fixtures.fake_driver import FakeDriver
 from xedge.core.pipeline import UnifiedTag
-from xedge.drivers.base import Quality
+from xedge.core.supervisor import DriverConfig, DriverRegistry, DriverSupervisor
+from xedge.core.write_router import WriteRouter
+from xedge.drivers.base import Quality, TagUpdate
 from xedge.northbound.mqtt import MqttSparkplugConnector, SparkplugConnectorConfig
+from xedge.northbound.sparkplug.payload import DataType, SparkplugMetric, encode_payload
+from xedge.northbound.sparkplug.session import build_topic
+from xedge.observability.audit_log import AuditLog
 
 
 class _TopicCapture:
@@ -167,3 +174,109 @@ async def test_publish_metrics_tracked(mqtt_broker: tuple[str, int]) -> None:
         assert metrics.last_successful_publish is not None
     finally:
         await connector.disconnect()
+
+
+async def _running_supervisor_with_fake_driver() -> tuple[DriverSupervisor, FakeDriver]:
+    driver = FakeDriver(emit_interval_seconds=0.001)
+    registry = DriverRegistry()
+    registry.register("fake", lambda: driver)
+    queue: asyncio.Queue[TagUpdate] = asyncio.Queue(maxsize=100)
+    supervisor = DriverSupervisor(registry, queue)
+    supervisor.start(DriverConfig(instance_id="fake_01", driver_type="fake", config={}))
+    for _ in range(200):
+        if driver.emitted_count >= 1:
+            break
+        await asyncio.sleep(0.01)
+    return supervisor, driver
+
+
+async def test_ncmd_write_command_reaches_the_driver_through_write_router(
+    mqtt_broker: tuple[str, int], tmp_path: Path
+) -> None:
+    """End-to-end write-back (Sprint 31, XEDGE-223/229): a real external
+    MQTT client publishes a real Sparkplug B NCMD payload; the connector
+    decodes it and routes the write through a real WriteRouter to a real
+    (fake) running driver instance."""
+    host, port = mqtt_broker
+    supervisor, driver = await _running_supervisor_with_fake_driver()
+    audit_log = AuditLog(tmp_path / "audit.jsonl")
+    write_router = WriteRouter(supervisor, audit_log)
+    config = SparkplugConnectorConfig(host=host, port=port, group_id="xedge", edge_node_id="edge01")
+    connector = MqttSparkplugConnector(config, write_router)
+
+    external_publisher = mqtt.Client(CallbackAPIVersion.VERSION2)
+    external_publisher.connect(host, port, 10)
+    external_publisher.loop_start()
+
+    try:
+        await connector.connect()
+        await asyncio.sleep(0.2)  # let the NCMD subscription land
+
+        ncmd_payload = encode_payload(
+            timestamp_ms=1700000000123,
+            seq=None,
+            metrics=[
+                SparkplugMetric(
+                    name="fake_01/setpoint", timestamp_ms=1700000000123,
+                    datatype=DataType.DOUBLE, value=42.5,
+                )
+            ],
+        )
+        ncmd_topic = build_topic("NCMD", config.group_id, config.edge_node_id)
+        external_publisher.publish(ncmd_topic, ncmd_payload, qos=1)
+
+        for _ in range(100):
+            if driver.written:
+                break
+            await asyncio.sleep(0.05)
+
+        assert driver.written == [("setpoint", 42.5)]
+
+        write_events = [e for e in audit_log.tail(limit=10) if e["event"] == "tag.write"]
+        assert len(write_events) == 1
+        assert write_events[0]["actor"] == "mqtt-ncmd"
+        assert write_events[0]["details"]["tag_id"] == "fake_01/setpoint"
+        assert write_events[0]["details"]["success"] is True
+    finally:
+        external_publisher.loop_stop()
+        external_publisher.disconnect()
+        await connector.disconnect()
+        await supervisor.stop_all()
+
+
+async def test_ncmd_null_metric_is_ignored(mqtt_broker: tuple[str, int], tmp_path: Path) -> None:
+    host, port = mqtt_broker
+    supervisor, driver = await _running_supervisor_with_fake_driver()
+    audit_log = AuditLog(tmp_path / "audit.jsonl")
+    write_router = WriteRouter(supervisor, audit_log)
+    config = SparkplugConnectorConfig(host=host, port=port, group_id="xedge", edge_node_id="edge01")
+    connector = MqttSparkplugConnector(config, write_router)
+
+    external_publisher = mqtt.Client(CallbackAPIVersion.VERSION2)
+    external_publisher.connect(host, port, 10)
+    external_publisher.loop_start()
+
+    try:
+        await connector.connect()
+        await asyncio.sleep(0.2)
+
+        ncmd_payload = encode_payload(
+            timestamp_ms=1700000000123,
+            seq=None,
+            metrics=[
+                SparkplugMetric(
+                    name="fake_01/setpoint", timestamp_ms=1700000000123,
+                    datatype=DataType.DOUBLE, value=None, is_null=True,
+                )
+            ],
+        )
+        ncmd_topic = build_topic("NCMD", config.group_id, config.edge_node_id)
+        external_publisher.publish(ncmd_topic, ncmd_payload, qos=1)
+        await asyncio.sleep(0.3)
+
+        assert driver.written == []
+    finally:
+        external_publisher.loop_stop()
+        external_publisher.disconnect()
+        await connector.disconnect()
+        await supervisor.stop_all()

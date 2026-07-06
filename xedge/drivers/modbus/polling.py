@@ -40,6 +40,29 @@ FUNCTION_CODE_BY_NAME: dict[str, codec.FunctionCode] = {
     "read_input_registers": codec.FunctionCode.READ_INPUT_REGISTERS,
 }
 
+# Write function code for each *readable* function code, where the
+# underlying Modbus memory class is writable at all (FR-NB-009 write-back,
+# XEDGE-223). Discrete inputs and input registers are read-only memory
+# classes on real devices — there is no Modbus write function code for
+# them, so a write attempt against a tag configured with either is
+# rejected before ever reaching the wire.
+_WRITE_FUNCTION_CODE_FOR_READ: dict[str, codec.FunctionCode] = {
+    "read_coils": codec.FunctionCode.WRITE_SINGLE_COIL,
+    "read_holding_registers": codec.FunctionCode.WRITE_SINGLE_REGISTER,
+}
+
+
+def _inverse_scale(value: TagValue, scaling: dict[str, Any] | None) -> int:
+    """Invert xedge.core.pipeline.normalize's forward scaling
+    (`engineering_value = raw * scale + offset`) so a write request
+    expressed in engineering units lands as the correct raw register
+    value: `raw = round((engineering_value - offset) / scale)`."""
+    if scaling is None:
+        return int(value)
+    scale: float = scaling.get("scale", 1.0)
+    offset: float = scaling.get("offset", 0.0)
+    return round((float(value) - offset) / scale)
+
 
 class ModbusDriverStateError(RuntimeError):
     """Raised when a lifecycle method is called out of order (e.g. connect()
@@ -53,6 +76,7 @@ class BaseModbusPollingDriver(BaseDriver):
     def __init__(self) -> None:
         self._config: DriverConfig | None = None
         self._metrics = DriverMetrics()
+        self._tags_by_id: dict[str, dict[str, Any]] = {}
 
     def _require_config(self) -> DriverConfig:
         if self._config is None:
@@ -61,6 +85,9 @@ class BaseModbusPollingDriver(BaseDriver):
 
     async def configure(self, config: DriverConfig) -> None:
         self._config = config
+        self._tags_by_id = {
+            tag["id"]: tag for group in config.tag_groups for tag in group["tags"]
+        }
 
     async def run(self, output: asyncio.Queue[TagUpdate]) -> None:
         config = self._require_config()
@@ -75,14 +102,44 @@ class BaseModbusPollingDriver(BaseDriver):
             await asyncio.gather(*group_tasks, return_exceptions=True)
 
     async def write(self, tag_id: str, value: TagValue) -> WriteResult:
-        # Modbus write function codes (FC05/06/15/16) are Sprint 4 scope
-        # (XEDGE-037); these drivers are read-only for now.
-        return WriteResult(success=False, tag_id=tag_id, error_message="write not yet supported")
+        """FR-NB-009 write-back (Sprint 31, XEDGE-223), covering FC05/06 —
+        single coil / single register only; FC16 (write_multiple_registers)
+        has no caller yet (every write here targets exactly one tag) but is
+        available in xedge.drivers.modbus.codec for a future multi-register
+        write path."""
+        tag = self._tags_by_id.get(tag_id)
+        if tag is None:
+            return WriteResult(success=False, tag_id=tag_id, error_message="Unknown tag")
+        read_function_name = tag["function_code"]
+        write_function_code = _WRITE_FUNCTION_CODE_FOR_READ.get(read_function_name)
+        if write_function_code is None:
+            return WriteResult(
+                success=False,
+                tag_id=tag_id,
+                error_message=f"{read_function_name} is a read-only Modbus memory class",
+            )
+        address = tag["address"]
+        try:
+            if write_function_code == codec.FunctionCode.WRITE_SINGLE_COIL:
+                raw_value: int | bool = bool(value)
+            else:
+                raw_value = _inverse_scale(value, tag.get("scaling"))
+            await self._write_one(write_function_code, address, raw_value)
+        except codec.ModbusException as exc:
+            self._metrics.error_count += 1
+            logger.warning("modbus.write_rejected", tag_id=tag_id, error=str(exc))
+            return WriteResult(success=False, tag_id=tag_id, error_message=str(exc))
+        return WriteResult(success=True, tag_id=tag_id)
 
     def get_metrics(self) -> DriverMetrics:
         return self._metrics
 
     async def _read_one(self, function_code: codec.FunctionCode, address: int) -> TagValue:
+        raise NotImplementedError
+
+    async def _write_one(
+        self, function_code: codec.FunctionCode, address: int, value: int | bool
+    ) -> None:
         raise NotImplementedError
 
     async def _poll_group(self, group: dict[str, Any], output: asyncio.Queue[TagUpdate]) -> None:

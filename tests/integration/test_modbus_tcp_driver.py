@@ -130,6 +130,81 @@ async def test_modbus_exception_marks_tag_bad_without_killing_driver(
     assert updates[1].value == 42
 
 
+async def test_write_coil_round_trips_through_the_real_device(
+    fake_server: FakeModbusServer,
+) -> None:
+    config = _driver_config(
+        fake_server, [{"id": "pump_running", "function_code": "read_coils", "address": 3}]
+    )
+    driver = ModbusTcpDriver()
+    await driver.configure(config)
+    await driver.connect()
+    try:
+        result = await driver.write("pump_running", True)
+        assert result.success is True
+        assert fake_server.coils[3] is True
+    finally:
+        await driver.disconnect()
+
+
+async def test_write_holding_register_applies_inverse_scaling(
+    fake_server: FakeModbusServer,
+) -> None:
+    config = _driver_config(
+        fake_server,
+        [
+            {
+                "id": "setpoint",
+                "function_code": "read_holding_registers",
+                "address": 7,
+                "scaling": {"scale": 0.1, "offset": 0.0},
+            }
+        ],
+    )
+    driver = ModbusTcpDriver()
+    await driver.configure(config)
+    await driver.connect()
+    try:
+        # Engineering-unit value 85.3 -> raw register 853 (inverse of the
+        # read-side `engineering_value = raw * scale + offset`).
+        result = await driver.write("setpoint", 85.3)
+        assert result.success is True
+        assert fake_server.holding_registers[7] == 853
+    finally:
+        await driver.disconnect()
+
+
+async def test_write_to_read_only_memory_class_is_rejected(
+    fake_server: FakeModbusServer,
+) -> None:
+    config = _driver_config(
+        fake_server, [{"id": "flow_01", "function_code": "read_input_registers", "address": 0}]
+    )
+    driver = ModbusTcpDriver()
+    await driver.configure(config)
+    await driver.connect()
+    try:
+        result = await driver.write("flow_01", 5)
+        assert result.success is False
+        assert "read-only" in result.error_message
+    finally:
+        await driver.disconnect()
+
+
+async def test_write_unknown_tag_is_rejected(fake_server: FakeModbusServer) -> None:
+    config = _driver_config(
+        fake_server, [{"id": "known", "function_code": "read_coils", "address": 0}]
+    )
+    driver = ModbusTcpDriver()
+    await driver.configure(config)
+    await driver.connect()
+    try:
+        result = await driver.write("unknown", True)
+        assert result.success is False
+    finally:
+        await driver.disconnect()
+
+
 async def test_connect_to_unreachable_host_raises() -> None:
     driver = ModbusTcpDriver()
     config = DriverConfig(

@@ -34,6 +34,7 @@ from xedge.core.pipeline import (
 from xedge.core.supervisor import DriverRegistry, DriverSupervisor
 from xedge.core.system_tags import SYSTEM_TAG_NAMES, system_tag_id, system_tag_publish_loop
 from xedge.core.watchdog import watchdog_loop
+from xedge.core.write_router import WriteRouter
 from xedge.drivers.bacnet.client import BacnetIpDriver
 from xedge.drivers.base import TagUpdate, TagValue
 from xedge.drivers.loopback.driver import LoopbackDriver
@@ -267,7 +268,11 @@ def _build_fleet_agent_config(store: ConfigStore) -> FleetAgentConfig | None:
 
 
 def _build_northbound_dispatcher(
-    store: ConfigStore, ring_buffers: RingBufferManager, cold_store: SqliteColdStore
+    store: ConfigStore,
+    ring_buffers: RingBufferManager,
+    cold_store: SqliteColdStore,
+    supervisor: DriverSupervisor,
+    audit_log: AuditLog,
 ) -> NorthboundDispatcher | None:
     northbound_config = store.get_section("northbound", {})
     if not northbound_config.get("enabled", True):
@@ -288,7 +293,10 @@ def _build_northbound_dispatcher(
             qos=mqtt_config.get("qos", 1),
             username=mqtt_config.get("username"),
             password=mqtt_config.get("password"),
-        )
+        ),
+        # Sprint 31, XEDGE-223: routes decoded NCMD write commands through
+        # the same WriteRouter the REST API's write endpoint uses.
+        WriteRouter(supervisor, audit_log),
     )
     return NorthboundDispatcher(
         connector,
@@ -398,6 +406,14 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
     store_config = store.get_section("store", {})
     cold_store = SqliteColdStore(Path(store_config.get("directory", "/data/store")))
 
+    # Web UI auth state (ADR-007): siblings of the store/config-history
+    # dirs under /data, matching system-architecture.md §6.4's layout.
+    # Constructed unconditionally (not gated on api.enabled) since Sprint 31
+    # (XEDGE-223)'s MQTT NCMD write-back path needs `audit_log` for its
+    # WriteRouter too, independent of whether the REST API/Web UI is on.
+    webui_dir = Path(store_config.get("directory", "/data/store")).parent / "webui"
+    audit_log = AuditLog(webui_dir / "audit.jsonl")
+
     ring_buffers = RingBufferManager(
         max_depth=store_config.get("ram_max_depth", 10_000), on_evict=cold_store.append
     )
@@ -433,7 +449,9 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
         else None
     )
 
-    dispatcher = _build_northbound_dispatcher(store, ring_buffers, cold_store)
+    dispatcher = _build_northbound_dispatcher(
+        store, ring_buffers, cold_store, supervisor, audit_log
+    )
     dispatcher_task = asyncio.create_task(dispatcher.run()) if dispatcher is not None else None
 
     fleet_status = FleetAgentStatus()
@@ -466,13 +484,9 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
     api_server: uvicorn.Server | None = None
     api_task: asyncio.Task[None] | None = None
     if api_config.get("enabled", True):
-        # Web UI auth state (ADR-007): siblings of the store/config-history
-        # dirs under /data, matching system-architecture.md §6.4's layout.
-        webui_dir = Path(store_config.get("directory", "/data/store")).parent / "webui"
         user_store = UserStore(webui_dir / "users.json")
         session_manager = SessionManager(load_or_create_secret_key(webui_dir / "session_key"))
         login_tracker = LoginAttemptTracker()
-        audit_log = AuditLog(webui_dir / "audit.jsonl")
 
         tls_config = store.get_section("tls", {})
         tls_enabled = tls_config.get("enabled", True)

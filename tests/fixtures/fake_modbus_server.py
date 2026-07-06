@@ -36,12 +36,17 @@ class _ModbusDatastore:
 
     def handle_request(self, pdu: bytes) -> bytes:
         function_code = pdu[0]
-        address, quantity = struct.unpack(">HH", pdu[1:5])
+        # Second/third fields are (address, quantity) for read requests but
+        # (address, value) for FC05/06 single-write requests — same 4-byte
+        # layout either way, so unpacking once and branching on meaning
+        # below is correct for both.
+        address, second_field = struct.unpack(">HH", pdu[1:5])
 
         forced_exception = self.exceptions.get((function_code, address))
         if forced_exception is not None:
             return bytes([function_code | codec.EXCEPTION_RESPONSE_FLAG, forced_exception])
 
+        quantity = second_field
         if function_code == codec.FunctionCode.READ_HOLDING_REGISTERS:
             values = [self.holding_registers.get(address + i, 0) for i in range(quantity)]
             data = struct.pack(f">{quantity}H", *values)
@@ -58,6 +63,12 @@ class _ModbusDatastore:
             bits = [self.discrete_inputs.get(address + i, False) for i in range(quantity)]
             data = _pack_bits(bits)
             return bytes([function_code, len(data)]) + data
+        if function_code == codec.FunctionCode.WRITE_SINGLE_COIL:
+            self.coils[address] = second_field == 0xFF00
+            return pdu[:5]  # success response is an echo of the request
+        if function_code == codec.FunctionCode.WRITE_SINGLE_REGISTER:
+            self.holding_registers[address] = second_field
+            return pdu[:5]  # success response is an echo of the request
 
         return bytes(
             [function_code | codec.EXCEPTION_RESPONSE_FLAG, codec.ExceptionCode.ILLEGAL_FUNCTION]

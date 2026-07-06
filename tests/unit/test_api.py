@@ -796,6 +796,73 @@ class TestDriverHealthEnableDisableValidate:
         assert response.status_code == 200  # auditor has config:read
 
 
+class TestTagWriteEndpoint:
+    async def test_write_succeeds_for_operator_and_reaches_the_driver(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor, driver = await _running_supervisor()
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)  # first-login setup account is admin
+
+        response = client.post("/api/v1/drivers/d1/tags/setpoint/write", json={"value": 42})
+
+        assert response.status_code == 200
+        assert response.json() == {"tag_id": "d1/setpoint", "success": True}
+        assert driver.written == [("setpoint", 42)]
+        await supervisor.stop_all()
+
+    async def test_write_is_audit_logged(self, tmp_path: Path, core_schema_path: Path) -> None:
+        supervisor, _driver = await _running_supervisor()
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        client.post("/api/v1/drivers/d1/tags/setpoint/write", json={"value": True})
+
+        events = client.get("/api/v1/audit").json()
+        write_events = [e for e in events if e["event"] == "tag.write"]
+        assert len(write_events) == 1
+        assert write_events[0]["details"]["tag_id"] == "d1/setpoint"
+        assert write_events[0]["details"]["success"] is True
+        await supervisor.stop_all()
+
+    async def test_write_to_unknown_instance_is_422_not_500(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.post("/api/v1/drivers/nope/tags/x/write", json={"value": 1})
+
+        assert response.status_code == 422
+
+    async def test_write_requires_tag_write_permission_not_just_tag_read(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor, _driver = await _running_supervisor()
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        admin_client = _authenticated_client(app)
+        admin_client.post(
+            "/api/v1/users",
+            json={"username": "viewer", "password": "viewerpass123", "role": "readonly"},
+        )
+        viewer_client = TestClient(app)
+        viewer_client.post(
+            "/api/v1/auth/login", json={"username": "viewer", "password": "viewerpass123"}
+        )
+
+        response = viewer_client.post(
+            "/api/v1/drivers/d1/tags/setpoint/write", json={"value": 1}
+        )
+
+        assert response.status_code == 403
+        await supervisor.stop_all()
+
+
 class TestPrometheusMetricsEndpoint:
     def test_metrics_endpoint_requires_no_auth(
         self, tmp_path: Path, core_schema_path: Path

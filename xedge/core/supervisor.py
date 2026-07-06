@@ -111,6 +111,16 @@ class DriverSupervisor:
     def status(self, instance_id: str) -> DriverInstanceStatus:
         return self._with_live_metrics(self._status[instance_id])
 
+    def get_driver(self, instance_id: str) -> BaseDriver | None:
+        """The most recently constructed driver instance for `instance_id`,
+        or None if it was never started at all. Note this is *not* cleared
+        on stop/disconnect/backoff — the same lazily-stale-until-overwritten
+        shape as `_drivers` has always had (see `_with_live_metrics`) —
+        so callers that need "is it actually connected right now" (e.g.
+        `xedge.core.write_router.WriteRouter`, Sprint 31/XEDGE-223) must
+        also check `status(instance_id).state == DriverState.RUNNING`."""
+        return self._drivers.get(instance_id)
+
     def all_status(self) -> dict[str, DriverInstanceStatus]:
         return {
             instance_id: self._with_live_metrics(status)

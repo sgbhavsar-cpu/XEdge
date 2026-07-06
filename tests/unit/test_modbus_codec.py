@@ -97,3 +97,51 @@ def test_is_bit_and_register_function_classification() -> None:
     assert codec.is_register_function(codec.FunctionCode.READ_HOLDING_REGISTERS)
     assert codec.is_register_function(codec.FunctionCode.READ_INPUT_REGISTERS)
     assert not codec.is_register_function(codec.FunctionCode.READ_COILS)
+
+
+def test_encode_write_single_coil_matches_pymodbus_oracle() -> None:
+    from pymodbus.pdu.bit_message import WriteSingleCoilRequest
+
+    pdu = codec.encode_write_single_coil(address=10, value=True)
+    assert pdu[0] == codec.FunctionCode.WRITE_SINGLE_COIL
+    assert pdu[1:] == WriteSingleCoilRequest(address=10, bits=[True]).encode()
+
+
+def test_encode_write_single_coil_off_uses_0x0000() -> None:
+    pdu = codec.encode_write_single_coil(address=10, value=False)
+    assert pdu == b"\x05\x00\x0a\x00\x00"
+
+
+def test_encode_write_single_register_matches_pymodbus_oracle() -> None:
+    from pymodbus.pdu.register_message import WriteSingleRegisterRequest
+
+    pdu = codec.encode_write_single_register(address=20, value=1234)
+    assert pdu[0] == codec.FunctionCode.WRITE_SINGLE_REGISTER
+    assert pdu[1:] == WriteSingleRegisterRequest(address=20, registers=[1234]).encode()
+
+
+def test_encode_write_multiple_registers_matches_pymodbus_oracle() -> None:
+    from pymodbus.pdu.register_message import WriteMultipleRegistersRequest
+
+    pdu = codec.encode_write_multiple_registers(address=5, values=[1, 2, 3])
+    assert pdu[0] == codec.FunctionCode.WRITE_MULTIPLE_REGISTERS
+    assert pdu[1:] == WriteMultipleRegistersRequest(address=5, registers=[1, 2, 3]).encode()
+
+
+def test_decode_write_single_response_returns_echoed_address_and_value() -> None:
+    pdu = codec.encode_write_single_register(address=20, value=1234)
+    address, value = codec.decode_write_single_response(pdu)
+    assert (address, value) == (20, 1234)
+
+
+def test_decode_write_single_response_raises_modbus_exception() -> None:
+    pdu = b"\x86\x03"  # FC06 exception, illegal data value
+    with pytest.raises(codec.ModbusException) as exc_info:
+        codec.decode_write_single_response(pdu)
+    assert exc_info.value.exception_code == codec.ExceptionCode.ILLEGAL_DATA_VALUE
+
+
+def test_decode_write_multiple_response_returns_address_and_quantity() -> None:
+    pdu = b"\x10\x00\x05\x00\x03"
+    address, quantity = codec.decode_write_multiple_response(pdu)
+    assert (address, quantity) == (5, 3)

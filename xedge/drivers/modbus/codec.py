@@ -31,6 +31,9 @@ class FunctionCode(IntEnum):
     READ_DISCRETE_INPUTS = 0x02
     READ_HOLDING_REGISTERS = 0x03
     READ_INPUT_REGISTERS = 0x04
+    WRITE_SINGLE_COIL = 0x05
+    WRITE_SINGLE_REGISTER = 0x06
+    WRITE_MULTIPLE_REGISTERS = 0x10
 
 
 class ExceptionCode(IntEnum):
@@ -152,3 +155,50 @@ def is_bit_function(function_code: FunctionCode) -> bool:
 
 def is_register_function(function_code: FunctionCode) -> bool:
     return function_code in _REGISTER_FUNCTION_CODES
+
+
+def encode_write_single_coil(address: int, value: bool) -> bytes:
+    """FC05 request PDU. Per spec, ON is encoded as 0xFF00, OFF as 0x0000 —
+    not a plain boolean byte."""
+    if not 0 <= address <= 0xFFFF:
+        raise ValueError(f"address out of range: {address}")
+    return struct.pack(">BHH", FunctionCode.WRITE_SINGLE_COIL, address, 0xFF00 if value else 0x0000)
+
+
+def encode_write_single_register(address: int, value: int) -> bytes:
+    if not 0 <= address <= 0xFFFF:
+        raise ValueError(f"address out of range: {address}")
+    if not 0 <= value <= 0xFFFF:
+        raise ValueError(f"register value out of range: {value}")
+    return struct.pack(">BHH", FunctionCode.WRITE_SINGLE_REGISTER, address, value)
+
+
+def encode_write_multiple_registers(address: int, values: list[int]) -> bytes:
+    if not 0 <= address <= 0xFFFF:
+        raise ValueError(f"address out of range: {address}")
+    if not 1 <= len(values) <= 123:
+        raise ValueError(f"quantity out of range: {len(values)}")
+    byte_count = len(values) * 2
+    return struct.pack(
+        f">BHHB{len(values)}H",
+        FunctionCode.WRITE_MULTIPLE_REGISTERS,
+        address,
+        len(values),
+        byte_count,
+        *values,
+    )
+
+
+def decode_write_single_response(pdu: bytes) -> tuple[int, int]:
+    """FC05/FC06 response PDU: an echo of the request (address, value) —
+    the write is confirmed once this decodes without a ModbusException."""
+    _check_exception(pdu)
+    address, value = struct.unpack(">HH", pdu[1:5])
+    return address, value
+
+
+def decode_write_multiple_response(pdu: bytes) -> tuple[int, int]:
+    """FC16 response PDU: (address, quantity written)."""
+    _check_exception(pdu)
+    address, quantity = struct.unpack(">HH", pdu[1:5])
+    return address, quantity

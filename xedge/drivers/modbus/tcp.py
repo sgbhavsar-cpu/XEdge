@@ -80,3 +80,30 @@ class ModbusTcpDriver(BaseModbusPollingDriver):
         remainder_length = codec.frame_remainder_length(header)
         remainder = await reader.readexactly(remainder_length)
         return header + remainder
+
+    async def _write_one(
+        self, function_code: codec.FunctionCode, address: int, value: int | bool
+    ) -> None:
+        cfg = self._require_config().config
+        reader, writer = self._require_connection()
+        request_pdu = (
+            codec.encode_write_single_coil(address, bool(value))
+            if function_code == codec.FunctionCode.WRITE_SINGLE_COIL
+            else codec.encode_write_single_register(address, int(value))
+        )
+
+        async with self._request_lock:
+            self._transaction_id = (self._transaction_id + 1) % _MAX_TRANSACTION_ID
+            frame = codec.encode_mbap(self._transaction_id, cfg.get("unit_id", 1), request_pdu)
+            writer.write(frame)
+            await writer.drain()
+
+            # MBAP's explicit length field means _read_frame (unlike the RTU
+            # transports') needs no write-response-specific variant.
+            response_frame = await asyncio.wait_for(
+                self._read_frame(reader),
+                timeout=cfg.get("read_timeout_seconds", _DEFAULT_READ_TIMEOUT_SECONDS),
+            )
+
+        _, _, response_pdu = codec.decode_mbap(response_frame)
+        codec.decode_write_single_response(response_pdu)

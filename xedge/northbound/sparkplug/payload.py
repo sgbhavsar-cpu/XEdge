@@ -18,6 +18,7 @@ licensing, per ADR-002/ADR-006).
 
 from __future__ import annotations
 
+import struct
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import IntEnum
@@ -151,3 +152,74 @@ def encode_payload(timestamp_ms: int, seq: int | None, metrics: Sequence[Sparkpl
     if seq is not None:
         parts += wire.encode_varint_field(_FIELD_PAYLOAD_SEQ, seq)
     return bytes(parts)
+
+
+def decode_metric(data: bytes) -> SparkplugMetric:
+    """Decode a single `Metric` submessage — the counterpart to
+    `encode_metric` (Sprint 31, XEDGE-223: incoming NCMD write commands)."""
+    name: str | None = None
+    timestamp_ms = 0
+    datatype = DataType.UNKNOWN
+    is_null = False
+    int_value: int | None = None
+    fixed32_bytes: bytes | None = None
+    fixed64_bytes: bytes | None = None
+    bool_value: bool | None = None
+    string_value: str | None = None
+
+    for field_number, _wire_type, raw in wire.iter_fields(data):
+        if field_number == _FIELD_METRIC_NAME:
+            name = raw.decode("utf-8")  # type: ignore[union-attr]
+        elif field_number == _FIELD_METRIC_TIMESTAMP:
+            timestamp_ms = raw  # type: ignore[assignment]
+        elif field_number == _FIELD_METRIC_DATATYPE:
+            datatype = DataType(raw)  # type: ignore[arg-type]
+        elif field_number == _FIELD_METRIC_IS_NULL:
+            is_null = bool(raw)
+        elif field_number in (_FIELD_INT_VALUE, _FIELD_LONG_VALUE):
+            int_value = raw  # type: ignore[assignment]
+        elif field_number == _FIELD_FLOAT_VALUE:
+            fixed32_bytes = raw  # type: ignore[assignment]
+        elif field_number == _FIELD_DOUBLE_VALUE:
+            fixed64_bytes = raw  # type: ignore[assignment]
+        elif field_number == _FIELD_BOOLEAN_VALUE:
+            bool_value = bool(raw)
+        elif field_number == _FIELD_STRING_VALUE:
+            string_value = raw.decode("utf-8")  # type: ignore[union-attr]
+
+    value: TagValue | None = None
+    if not is_null:
+        if datatype in _INT_FIELD_DATATYPES or datatype in _LONG_FIELD_DATATYPES:
+            value = int_value
+        elif datatype == DataType.FLOAT and fixed32_bytes is not None:
+            value = struct.unpack("<f", fixed32_bytes)[0]
+        elif datatype == DataType.DOUBLE and fixed64_bytes is not None:
+            value = struct.unpack("<d", fixed64_bytes)[0]
+        elif datatype == DataType.BOOLEAN:
+            value = bool_value
+        elif datatype in _STRING_FIELD_DATATYPES:
+            value = string_value
+
+    return SparkplugMetric(
+        name=name, timestamp_ms=timestamp_ms, datatype=datatype, value=value, is_null=is_null
+    )
+
+
+def decode_payload(data: bytes) -> tuple[int, int | None, list[SparkplugMetric]]:
+    """Decode a full Sparkplug B Payload message into
+    `(timestamp_ms, seq, metrics)` — the counterpart to `encode_payload`.
+    `seq` is `None` if the payload carried no top-level sequence number
+    (matching NDEATH's own encode-side omission)."""
+    timestamp_ms = 0
+    seq: int | None = None
+    metrics: list[SparkplugMetric] = []
+
+    for field_number, _wire_type, raw in wire.iter_fields(data):
+        if field_number == _FIELD_PAYLOAD_TIMESTAMP:
+            timestamp_ms = raw  # type: ignore[assignment]
+        elif field_number == _FIELD_PAYLOAD_METRICS:
+            metrics.append(decode_metric(raw))  # type: ignore[arg-type]
+        elif field_number == _FIELD_PAYLOAD_SEQ:
+            seq = raw  # type: ignore[assignment]
+
+    return timestamp_ms, seq, metrics

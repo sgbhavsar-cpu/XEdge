@@ -49,6 +49,7 @@ from xedge.api.ui import create_ui_router
 from xedge.core.config import ConfigValidationError, ConfigValidator, ConfigVersionHistory
 from xedge.core.driver_config import build_driver_config
 from xedge.core.supervisor import DriverSupervisor
+from xedge.core.write_router import WriteRouter
 from xedge.drivers.base import DriverMetrics
 from xedge.fleet.agent import FleetAgentStatus
 from xedge.northbound.dispatcher import NorthboundDispatcher
@@ -96,6 +97,15 @@ class _DriverValidateBody(BaseModel):
     tag_groups: list[dict[str, Any]] = []
 
 
+class _TagWriteBody(BaseModel):
+    """Sprint 31, XEDGE-223 write-back — `bytes` (part of the broader
+    TagValue union every driver's `write()` accepts) is deliberately
+    excluded here: it has no natural JSON representation, and no driver
+    tag is configured as a bytes type today."""
+
+    value: bool | int | float | str
+
+
 def create_app(
     supervisor: DriverSupervisor,
     version_history: ConfigVersionHistory,
@@ -119,6 +129,7 @@ def create_app(
     app = FastAPI(title="xEdge API", version=__version__)
     started_at = datetime.now(UTC)
     validator = ConfigValidator.from_file(schema_path)
+    write_router = WriteRouter(supervisor, audit_log)
 
     if rate_limit_enabled:
         app.add_middleware(
@@ -277,6 +288,21 @@ def create_app(
                     }
                 )
         return {"tags": tags, "system": system}
+
+    @app.post("/api/v1/drivers/{instance_id}/tags/{tag_name}/write")
+    async def write_tag(
+        instance_id: str,
+        tag_name: str,
+        body: _TagWriteBody,
+        user: str = Depends(require_permission("tag:write")),
+    ) -> dict[str, Any]:
+        """FR-NB-009 write-back (Sprint 31, XEDGE-223) — the direct REST
+        path; the MQTT Sparkplug NCMD path (xedge.northbound.mqtt) goes
+        through the same WriteRouter and gets the same audit trail."""
+        result = await write_router.write(user, instance_id, tag_name, body.value)
+        if not result.success:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, result.error_message)
+        return {"tag_id": result.tag_id, "success": True}
 
     def _full_driver_config() -> dict[str, Any]:
         """Read the config directly from the file the forms/endpoints write

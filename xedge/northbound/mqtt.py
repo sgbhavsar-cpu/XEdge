@@ -10,12 +10,24 @@ callback (fired from paho's thread) hands off to asyncio via
 TLS/mTLS (SR-TS-001/002) and the exponential-backoff reconnect state machine
 (FR-NB-010) beyond a single connect attempt are Sprint 13 scope; this
 connector raises on connect failure and lets the caller (dispatcher) retry.
+
+NCMD subscription (Sprint 31, XEDGE-223 write-back) is opt-in via the
+`write_router` constructor argument: if set, `connect()` also subscribes to
+this edge node's NCMD topic and routes each decoded, non-null metric's
+write through `WriteRouter` under the `"mqtt-ncmd"` system actor, exactly
+like the REST write endpoint routes through the same `WriteRouter` under
+the human username. No per-driver-instance DCMD subscription — this
+connector never births per-instance Sparkplug Devices (see `_publish_birth`),
+so a metric's name is the same `instance_id/tag_name` id NDATA already
+publishes it under.
 """
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -23,11 +35,13 @@ import paho.mqtt.client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion
 
 from xedge.core.pipeline import UnifiedTag
-from xedge.drivers.base import Quality
+from xedge.core.write_router import WriteRouter
+from xedge.drivers.base import Quality, WriteResult
 from xedge.northbound.base import ConnectorMetrics, NorthboundConnector, PublishResult
 from xedge.northbound.sparkplug.payload import (
     DataType,
     SparkplugMetric,
+    decode_payload,
     encode_payload,
     infer_datatype,
 )
@@ -66,11 +80,14 @@ class MqttConnectorStateError(RuntimeError):
 
 
 class MqttSparkplugConnector(NorthboundConnector):
-    def __init__(self, config: SparkplugConnectorConfig) -> None:
+    def __init__(
+        self, config: SparkplugConnectorConfig, write_router: WriteRouter | None = None
+    ) -> None:
         self._config = config
         self._session = SparkplugSession()
         self._client: mqtt.Client | None = None
         self._metrics = ConnectorMetrics()
+        self._write_router = write_router
 
     def _topic(self, message_type: str) -> str:
         return build_topic(message_type, self._config.group_id, self._config.edge_node_id)
@@ -115,6 +132,8 @@ class MqttSparkplugConnector(NorthboundConnector):
             loop.call_soon_threadsafe(connected_event.set)
 
         client.on_connect = _on_connect
+        if self._write_router is not None:
+            client.on_message = self._make_on_message(loop, self._write_router)
         self._client = client
 
         await loop.run_in_executor(
@@ -140,7 +159,43 @@ class MqttSparkplugConnector(NorthboundConnector):
             raise ConnectionError(f"MQTT CONNACK failure: {connect_failure[0]}")
 
         logger.info("mqtt.connected", host=self._config.host, port=self._config.port)
+        if self._write_router is not None:
+            client.subscribe(self._topic("NCMD"))
         await self._publish_birth()
+
+    def _make_on_message(
+        self, loop: asyncio.AbstractEventLoop, write_router: WriteRouter
+    ) -> Callable[[mqtt.Client, object, mqtt.MQTTMessage], None]:
+        """Builds the `on_message` callback (fires on paho's own network
+        thread, per the module docstring — never call back into asyncio
+        directly from here). Decodes an incoming NCMD payload and routes
+        each non-null metric's write through `write_router`, fire-and-
+        forget (`run_coroutine_threadsafe`, not awaited from this thread) —
+        `WriteRouter.write` itself is the single source of truth for the
+        actual outcome via its own audit log entry; a logged warning here
+        covers only the narrower "the coroutine itself blew up" case."""
+
+        def _on_message(_client: mqtt.Client, _userdata: object, message: mqtt.MQTTMessage) -> None:
+            try:
+                _timestamp_ms, _seq, metrics = decode_payload(message.payload)
+            except Exception as exc:  # noqa: BLE001 — a malformed NCMD must not crash the MQTT thread
+                logger.warning("mqtt.ncmd_decode_failed", error=str(exc))
+                return
+            for metric in metrics:
+                if (
+                    metric.is_null
+                    or metric.value is None
+                    or metric.name is None
+                    or "/" not in metric.name
+                ):
+                    continue
+                instance_id, _, tag_name = metric.name.partition("/")
+                future = asyncio.run_coroutine_threadsafe(
+                    write_router.write("mqtt-ncmd", instance_id, tag_name, metric.value), loop
+                )
+                future.add_done_callback(_log_ncmd_write_future_exception(metric.name))
+
+        return _on_message
 
     async def _publish_birth(self) -> None:
         bd_seq = self._session.start_birth()
@@ -208,6 +263,22 @@ class MqttSparkplugConnector(NorthboundConnector):
 
     def is_alive(self) -> bool:
         return self._client is not None and self._client.is_connected()
+
+
+def _log_ncmd_write_future_exception(
+    tag_id: str,
+) -> Callable[[concurrent.futures.Future[WriteResult]], None]:
+    # asyncio.run_coroutine_threadsafe returns a concurrent.futures.Future
+    # (it's meant to be waited on from a non-asyncio thread), not an
+    # asyncio.Future — its done-callback runs on the event loop thread
+    # regardless of which thread completed it, so a plain logger.warning
+    # here is safe.
+    def _callback(future: concurrent.futures.Future[WriteResult]) -> None:
+        exc = future.exception()
+        if exc is not None:
+            logger.warning("mqtt.ncmd_write_failed", tag_id=tag_id, error=str(exc))
+
+    return _callback
 
 
 def _to_sparkplug_metric(tag: UnifiedTag) -> SparkplugMetric:
