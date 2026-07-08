@@ -36,13 +36,14 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import APIRouter, Form, Request, Response, status
+from fastapi import APIRouter, File, Form, Request, Response, UploadFile, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from xedge.api.auth import SessionManager, UserStore, resolve_session
 from xedge.api.permissions import has_permission
 from xedge.api.schema_forms import build_object_fields, unflatten
+from xedge.api.tag_bulk_io import TagBulkParseError, tags_from_csv, tags_from_json, tags_to_csv
 from xedge.api.ui import require_permission_redirect
 from xedge.core.config import ConfigValidationError, ConfigValidator
 from xedge.core.driver_config import driver_type_schema_path
@@ -527,6 +528,90 @@ def create_config_ui_router(
         )
         if error is None:
             error = _save_full_config(current, request)
+        fields = build_object_fields(group_schema, group, skip=_SKIP_ID_AND_TAGS)
+        return render(
+            request,
+            "tag_group_edit.html",
+            {
+                "driver_id": driver_id,
+                "group_id": group.get("id", group_id),
+                "fields": fields,
+                "tags": group.get("tags", []),
+                "error": error,
+                "success": error is None,
+            },
+        )
+
+    @router.get("/drivers/{driver_id}/tag-groups/{group_id}/tags/export.csv")
+    def tags_export_csv(request: Request, driver_id: str, group_id: str) -> Response:
+        redirect = require_read(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_driver(current, driver_id)
+            group = _find_tag_group(entry, group_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+        type_schema = driver_type_schema(entry["type"])
+        tag_schema = type_schema["properties"]["tag_groups"]["items"]["properties"]["tags"]["items"]
+        csv_text = tags_to_csv(group.get("tags", []), tag_schema)
+        return Response(
+            content=csv_text,
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="{driver_id}_{group_id}_tags.csv"'
+            },
+        )
+
+    @router.post(
+        "/drivers/{driver_id}/tag-groups/{group_id}/tags/import", response_class=HTMLResponse
+    )
+    async def tags_import_submit(
+        request: Request, driver_id: str, group_id: str, file: UploadFile = File(...)
+    ) -> Response:
+        redirect = require_write(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_driver(current, driver_id)
+            group = _find_tag_group(entry, group_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+
+        type_schema = driver_type_schema(entry["type"])
+        group_schema = type_schema["properties"]["tag_groups"]["items"]
+        tag_schema = group_schema["properties"]["tags"]["items"]
+        raw = await file.read()
+        try:
+            text = raw.decode("utf-8")
+            is_json = (file.filename or "").lower().endswith(".json")
+            new_tags = tags_from_json(text) if is_json else tags_from_csv(text, tag_schema)
+        except (TagBulkParseError, UnicodeDecodeError) as exc:
+            error: str | None = str(exc)
+            new_tags = None
+
+        if new_tags is not None:
+            # Upsert by id: re-importing a previously-exported (and
+            # edited) CSV updates existing tags rather than duplicating
+            # them, while still adding genuinely new ids — the "mass
+            # commissioning" use case needs both.
+            by_id = {t.get("id"): t for t in group.get("tags", [])}
+            for tag in new_tags:
+                by_id[tag["id"]] = tag
+            candidate_tags = list(by_id.values())
+            candidate_tag_groups = [
+                {**g, "tags": candidate_tags} if g is group else g
+                for g in entry.get("tag_groups", [])
+            ]
+            error = _validate_driver_section(
+                entry["type"], entry.get("config", {}), candidate_tag_groups
+            )
+            if error is None:
+                group["tags"] = candidate_tags
+                error = _save_full_config(current, request)
+
         fields = build_object_fields(group_schema, group, skip=_SKIP_ID_AND_TAGS)
         return render(
             request,

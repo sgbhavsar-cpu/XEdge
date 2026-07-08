@@ -115,6 +115,12 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
 
+[tool.ruff.lint.flake8-bugbear]
+# fastapi.Form/Depends/Query/etc. are exempted from B008 by ruff's default
+# allowlist already; fastapi.File isn't (as of ruff 0.15), even though it's
+# the same "evaluated once at import time by FastAPI's DI system" pattern.
+extend-immutable-calls = ["fastapi.File"]
+
 [tool.mypy]
 python_version = "3.11"
 platform = "linux"

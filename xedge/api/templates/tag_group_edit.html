@@ -36,6 +36,26 @@
     </tbody>
   </table>
   <a href="/ui/config/drivers/{{ driver_id }}/tag-groups/{{ group_id }}/tags/new" class="xedge-button-secondary">+ Add tag</a>
+  <a href="/ui/config/drivers/{{ driver_id }}/tag-groups/{{ group_id }}/tags/export.csv" class="xedge-button-secondary">Export CSV</a>
+</div>
+
+<div class="xedge-card">
+  <h1>Bulk import tags</h1>
+  <p class="xedge-field-help">
+    Upload a CSV (same columns as "Export CSV") or JSON file to add or
+    update many tags at once — an existing tag id is updated, a new one is
+    added. Nothing is applied if any row fails to parse or the resulting
+    tag group fails validation.
+  </p>
+  <form method="post" action="/ui/config/drivers/{{ driver_id }}/tag-groups/{{ group_id }}/tags/import"
+        enctype="multipart/form-data">
+    <div class="xedge-field">
+      <input type="file" name="file" accept=".csv,.json" required>
+    </div>
+    <div class="xedge-form-actions">
+      <button type="submit">Import</button>
+    </div>
+  </form>
 </div>
 
 <div class="xedge-card">

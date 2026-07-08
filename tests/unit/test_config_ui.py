@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import yaml
@@ -428,6 +429,125 @@ class TestTagGroupAndTagCrud:
         assert response.status_code == 200
         assert response.url.path == "/ui/config/drivers/d1"
         assert _current_config(tmp_path)["drivers"][0]["tag_groups"] == []
+
+    def test_export_csv_contains_existing_tag(self, tmp_path: Path, core_schema_path: Path) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        self._driver(client)
+        client.post("/ui/config/drivers/d1/tag-groups/new", data={"id": "g1"})
+        client.post("/ui/config/drivers/d1/tag-groups/g1/tags/new", data={"id": "t1"})
+        client.post(
+            "/ui/config/drivers/d1/tag-groups/g1/tags/t1",
+            data={"function_code": "read_coils", "address": "5"},
+        )
+        response = client.get("/ui/config/drivers/d1/tag-groups/g1/tags/export.csv")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/csv")
+        lines = response.text.strip().splitlines()
+        assert lines[0].split(",")[:3] == ["id", "function_code", "address"]
+        assert "t1,read_coils,5" in response.text
+
+    def test_import_csv_adds_new_tags(self, tmp_path: Path, core_schema_path: Path) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        self._driver(client)
+        client.post("/ui/config/drivers/d1/tag-groups/new", data={"id": "g1"})
+
+        csv_text = "id,function_code,address\nt1,read_coils,0\nt2,read_holding_registers,10\n"
+        response = client.post(
+            "/ui/config/drivers/d1/tag-groups/g1/tags/import",
+            files={"file": ("tags.csv", csv_text, "text/csv")},
+        )
+        assert response.status_code == 200
+        assert "Saved" in response.text
+        tags = _current_config(tmp_path)["drivers"][0]["tag_groups"][0]["tags"]
+        assert {t["id"] for t in tags} == {"t1", "t2"}
+
+    def test_import_csv_upserts_existing_tag_by_id(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        self._driver(client)
+        client.post("/ui/config/drivers/d1/tag-groups/new", data={"id": "g1"})
+        client.post("/ui/config/drivers/d1/tag-groups/g1/tags/new", data={"id": "t1"})
+        client.post(
+            "/ui/config/drivers/d1/tag-groups/g1/tags/t1",
+            data={"function_code": "read_coils", "address": "0"},
+        )
+
+        csv_text = "id,function_code,address\nt1,read_holding_registers,99\n"
+        client.post(
+            "/ui/config/drivers/d1/tag-groups/g1/tags/import",
+            files={"file": ("tags.csv", csv_text, "text/csv")},
+        )
+        tags = _current_config(tmp_path)["drivers"][0]["tag_groups"][0]["tags"]
+        assert len(tags) == 1
+        assert tags[0]["function_code"] == "read_holding_registers"
+        assert tags[0]["address"] == 99
+
+    def test_import_json_adds_tags_with_nested_scaling(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        self._driver(client)
+        client.post("/ui/config/drivers/d1/tag-groups/new", data={"id": "g1"})
+
+        payload = json.dumps(
+            [
+                {
+                    "id": "t1",
+                    "function_code": "read_holding_registers",
+                    "address": 10,
+                    "scaling": {"scale": 0.1, "offset": -273.15},
+                }
+            ]
+        )
+        response = client.post(
+            "/ui/config/drivers/d1/tag-groups/g1/tags/import",
+            files={"file": ("tags.json", payload, "application/json")},
+        )
+        assert response.status_code == 200
+        assert "Saved" in response.text
+        tag = _current_config(tmp_path)["drivers"][0]["tag_groups"][0]["tags"][0]
+        assert tag["scaling"] == {"scale": 0.1, "offset": -273.15}
+
+    def test_import_invalid_csv_row_leaves_config_unchanged(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        self._driver(client)
+        client.post("/ui/config/drivers/d1/tag-groups/new", data={"id": "g1"})
+
+        csv_text = "id,function_code,address\n,read_coils,0\n"
+        response = client.post(
+            "/ui/config/drivers/d1/tag-groups/g1/tags/import",
+            files={"file": ("tags.csv", csv_text, "text/csv")},
+        )
+        assert "Row 2" in response.text
+        assert _current_config(tmp_path)["drivers"][0]["tag_groups"][0]["tags"] == []
+
+    def test_import_validation_failure_leaves_config_unchanged(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        self._driver(client)
+        client.post("/ui/config/drivers/d1/tag-groups/new", data={"id": "g1"})
+
+        # Parses fine (function_code is a plain string field to unflatten,
+        # which doesn't check enum membership) but fails the modbus_tcp
+        # driver schema's own enum validation at save time.
+        csv_text = "id,function_code,address\nt1,bogus_code,0\n"
+        response = client.post(
+            "/ui/config/drivers/d1/tag-groups/g1/tags/import",
+            files={"file": ("tags.csv", csv_text, "text/csv")},
+        )
+        assert response.status_code == 200
+        assert "error" in response.text.lower()
+        assert _current_config(tmp_path)["drivers"][0]["tag_groups"][0]["tags"] == []
 
 
 class TestAdvancedYamlEditor:
