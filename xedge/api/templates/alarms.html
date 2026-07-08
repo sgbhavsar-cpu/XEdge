@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}xEdge — Alarms{% endblock %}
+{% block nav %}
+<nav class="xedge-nav">
+  <a href="/ui/dashboard">Dashboard</a>
+  {% if can_view_config %}<a href="/ui/config">Configuration</a>{% endif %}
+  <a href="/ui/logs">Logs</a>
+  <a href="/ui/alarms" class="active">Alarms</a>
+  {% if can_manage_users %}<a href="/ui/users">Users</a>{% endif %}
+  {% if can_view_audit_log %}<a href="/ui/audit">Audit Log</a>{% endif %}
+  <a href="/ui/diagnostics">Diagnostics</a>
+</nav>
+{% endblock %}
+{% block content %}
+<div class="xedge-card">
+  <h1>Alarms</h1>
+  {% if not alarm_engine_enabled %}
+  <p class="xedge-field-help">The alarm engine is not enabled (see the "Alarms" config section).</p>
+  {% else %}
+  <table class="xedge-table">
+    <thead>
+      <tr>
+        <th>Tag</th>
+        <th>State</th>
+        <th>Condition</th>
+        <th>Active since</th>
+        <th>Value</th>
+        <th>Acknowledged by</th>
+        <th>Shelved until</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in statuses %}
+      <tr>
+        <td>{{ s.tag_id }}</td>
+        <td class="{% if s.state.value != 'normal' %}xedge-error{% else %}xedge-success{% endif %}">
+          {{ s.state.value }}
+        </td>
+        <td>{{ s.condition or "" }}</td>
+        <td>{{ s.active_since or "" }}</td>
+        <td>{{ s.last_value }}</td>
+        <td>{{ s.acknowledged_by or "" }}</td>
+        <td>{{ s.shelved_until or "" }}</td>
+        <td>
+          {% if can_manage_alarms %}
+          {% if s.state.value == "active" %}
+          <form method="post" action="/ui/alarms/{{ s.tag_id }}/acknowledge" class="xedge-inline-form">
+            <button type="submit">Acknowledge</button>
+          </form>
+          {% endif %}
+          {% if s.shelved_until %}
+          <form method="post" action="/ui/alarms/{{ s.tag_id }}/unshelve" class="xedge-inline-form">
+            <button type="submit">Unshelve</button>
+          </form>
+          {% else %}
+          <form method="post" action="/ui/alarms/{{ s.tag_id }}/shelve" class="xedge-inline-form">
+            <input type="number" name="duration_seconds" value="3600" min="1" style="width: 6em;">
+            <button type="submit">Shelve</button>
+          </form>
+          {% endif %}
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8">No alarm-tier tags have been evaluated yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endblock %}

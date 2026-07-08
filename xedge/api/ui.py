@@ -87,7 +87,7 @@ def create_ui_router(
     secure_cookies: bool = False,
     dashboard_url: str | None = None,
     fleet_status: FleetAgentStatus | None = None,
-    alarm_engine: AlarmEngine | None = None,  # noqa: ARG001 — accepted now, rendered by the next UI pass
+    alarm_engine: AlarmEngine | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/ui")
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
@@ -107,6 +107,7 @@ def create_ui_router(
             "can_manage_users": has_permission(role, "user:manage"),
             "can_view_audit_log": has_permission(role, "audit:read"),
             "can_restart_driver": has_permission(role, "driver:restart"),
+            "can_manage_alarms": has_permission(role, "alarm:manage"),
             "dashboard_url": dashboard_url,
         }
 
@@ -363,8 +364,61 @@ def create_ui_router(
             },
         )
 
+    @router.get("/alarms", response_class=HTMLResponse)
+    def alarms_page(request: Request) -> Response:
+        redirect = require_permission_redirect(request, session_manager, user_store, "tag:read")
+        if redirect is not None:
+            return redirect
+        statuses = list(alarm_engine.all_status().values()) if alarm_engine is not None else []
+        return templates.TemplateResponse(
+            request,
+            "alarms.html",
+            {
+                "alarm_engine_enabled": alarm_engine is not None,
+                "statuses": sorted(statuses, key=lambda s: s.tag_id),
+                "authenticated": True,
+                **nav_permissions(request),
+            },
+        )
+
+    @router.post("/alarms/{tag_id:path}/acknowledge")
+    def alarms_acknowledge(request: Request, tag_id: str) -> Response:
+        redirect = require_permission_redirect(request, session_manager, user_store, "alarm:manage")
+        if redirect is not None:
+            return redirect
+        actor = resolve_session(request, session_manager)[1]  # type: ignore[index]
+        if alarm_engine is not None and alarm_engine.acknowledge(tag_id, actor):
+            audit_log.append(actor, "alarm.acknowledged", {"tag_id": tag_id})
+        return RedirectResponse("/ui/alarms", status_code=status.HTTP_303_SEE_OTHER)
+
+    @router.post("/alarms/{tag_id:path}/shelve")
+    def alarms_shelve(
+        request: Request, tag_id: str, duration_seconds: float = Form(...)
+    ) -> Response:
+        redirect = require_permission_redirect(request, session_manager, user_store, "alarm:manage")
+        if redirect is not None:
+            return redirect
+        if alarm_engine is not None:
+            alarm_engine.shelve(tag_id, duration_seconds)
+            actor = resolve_session(request, session_manager)[1]  # type: ignore[index]
+            audit_log.append(
+                actor, "alarm.shelved", {"tag_id": tag_id, "duration_seconds": duration_seconds}
+            )
+        return RedirectResponse("/ui/alarms", status_code=status.HTTP_303_SEE_OTHER)
+
+    @router.post("/alarms/{tag_id:path}/unshelve")
+    def alarms_unshelve(request: Request, tag_id: str) -> Response:
+        redirect = require_permission_redirect(request, session_manager, user_store, "alarm:manage")
+        if redirect is not None:
+            return redirect
+        if alarm_engine is not None and alarm_engine.unshelve(tag_id):
+            actor = resolve_session(request, session_manager)[1]  # type: ignore[index]
+            audit_log.append(actor, "alarm.unshelved", {"tag_id": tag_id})
+        return RedirectResponse("/ui/alarms", status_code=status.HTTP_303_SEE_OTHER)
+
     # Note: /ui/config* is handled by xedge.api.config_ui's dedicated
     # router (schema-driven tree + forms) — not here. This module only
-    # renders login/setup/dashboard/driver-detail/logs/users/audit/logout.
+    # renders login/setup/dashboard/driver-detail/logs/users/audit/alarms/
+    # logout.
 
     return router

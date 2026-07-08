@@ -83,6 +83,7 @@ CORE_SECTIONS = [
     ("metrics", "Metrics"),
     ("rate_limit", "Rate Limiting"),
     ("fleet", "Fleet Management"),
+    ("alarms", "Alarms"),
 ]
 
 

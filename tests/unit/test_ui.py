@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -9,9 +10,11 @@ from fastapi.testclient import TestClient
 from tests.fixtures.fake_driver import FakeDriver
 from xedge.api.auth import LoginAttemptTracker, SessionManager, UserStore
 from xedge.api.server import create_app
+from xedge.core.alarms import AlarmEngine, AlarmRule
 from xedge.core.config import ConfigVersionHistory
+from xedge.core.pipeline import UnifiedTag
 from xedge.core.supervisor import DriverConfig, DriverRegistry, DriverSupervisor
-from xedge.drivers.base import TagUpdate
+from xedge.drivers.base import Quality, TagUpdate
 from xedge.fleet.agent import FleetAgentStatus
 from xedge.observability.audit_log import AuditLog
 from xedge.store.latest_values import LatestValueStore
@@ -23,6 +26,7 @@ def _build_app(
     core_schema_path: Path,
     supervisor: DriverSupervisor | None = None,
     fleet_status: FleetAgentStatus | None = None,
+    alarm_engine: AlarmEngine | None = None,
 ) -> FastAPI:
     config_path = tmp_path / "xedge.yaml"
     if not config_path.is_file():
@@ -40,6 +44,7 @@ def _build_app(
         audit_log=AuditLog(tmp_path / "webui" / "audit.jsonl"),
         ring_buffers=RingBufferManager(),
         fleet_status=fleet_status,
+        alarm_engine=alarm_engine,
     )
 
 
@@ -428,3 +433,114 @@ class TestConfigRootPage:
         response = client.get("/ui/config")
         assert response.status_code == 200
         assert "Core Settings" in response.text
+
+
+def _seeded_alarm_engine() -> AlarmEngine:
+    engine = AlarmEngine({"d1/temp": AlarmRule(tag_id="d1/temp", high=90)})
+    engine.evaluate(
+        UnifiedTag(
+            tag_id="d1/temp",
+            timestamp=datetime.now(UTC),
+            value=95.0,
+            data_type="FLOAT64",
+            quality=Quality.GOOD,
+            source_driver="d1",
+            source_address="0",
+        )
+    )
+    return engine
+
+
+class TestAlarmsPage:
+    def _authenticated_client(self, app: FastAPI) -> TestClient:
+        client = TestClient(app)
+        client.post(
+            "/ui/setup",
+            data={"password": "correct-password", "confirm_password": "correct-password"},
+        )
+        return client
+
+    def test_alarms_page_redirects_when_unauthenticated(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = TestClient(app, follow_redirects=False)
+        response = client.get("/ui/alarms")
+        assert response.status_code == 303
+        assert response.headers["location"] == "/ui/login"
+
+    def test_alarms_page_shows_message_when_engine_disabled(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = self._authenticated_client(app)
+        response = client.get("/ui/alarms")
+        assert response.status_code == 200
+        assert "not enabled" in response.text
+
+    def test_alarms_page_shows_active_alarm(self, tmp_path: Path, core_schema_path: Path) -> None:
+        app = _build_app(tmp_path, core_schema_path, alarm_engine=_seeded_alarm_engine())
+        client = self._authenticated_client(app)
+        response = client.get("/ui/alarms")
+        assert response.status_code == 200
+        assert "d1/temp" in response.text
+        assert "active" in response.text
+
+    def test_acknowledge_button_hidden_for_readonly_role(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path, alarm_engine=_seeded_alarm_engine())
+        admin_client = self._authenticated_client(app)
+        admin_client.post(
+            "/ui/users/new",
+            data={"username": "viewer", "password": "viewerpass123", "role": "readonly"},
+        )
+
+        viewer_client = TestClient(app)
+        viewer_client.post("/ui/login", data={"username": "viewer", "password": "viewerpass123"})
+        response = viewer_client.get("/ui/alarms")
+        assert response.status_code == 200
+        assert ">Acknowledge<" not in response.text
+
+    def test_acknowledge_form_submit_updates_state_and_audits(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        engine = _seeded_alarm_engine()
+        app = _build_app(tmp_path, core_schema_path, alarm_engine=engine)
+        client = self._authenticated_client(app)
+
+        response = client.post("/ui/alarms/d1/temp/acknowledge")
+        assert response.url.path == "/ui/alarms"
+        assert engine.all_status()["d1/temp"].acknowledged_by == "admin"
+
+        events = client.get("/api/v1/audit").json()
+        assert any(e["event"] == "alarm.acknowledged" for e in events)
+
+    def test_shelve_and_unshelve_form_submit(self, tmp_path: Path, core_schema_path: Path) -> None:
+        engine = _seeded_alarm_engine()
+        app = _build_app(tmp_path, core_schema_path, alarm_engine=engine)
+        client = self._authenticated_client(app)
+
+        client.post("/ui/alarms/d1/temp/shelve", data={"duration_seconds": "60"})
+        assert engine.all_status()["d1/temp"].shelved_until is not None
+
+        client.post("/ui/alarms/d1/temp/unshelve")
+        assert engine.all_status()["d1/temp"].shelved_until is None
+
+    def test_alarm_actions_denied_for_readonly_role(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        engine = _seeded_alarm_engine()
+        app = _build_app(tmp_path, core_schema_path, alarm_engine=engine)
+        admin_client = self._authenticated_client(app)
+        admin_client.post(
+            "/ui/users/new",
+            data={"username": "viewer", "password": "viewerpass123", "role": "readonly"},
+        )
+
+        viewer_client = TestClient(app, follow_redirects=False)
+        viewer_client.post("/ui/login", data={"username": "viewer", "password": "viewerpass123"})
+        response = viewer_client.post("/ui/alarms/d1/temp/acknowledge")
+        assert response.status_code == 303
+        assert response.headers["location"] == "/ui/dashboard"
+        assert engine.all_status()["d1/temp"].acknowledged_by is None
