@@ -119,29 +119,33 @@ def _is_scalable(value: TagValue) -> bool:
 class DeadbandFilter:
     """Stateful per-tag last-published-value tracker (FR-DP-006).
 
-    Bypasses suppression for a tag's first-ever value and for any quality
-    change, per XEDGE-036 — both are always considered significant
-    regardless of deadband configuration.
+    Bypasses suppression for a tag's first-ever value, any quality change,
+    and any `is_alarm` transition (Sprint 31, XEDGE-224 — an alarm going
+    active/clearing must never be silently swallowed just because the
+    underlying value moved less than its deadband) — all three are always
+    considered significant regardless of deadband configuration.
     """
 
     def __init__(self) -> None:
-        self._last_published: dict[str, tuple[TagValue, Quality]] = {}
+        self._last_published: dict[str, tuple[TagValue, Quality, bool]] = {}
 
     def should_publish(self, tag: UnifiedTag, deadband: DeadbandConfig | None) -> bool:
         prior = self._last_published.get(tag.tag_id)
         publish = self._should_publish(tag, prior, deadband)
         if publish:
-            self._last_published[tag.tag_id] = (tag.value, tag.quality)
+            self._last_published[tag.tag_id] = (tag.value, tag.quality, tag.is_alarm)
         return publish
 
     @staticmethod
     def _should_publish(
-        tag: UnifiedTag, prior: tuple[TagValue, Quality] | None, deadband: DeadbandConfig | None
+        tag: UnifiedTag,
+        prior: tuple[TagValue, Quality, bool] | None,
+        deadband: DeadbandConfig | None,
     ) -> bool:
         if prior is None:
             return True
-        prior_value, prior_quality = prior
-        if prior_quality != tag.quality:
+        prior_value, prior_quality, prior_is_alarm = prior
+        if prior_quality != tag.quality or prior_is_alarm != tag.is_alarm:
             return True
         if deadband is None or not _is_scalable(tag.value) or not _is_scalable(prior_value):
             return tag.value != prior_value

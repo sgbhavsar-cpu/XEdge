@@ -33,6 +33,7 @@ from xedge.api.auth import (
     resolve_session,
 )
 from xedge.api.permissions import ROLE_PERMISSIONS, has_permission
+from xedge.core.alarms import AlarmEngine
 from xedge.core.config import ConfigVersionHistory
 from xedge.core.supervisor import DriverSupervisor
 from xedge.fleet.agent import FleetAgentStatus
@@ -86,6 +87,7 @@ def create_ui_router(
     secure_cookies: bool = False,
     dashboard_url: str | None = None,
     fleet_status: FleetAgentStatus | None = None,
+    alarm_engine: AlarmEngine | None = None,  # noqa: ARG001 — accepted now, rendered by the next UI pass
 ) -> APIRouter:
     router = APIRouter(prefix="/ui")
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))

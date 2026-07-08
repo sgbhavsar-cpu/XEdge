@@ -157,7 +157,11 @@ class TestEngineeringUnitScaling:
 
 class TestDeadbandFilter:
     def _tag(
-        self, value: object, quality: Quality = Quality.GOOD, tag_id: str = "t1"
+        self,
+        value: object,
+        quality: Quality = Quality.GOOD,
+        tag_id: str = "t1",
+        is_alarm: bool = False,
     ) -> UnifiedTag:
         return UnifiedTag(
             tag_id=tag_id,
@@ -167,6 +171,7 @@ class TestDeadbandFilter:
             quality=quality,
             source_driver="d1",
             source_address="0",
+            is_alarm=is_alarm,
         )
 
     def test_first_value_always_published(self) -> None:
@@ -184,6 +189,18 @@ class TestDeadbandFilter:
             )
             is True
         )
+
+    def test_alarm_transition_always_published_even_within_deadband(self) -> None:
+        deadband_filter = DeadbandFilter()
+        deadband = DeadbandConfig("absolute", 5.0)
+        deadband_filter.should_publish(self._tag(100.0, is_alarm=False), deadband)
+        # Value change (2.0) is within the deadband, but is_alarm flipped
+        # True -> must publish anyway (Sprint 31, XEDGE-224).
+        assert deadband_filter.should_publish(self._tag(102.0, is_alarm=True), deadband) is True
+        # Same is_alarm as the last published sample and within deadband -> suppressed.
+        assert deadband_filter.should_publish(self._tag(103.0, is_alarm=True), deadband) is False
+        # Clearing the alarm is itself a transition -> must publish.
+        assert deadband_filter.should_publish(self._tag(103.5, is_alarm=False), deadband) is True
 
     def test_absolute_deadband_suppresses_small_changes(self) -> None:
         deadband_filter = DeadbandFilter()

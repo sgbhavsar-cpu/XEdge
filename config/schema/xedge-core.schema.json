@@ -237,6 +237,40 @@
         }
       }
     },
+    "alarms": {
+      "type": "object",
+      "description": "Alarm engine v2 (Sprint 31, XEDGE-224/225/228): threshold (high/high_high/low/low_low) and rate-of-change alarm detection, evaluated in the pipeline after scaling. A tag with a rule is 'alarm-tier' (backpressure instead of eviction, independently retained) regardless of whether it is currently alarming — see xedge.core.alarms module docstring. Defaults off.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "retention_duration_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 2592000,
+          "description": "XEDGE-225/228: alarm-tier retention, independent of (and normally longer than) store.retention_duration_seconds. Default 30 days."
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["tag_id"],
+            "additionalProperties": false,
+            "properties": {
+              "tag_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Fully-qualified tag id, e.g. 'modbus_tcp_01/temperature_01'."
+              },
+              "high": { "type": "number" },
+              "high_high": { "type": "number" },
+              "low": { "type": "number" },
+              "low_low": { "type": "number" },
+              "rate_of_change_per_second": { "type": "number", "exclusiveMinimum": 0 }
+            }
+          }
+        }
+      }
+    },
     "fleet": {
       "type": "object",
       "description": "Fleet agent (Sprint 29, XEDGE-210/213 — partial scope, see ADR-009): periodic heartbeat to a separate Fleet Manager service, and pull-based config push (this device applies a pending config through the existing hot-reload file-write path, then reports the result on the next heartbeat). Defaults off. Device-to-manager auth is a shared bearer token issued at registration (ADR-009 interim posture) — mTLS (XEDGE-214) is deferred.",

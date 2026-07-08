@@ -22,12 +22,14 @@ from xedge import __version__
 from xedge.api.auth import LoginAttemptTracker, SessionManager, UserStore, load_or_create_secret_key
 from xedge.api.server import create_app
 from xedge.api.tls import load_or_create_server_certificate
+from xedge.core.alarms import ALARM_STREAM_KEY_SUFFIX, AlarmEngine, build_alarm_rules
 from xedge.core.config import ConfigEngine, ConfigStore, ConfigValidator, ConfigVersionHistory
 from xedge.core.driver_config import build_driver_config
 from xedge.core.hot_reload import config_watch_loop
 from xedge.core.pipeline import (
     DeadbandFilter,
     TagPipelineConfig,
+    UnifiedTag,
     build_tag_pipeline_configs,
     normalize,
 )
@@ -51,7 +53,7 @@ from xedge.observability.logging import configure_logging, get_logger
 from xedge.observability.otel_metrics import configure_metrics
 from xedge.observability.tracing import configure_tracing, get_tracer
 from xedge.store.latest_values import LatestValueStore
-from xedge.store.ring_buffer import RingBufferManager
+from xedge.store.ring_buffer import RingBufferBackpressureError, RingBufferManager
 from xedge.store.sqlite_store import SqliteColdStore, purge_loop
 
 logger = get_logger(__name__)
@@ -118,6 +120,29 @@ def _start_configured_drivers(
         supervisor.start(driver_config)
 
 
+_BACKPRESSURE_RETRY_INTERVAL_SECONDS = 0.5
+
+
+async def _push_with_backpressure_retry(
+    ring_buffers: RingBufferManager, stream_key: str, tag: UnifiedTag, is_alarm_stream: bool
+) -> None:
+    """`ring_buffers.push()` raises `RingBufferBackpressureError` for a full
+    alarm-tier stream (`xedge.store.ring_buffer.RingBuffer`'s own docstring:
+    "caller must retry, not drop") — retry indefinitely rather than
+    dropping alarm data or letting the exception crash this whole
+    consumer task (which would silently stop *all* driver instances'
+    pipeline processing, not just the one alarm-tier stream that's full).
+    A sustained retry loop here means the northbound dispatcher has
+    fallen behind; each attempt logs a warning so that's visible."""
+    while True:
+        try:
+            ring_buffers.push(stream_key, tag, is_alarm_stream=is_alarm_stream)
+            return
+        except RingBufferBackpressureError:
+            logger.warning("store.alarm_buffer_full", stream_key=stream_key)
+            await asyncio.sleep(_BACKPRESSURE_RETRY_INTERVAL_SECONDS)
+
+
 async def _pipeline_to_buffer(
     queue: asyncio.Queue[TagUpdate],
     ring_buffers: RingBufferManager,
@@ -125,17 +150,24 @@ async def _pipeline_to_buffer(
     deadband_filter: DeadbandFilter | None = None,
     opcua_server: OpcUaTagServer | None = None,
     latest_values: LatestValueStore | None = None,
+    alarm_engine: AlarmEngine | None = None,
 ) -> None:
     """Pipeline consumer (XEDGE-014/017): normalize each TagUpdate (scaling,
-    timestamp resolution), reflect the live value into the OPC UA server and
-    the Web UI's latest-value cache (if configured — every value, deadband
-    does not apply to "current state"), apply deadband suppression, and push
-    surviving updates into their driver's ring buffer for the northbound
-    dispatcher to drain.
+    timestamp resolution), evaluate it against the alarm engine (Sprint 31,
+    XEDGE-224 — sets `is_alarm`), reflect the live value into the OPC UA
+    server and the Web UI's latest-value cache (if configured — every
+    value, deadband does not apply to "current state"), apply deadband
+    suppression, and push surviving updates into their driver's ring
+    buffer for the northbound dispatcher to drain.
 
     Buffering key is `source_driver`, not a tag-group id — see
     xedge.store.ring_buffer module docstring for why (tag_group id isn't
-    threaded through TagUpdate/UnifiedTag yet).
+    threaded through TagUpdate/UnifiedTag yet) — *except* for a tag with
+    an alarm rule configured, which buffers under a distinct
+    `{source_driver}::alarm` key instead: alarm-tier data gets
+    backpressure-not-eviction and its own (normally longer) retention,
+    regardless of whether it's *currently* alarming — see
+    `xedge.core.alarms` module docstring.
     """
     tag_configs = tag_configs if tag_configs is not None else {}
     deadband_filter = deadband_filter if deadband_filter is not None else DeadbandFilter()
@@ -146,12 +178,15 @@ async def _pipeline_to_buffer(
         ):
             config = tag_configs.get(update.tag_id)
             tag = normalize(update, config)
+            if alarm_engine is not None:
+                tag = alarm_engine.evaluate(tag)
             logger.debug(
                 "tag.update",
                 tag_id=tag.tag_id,
                 value=tag.value,
                 quality=tag.quality.value,
                 source_driver=tag.source_driver,
+                is_alarm=tag.is_alarm,
             )
             if opcua_server is not None:
                 await opcua_server.update_tag(tag)
@@ -159,10 +194,16 @@ async def _pipeline_to_buffer(
                 latest_values.update(tag)
             if not deadband_filter.should_publish(tag, config.deadband if config else None):
                 continue
+            is_alarm_tier = alarm_engine is not None and alarm_engine.has_rule(tag.tag_id)
+            stream_key = (
+                f"{tag.source_driver}{ALARM_STREAM_KEY_SUFFIX}"
+                if is_alarm_tier
+                else tag.source_driver
+            )
             with _tracer.start_as_current_span(
-                "store.write", attributes={"stream_key": tag.source_driver}
+                "store.write", attributes={"stream_key": stream_key}
             ):
-                ring_buffers.push(tag.source_driver, tag)
+                await _push_with_backpressure_retry(ring_buffers, stream_key, tag, is_alarm_tier)
 
 
 def _all_tag_ids(drivers: list[dict[str, Any]]) -> frozenset[str]:
@@ -420,9 +461,21 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
     tag_configs = build_tag_pipeline_configs(store.get_section("drivers", []))
     deadband_filter = DeadbandFilter()
     latest_values = LatestValueStore()
+    alarms_config = store.get_section("alarms", {})
+    alarm_engine = (
+        AlarmEngine(build_alarm_rules(alarms_config.get("rules", [])))
+        if alarms_config.get("enabled", False)
+        else None
+    )
     buffer_task = asyncio.create_task(
         _pipeline_to_buffer(
-            tag_queue, ring_buffers, tag_configs, deadband_filter, opcua_server, latest_values
+            tag_queue,
+            ring_buffers,
+            tag_configs,
+            deadband_filter,
+            opcua_server,
+            latest_values,
+            alarm_engine,
         )
     )
     purge_task = asyncio.create_task(
@@ -431,6 +484,9 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
             ring_buffers.stream_keys,
             retention_duration_seconds=store_config.get("retention_duration_seconds", 604_800),
             interval_seconds=store_config.get("purge_interval_seconds", 3_600),
+            alarm_retention_duration_seconds=alarms_config.get(
+                "retention_duration_seconds", 2_592_000
+            ),
         )
     )
 
@@ -522,6 +578,7 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
             rate_limit_enabled=rate_limit_config.get("enabled", True),
             requests_per_minute=rate_limit_config.get("requests_per_minute", 100),
             fleet_status=fleet_status,
+            alarm_engine=alarm_engine,
         )
         api_server = uvicorn.Server(
             uvicorn.Config(

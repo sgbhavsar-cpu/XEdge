@@ -19,6 +19,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             "audit:read",
             "ota:trigger",
             "diagnostics:run",
+            "alarm:manage",
         }
     ),
     "operator": frozenset(
@@ -29,6 +30,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             "config:write",
             "driver:restart",
             "diagnostics:run",
+            "alarm:manage",
         }
     ),
     "auditor": frozenset({"tag:read", "config:read", "audit:read"}),

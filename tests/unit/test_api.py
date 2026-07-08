@@ -12,6 +12,7 @@ from tests.fixtures.fake_connector import FakeConnector
 from tests.fixtures.fake_driver import FakeDriver
 from xedge.api.auth import LoginAttemptTracker, SessionManager, UserStore
 from xedge.api.server import create_app
+from xedge.core.alarms import AlarmEngine, AlarmRule
 from xedge.core.config import ConfigVersionHistory
 from xedge.core.pipeline import UnifiedTag
 from xedge.core.supervisor import DriverConfig, DriverRegistry, DriverSupervisor
@@ -44,6 +45,7 @@ def _build_app(
     dispatcher: NorthboundDispatcher | None = None,
     latest_values: LatestValueStore | None = None,
     secure_cookies: bool = False,
+    alarm_engine: AlarmEngine | None = None,
 ) -> FastAPI:
     config_path = tmp_path / "xedge.yaml"
     if not config_path.is_file():
@@ -61,6 +63,7 @@ def _build_app(
         audit_log=AuditLog(tmp_path / "webui" / "audit.jsonl"),
         ring_buffers=RingBufferManager(),
         secure_cookies=secure_cookies,
+        alarm_engine=alarm_engine,
     )
 
 
@@ -861,6 +864,159 @@ class TestTagWriteEndpoint:
 
         assert response.status_code == 403
         await supervisor.stop_all()
+
+
+class TestAlarmsEndpoint:
+    def _seeded_engine(self) -> AlarmEngine:
+        engine = AlarmEngine({"d1/temp": AlarmRule(tag_id="d1/temp", high=90)})
+        engine.evaluate(
+            UnifiedTag(
+                tag_id="d1/temp",
+                timestamp=datetime.now(UTC),
+                value=95.0,
+                data_type="FLOAT64",
+                quality=Quality.GOOD,
+                source_driver="d1",
+                source_address="0",
+            )
+        )
+        return engine
+
+    def test_list_alarms_empty_when_engine_disabled(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.get("/api/v1/alarms")
+
+        assert response.status_code == 200
+        assert response.json() == []
+
+    def test_list_alarms_reports_active_alarm(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(
+            supervisor, history, tmp_path, core_schema_path, alarm_engine=self._seeded_engine()
+        )
+        client = _authenticated_client(app)
+
+        response = client.get("/api/v1/alarms")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body) == 1
+        assert body[0]["tag_id"] == "d1/temp"
+        assert body[0]["state"] == "active"
+        assert body[0]["condition"] == "high"
+
+    def test_acknowledge_active_alarm(self, tmp_path: Path, core_schema_path: Path) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(
+            supervisor, history, tmp_path, core_schema_path, alarm_engine=self._seeded_engine()
+        )
+        client = _authenticated_client(app)  # admin
+
+        response = client.post("/api/v1/alarms/d1/temp/acknowledge")
+
+        assert response.status_code == 200
+        assert response.json() == {"tag_id": "d1/temp", "acknowledged": True}
+        assert client.get("/api/v1/alarms").json()[0]["state"] == "active_acked"
+
+    def test_acknowledge_unknown_tag_is_422(self, tmp_path: Path, core_schema_path: Path) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(
+            supervisor, history, tmp_path, core_schema_path, alarm_engine=self._seeded_engine()
+        )
+        client = _authenticated_client(app)
+
+        response = client.post("/api/v1/alarms/no/such/tag/acknowledge")
+
+        assert response.status_code == 422
+
+    def test_alarm_actions_404_when_engine_disabled(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        assert client.post("/api/v1/alarms/d1/temp/acknowledge").status_code == 404
+        assert client.post("/api/v1/alarms/d1/temp/shelve", json={}).status_code == 404
+        assert client.post("/api/v1/alarms/d1/temp/unshelve").status_code == 404
+
+    def test_shelve_and_unshelve_round_trip(self, tmp_path: Path, core_schema_path: Path) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(
+            supervisor, history, tmp_path, core_schema_path, alarm_engine=self._seeded_engine()
+        )
+        client = _authenticated_client(app)
+
+        shelve_response = client.post(
+            "/api/v1/alarms/d1/temp/shelve", json={"duration_seconds": 60}
+        )
+        assert shelve_response.status_code == 200
+        assert shelve_response.json()["shelved"] is True
+        assert client.get("/api/v1/alarms").json()[0]["shelved_until"] is not None
+
+        unshelve_response = client.post("/api/v1/alarms/d1/temp/unshelve")
+        assert unshelve_response.status_code == 200
+        assert client.get("/api/v1/alarms").json()[0]["shelved_until"] is None
+
+    def test_unshelve_when_not_shelved_is_422(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(
+            supervisor, history, tmp_path, core_schema_path, alarm_engine=self._seeded_engine()
+        )
+        client = _authenticated_client(app)
+
+        assert client.post("/api/v1/alarms/d1/temp/unshelve").status_code == 422
+
+    def test_alarm_actions_are_audit_logged(self, tmp_path: Path, core_schema_path: Path) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(
+            supervisor, history, tmp_path, core_schema_path, alarm_engine=self._seeded_engine()
+        )
+        client = _authenticated_client(app)
+
+        client.post("/api/v1/alarms/d1/temp/acknowledge")
+
+        events = [e["event"] for e in client.get("/api/v1/audit").json()]
+        assert "alarm.acknowledged" in events
+
+    def test_acknowledge_requires_alarm_manage_not_just_tag_read(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(
+            supervisor, history, tmp_path, core_schema_path, alarm_engine=self._seeded_engine()
+        )
+        admin_client = _authenticated_client(app)
+        admin_client.post(
+            "/api/v1/users",
+            json={"username": "viewer", "password": "viewerpass123", "role": "readonly"},
+        )
+        viewer_client = TestClient(app)
+        viewer_client.post(
+            "/api/v1/auth/login", json={"username": "viewer", "password": "viewerpass123"}
+        )
+
+        response = viewer_client.post("/api/v1/alarms/d1/temp/acknowledge")
+
+        assert response.status_code == 403
 
 
 class TestPrometheusMetricsEndpoint:

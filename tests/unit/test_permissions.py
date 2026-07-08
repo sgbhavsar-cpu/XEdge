@@ -15,6 +15,7 @@ def test_admin_has_every_permission() -> None:
         "audit:read",
         "ota:trigger",
         "diagnostics:run",
+        "alarm:manage",
     }
 
 
@@ -26,6 +27,7 @@ def test_operator_permissions_match_matrix() -> None:
         "config:write",
         "driver:restart",
         "diagnostics:run",
+        "alarm:manage",
     }
 
 

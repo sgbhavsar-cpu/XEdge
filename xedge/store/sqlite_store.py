@@ -4,9 +4,10 @@ One SQLite database (WAL mode) per stream key, holding UnifiedTag samples
 that overflowed the RAM ring buffer. WAL + synchronous=NORMAL trades a
 small window of possible data loss on power failure (up to the last
 un-checkpointed write) for meaningfully better write throughput than
-synchronous=FULL — acceptable for telemetry; system-architecture.md §3.4
-notes the alarm tier should use synchronous=FULL instead (not yet
-differentiated in this MVP — all streams use NORMAL).
+synchronous=FULL — acceptable for telemetry. system-architecture.md §3.4's
+alarm-tier synchronous=FULL is now applied (Sprint 31, XEDGE-225), keyed
+off the same `ALARM_STREAM_KEY_SUFFIX` stream-naming convention the alarm
+engine's independent retention (`purge_loop`, below) also uses.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from xedge.core.alarms import ALARM_STREAM_KEY_SUFFIX
 from xedge.core.pipeline import UnifiedTag
 from xedge.drivers.base import Quality
 from xedge.observability.logging import get_logger
@@ -126,7 +128,14 @@ class SqliteColdStore:
             db_path = self._directory / f"{_safe_filename(stream_key)}.db"
             conn = sqlite3.connect(str(db_path), isolation_level=None, check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
+            # Sprint 31 (XEDGE-225): system-architecture.md §3.4 calls for
+            # the alarm tier to trade write throughput for durability
+            # (FULL fsyncs before returning; NORMAL can lose the last
+            # un-checkpointed write on power failure) — differentiated by
+            # stream key since that's already the alarm-vs-telemetry
+            # boundary (xedge.core.alarms.ALARM_STREAM_KEY_SUFFIX).
+            synchronous = "FULL" if stream_key.endswith(ALARM_STREAM_KEY_SUFFIX) else "NORMAL"
+            conn.execute(f"PRAGMA synchronous={synchronous}")
             conn.execute(_CREATE_TABLE_SQL)
             self._connections[stream_key] = conn
         return conn
@@ -200,13 +209,28 @@ async def purge_loop(
     stream_keys: Callable[[], list[str]],
     retention_duration_seconds: float,
     interval_seconds: float,
+    alarm_retention_duration_seconds: float | None = None,
 ) -> None:
     """Periodically purge samples older than `retention_duration_seconds`
-    from every known stream (FR-SF-003)."""
+    from every known stream (FR-SF-003) — except an alarm-tier stream
+    (`xedge.core.alarms.ALARM_STREAM_KEY_SUFFIX`-suffixed, Sprint 31,
+    XEDGE-225/228), which uses `alarm_retention_duration_seconds` instead
+    (normally longer; falls back to `retention_duration_seconds` if not
+    given, e.g. the alarm engine is disabled and no such stream exists
+    anyway)."""
     while True:
         await asyncio.sleep(interval_seconds)
-        cutoff = datetime.now(UTC) - timedelta(seconds=retention_duration_seconds)
+        now = datetime.now(UTC)
+        normal_cutoff = now - timedelta(seconds=retention_duration_seconds)
+        alarm_cutoff = now - timedelta(
+            seconds=(
+                alarm_retention_duration_seconds
+                if alarm_retention_duration_seconds is not None
+                else retention_duration_seconds
+            )
+        )
         for stream_key in stream_keys():
+            cutoff = alarm_cutoff if stream_key.endswith(ALARM_STREAM_KEY_SUFFIX) else normal_cutoff
             purged = cold_store.purge_older_than(stream_key, cutoff)
             if purged:
                 logger.info("store.purged", stream_key=stream_key, count=purged)

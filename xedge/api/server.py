@@ -46,6 +46,7 @@ from xedge.api.diagnostics import create_diagnostics_router
 from xedge.api.permissions import ROLE_PERMISSIONS, has_permission
 from xedge.api.rate_limit import RateLimitMiddleware
 from xedge.api.ui import create_ui_router
+from xedge.core.alarms import AlarmEngine
 from xedge.core.config import ConfigValidationError, ConfigValidator, ConfigVersionHistory
 from xedge.core.driver_config import build_driver_config
 from xedge.core.supervisor import DriverSupervisor
@@ -97,6 +98,10 @@ class _DriverValidateBody(BaseModel):
     tag_groups: list[dict[str, Any]] = []
 
 
+class _AlarmShelveBody(BaseModel):
+    duration_seconds: float = 3600
+
+
 class _TagWriteBody(BaseModel):
     """Sprint 31, XEDGE-223 write-back — `bytes` (part of the broader
     TagValue union every driver's `write()` accepts) is deliberately
@@ -125,6 +130,7 @@ def create_app(
     rate_limit_enabled: bool = True,
     requests_per_minute: int = 100,
     fleet_status: FleetAgentStatus | None = None,
+    alarm_engine: AlarmEngine | None = None,
 ) -> FastAPI:
     app = FastAPI(title="xEdge API", version=__version__)
     started_at = datetime.now(UTC)
@@ -519,6 +525,75 @@ def create_app(
             "last_config_apply": fleet_status.last_config_apply,
         }
 
+    @app.get("/api/v1/alarms")
+    def list_alarms(_user: str = Depends(require_permission("tag:read"))) -> list[dict[str, Any]]:
+        """Sprint 31, XEDGE-224/298. Only tags with a configured alarm rule
+        ever appear here — a tag's entry persists (in whatever state) once
+        the alarm engine has evaluated it at least once, not just while
+        currently active, so an operator can see a recently-cleared or
+        shelved alarm's history without a separate query."""
+        if alarm_engine is None:
+            return []
+        return [
+            {
+                "tag_id": status_.tag_id,
+                "state": status_.state.value,
+                "condition": status_.condition,
+                "active_since": status_.active_since.isoformat() if status_.active_since else None,
+                "acknowledged_by": status_.acknowledged_by,
+                "acknowledged_at": (
+                    status_.acknowledged_at.isoformat() if status_.acknowledged_at else None
+                ),
+                "shelved_until": (
+                    status_.shelved_until.isoformat() if status_.shelved_until else None
+                ),
+                "last_value": status_.last_value,
+                "last_rate_per_second": status_.last_rate_per_second,
+            }
+            for status_ in alarm_engine.all_status().values()
+        ]
+
+    @app.post("/api/v1/alarms/{tag_id:path}/acknowledge")
+    def acknowledge_alarm(
+        tag_id: str, user: str = Depends(require_permission("alarm:manage"))
+    ) -> dict[str, Any]:
+        if alarm_engine is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Alarm engine is not enabled")
+        acknowledged = alarm_engine.acknowledge(tag_id, user)
+        if not acknowledged:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"{tag_id!r} is not currently an unacknowledged active alarm",
+            )
+        audit_log.append(user, "alarm.acknowledged", {"tag_id": tag_id})
+        return {"tag_id": tag_id, "acknowledged": True}
+
+    @app.post("/api/v1/alarms/{tag_id:path}/shelve")
+    def shelve_alarm(
+        tag_id: str,
+        body: _AlarmShelveBody,
+        user: str = Depends(require_permission("alarm:manage")),
+    ) -> dict[str, Any]:
+        if alarm_engine is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Alarm engine is not enabled")
+        alarm_engine.shelve(tag_id, body.duration_seconds)
+        audit_log.append(
+            user, "alarm.shelved", {"tag_id": tag_id, "duration_seconds": body.duration_seconds}
+        )
+        return {"tag_id": tag_id, "shelved": True, "duration_seconds": body.duration_seconds}
+
+    @app.post("/api/v1/alarms/{tag_id:path}/unshelve")
+    def unshelve_alarm(
+        tag_id: str, user: str = Depends(require_permission("alarm:manage"))
+    ) -> dict[str, Any]:
+        if alarm_engine is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Alarm engine is not enabled")
+        unshelved = alarm_engine.unshelve(tag_id)
+        if not unshelved:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"{tag_id!r} is not shelved")
+        audit_log.append(user, "alarm.unshelved", {"tag_id": tag_id})
+        return {"tag_id": tag_id, "shelved": False}
+
     @app.get("/api/v1/audit")
     def get_audit_log(
         since_seq: int = 0,
@@ -542,6 +617,7 @@ def create_app(
             secure_cookies=secure_cookies,
             dashboard_url=dashboard_url,
             fleet_status=fleet_status,
+            alarm_engine=alarm_engine,
         )
     )
     app.include_router(
