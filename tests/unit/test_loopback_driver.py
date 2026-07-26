@@ -12,12 +12,18 @@ def _config(initial_value: object = 42) -> DriverConfig:
         driver_type="loopback",
         config={},
         tag_groups=[
-            {"id": "g1", "scan_rate_ms": 50, "tags": [{"id": "echo", "initial_value": initial_value}]}
+            {
+                "id": "g1",
+                "scan_rate_ms": 50,
+                "tags": [{"id": "echo", "initial_value": initial_value}],
+            }
         ],
     )
 
 
-async def _run_one_cycle(driver: LoopbackDriver, config: DriverConfig, count: int = 1) -> list[TagUpdate]:
+async def _run_one_cycle(
+    driver: LoopbackDriver, config: DriverConfig, count: int = 1
+) -> list[TagUpdate]:
     await driver.configure(config)
     await driver.connect()
     queue: asyncio.Queue[TagUpdate] = asyncio.Queue()

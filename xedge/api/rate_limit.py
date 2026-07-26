@@ -57,9 +57,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         hits = [t for t in self._hits.get(client_ip, []) if t > cutoff]
         if len(hits) >= self._requests_per_minute:
-            self._audit_log.append(
-                client_ip, "rate_limit.exceeded", {"path": request.url.path}
-            )
+            self._audit_log.append(client_ip, "rate_limit.exceeded", {"path": request.url.path})
             return Response(
                 content="Too Many Requests",
                 status_code=429,

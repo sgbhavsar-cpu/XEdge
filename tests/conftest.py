@@ -74,7 +74,9 @@ def otel_test_tracer_provider(
 
 
 @pytest.fixture(autouse=True)
-def _restore_otel_session_provider(_otel_session_span_exporter: InMemorySpanExporter) -> Iterator[None]:
+def _restore_otel_session_provider(
+    _otel_session_span_exporter: InMemorySpanExporter,
+) -> Iterator[None]:
     """A test that calls the real `xedge.observability.tracing.configure_tracing`
     (not just this fixture module's direct-assignment bypass) fires OTel's
     process-wide "TracerProvider already set" guard for good — no later call

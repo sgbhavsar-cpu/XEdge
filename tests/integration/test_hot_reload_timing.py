@@ -35,7 +35,9 @@ def _entry(instance_id: str, marker: int = 502) -> dict:
             {
                 "id": "g1",
                 "scan_rate_ms": 100,
-                "tags": [{"id": "counter", "function_code": "read_holding_registers", "address": 0}],
+                "tags": [
+                    {"id": "counter", "function_code": "read_holding_registers", "address": 0}
+                ],
             }
         ],
     }
@@ -69,7 +71,9 @@ async def test_hot_reload_of_ten_drivers_keeps_gap_under_two_scan_cycles() -> No
         last_seen_before[update.source_driver] = update.timestamp
 
     reload_started_at = datetime.now(UTC)
-    changed_entries = [_entry(i, marker=1) for i in instance_ids]  # forces every instance to restart
+    changed_entries = [
+        _entry(i, marker=1) for i in instance_ids
+    ]  # forces every instance to restart
     await apply_driver_changes(changed_entries, copy.deepcopy(current), registry, supervisor)
 
     first_seen_after: dict[str, datetime] = {}
@@ -83,8 +87,9 @@ async def test_hot_reload_of_ten_drivers_keeps_gap_under_two_scan_cycles() -> No
             first_seen_after[update.source_driver] = update.timestamp
 
     try:
+        missing = set(instance_ids) - set(first_seen_after)
         assert set(first_seen_after) == set(instance_ids), (
-            f"not every instance resumed emitting: missing {set(instance_ids) - set(first_seen_after)}"
+            f"not every instance resumed emitting: missing {missing}"
         )
         for instance_id in instance_ids:
             gap = (first_seen_after[instance_id] - last_seen_before[instance_id]).total_seconds()

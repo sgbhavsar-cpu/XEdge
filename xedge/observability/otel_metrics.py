@@ -49,9 +49,7 @@ def configure_metrics(
 
     def _driver_reads(_options: CallbackOptions) -> Iterable[Observation]:
         for status_ in supervisor.all_status().values():
-            yield Observation(
-                status_.metrics.tag_read_count, {"instance_id": status_.instance_id}
-            )
+            yield Observation(status_.metrics.tag_read_count, {"instance_id": status_.instance_id})
 
     def _driver_errors(_options: CallbackOptions) -> Iterable[Observation]:
         for status_ in supervisor.all_status().values():
@@ -59,9 +57,7 @@ def configure_metrics(
 
     def _driver_reconnects(_options: CallbackOptions) -> Iterable[Observation]:
         for status_ in supervisor.all_status().values():
-            yield Observation(
-                status_.metrics.reconnect_count, {"instance_id": status_.instance_id}
-            )
+            yield Observation(status_.metrics.reconnect_count, {"instance_id": status_.instance_id})
 
     meter.create_observable_counter(
         "xedge_driver_tag_reads_total",

@@ -9,10 +9,12 @@ from __future__ import annotations
 import logging
 import sys
 from collections import deque
+from collections.abc import Mapping
 from typing import Any
 
 import structlog
 from opentelemetry import trace
+from structlog.typing import EventDict, WrappedLogger
 
 _CONFIGURED = False
 
@@ -38,7 +40,7 @@ class LogRingBuffer:
         self._entries: deque[dict[str, Any]] = deque(maxlen=max_size)
         self._next_seq = 1
 
-    def append(self, event_dict: dict[str, Any]) -> None:
+    def append(self, event_dict: Mapping[str, Any]) -> None:
         entry = dict(event_dict)
         entry["seq"] = self._next_seq
         self._next_seq += 1
@@ -77,15 +79,15 @@ def get_log_ring_buffer() -> LogRingBuffer:
 
 
 def _capture_to_ring_buffer(
-    _logger: object, _method_name: str, event_dict: dict[str, Any]
-) -> dict[str, Any]:
+    _logger: WrappedLogger, _method_name: str, event_dict: EventDict
+) -> EventDict:
     _log_ring_buffer.append(event_dict)
     return event_dict
 
 
 def _inject_trace_context(
-    _logger: object, _method_name: str, event_dict: dict[str, Any]
-) -> dict[str, Any]:
+    _logger: WrappedLogger, _method_name: str, event_dict: EventDict
+) -> EventDict:
     """OTel + structlog correlation (Sprint 16, XEDGE-129): every log entry
     emitted while a span is active gets that span's trace_id/span_id, so a
     trace viewer and the log viewer can be cross-referenced. A no-op outside

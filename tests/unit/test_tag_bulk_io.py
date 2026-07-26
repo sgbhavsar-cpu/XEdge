@@ -77,11 +77,7 @@ def test_tags_from_csv_round_trips_a_tag() -> None:
 
 
 def test_tags_from_csv_parses_multiple_rows() -> None:
-    csv_text = (
-        "id,function_code,address\n"
-        "t1,read_coils,0\n"
-        "t2,read_holding_registers,100\n"
-    )
+    csv_text = "id,function_code,address\nt1,read_coils,0\nt2,read_holding_registers,100\n"
     parsed = tags_from_csv(csv_text, _MODBUS_TAG_SCHEMA)
     assert parsed == [
         {"id": "t1", "function_code": "read_coils", "address": 0},

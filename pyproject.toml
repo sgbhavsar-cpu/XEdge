@@ -63,12 +63,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The dev toolchain is PINNED, not floored (Sprint 0, XEDGE-401). Lint and
+# type-check results are version-dependent: with `>=` floors, a new ruff or
+# mypy release turns CI red with no code change — which is exactly what
+# happened between 2026-07-08 and 2026-07-26 (29 new ruff violations and 15
+# new mypy errors appeared with no commit in between). Bump these
+# deliberately, in their own PR, with the resulting findings fixed.
 dev = [
-    "ruff>=0.6",
-    "mypy>=1.11",
-    "bandit>=1.7",
-    "types-PyYAML",
-    "types-jsonschema",
+    "ruff==0.16.0",
+    "mypy==2.3.0",
+    "bandit==1.9.4",
+    "types-PyYAML==6.0.12.20260724",
+    "types-jsonschema==4.26.0.20260518",
 ]
 test = [
     "pytest>=8.2",
@@ -130,4 +136,12 @@ exclude = ["tests/"]
 
 [[tool.mypy.overrides]]
 module = "serial_asyncio.*"
+ignore_missing_imports = true
+
+# bacpypes3 ships no py.typed marker and no stubs (as of 0.0.10x), so every
+# `from bacpypes3.* import ...` in the BACnet driver is an import-untyped
+# error under --strict. Same treatment as serial_asyncio above: the driver
+# itself stays strictly typed, only the third-party surface is untyped.
+[[tool.mypy.overrides]]
+module = "bacpypes3.*"
 ignore_missing_imports = true

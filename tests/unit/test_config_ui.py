@@ -157,9 +157,7 @@ class TestCoreSectionForms:
             },
         )
         assert response.status_code == 200
-        assert (
-            _current_config(tmp_path)["northbound"]["mqtt"]["password"] == "${SECRET:new_ref}"
-        )
+        assert _current_config(tmp_path)["northbound"]["mqtt"]["password"] == "${SECRET:new_ref}"
 
     def test_invalid_value_shows_error_and_does_not_write(
         self, tmp_path: Path, core_schema_path: Path
@@ -297,9 +295,7 @@ class TestTagGroupAndTagCrud:
         groups = _current_config(tmp_path)["drivers"][0]["tag_groups"]
         assert groups[0]["id"] == "g1"
 
-    def test_duplicate_tag_group_id_rejected(
-        self, tmp_path: Path, core_schema_path: Path
-    ) -> None:
+    def test_duplicate_tag_group_id_rejected(self, tmp_path: Path, core_schema_path: Path) -> None:
         app = _build_app(tmp_path, core_schema_path)
         client = _authenticated_client(app)
         self._driver(client)
@@ -314,9 +310,7 @@ class TestTagGroupAndTagCrud:
         client = _authenticated_client(app)
         self._driver(client)
         client.post("/ui/config/drivers/d1/tag-groups/new", data={"id": "g1"})
-        client.post(
-            "/ui/config/drivers/d1/tag-groups/g1/tags/new", data={"id": "t1"}
-        )
+        client.post("/ui/config/drivers/d1/tag-groups/g1/tags/new", data={"id": "t1"})
         client.post(
             "/ui/config/drivers/d1/tag-groups/g1/tags/t1",
             data={"function_code": "read_holding_registers", "address": "0"},
@@ -335,9 +329,7 @@ class TestTagGroupAndTagCrud:
         assert group["deadband"] == {"type": "percentage", "value": 1.5}
         assert group["scan_rate_ms"] == 500
 
-    def test_scan_rate_below_minimum_rejected(
-        self, tmp_path: Path, core_schema_path: Path
-    ) -> None:
+    def test_scan_rate_below_minimum_rejected(self, tmp_path: Path, core_schema_path: Path) -> None:
         app = _build_app(tmp_path, core_schema_path)
         client = _authenticated_client(app)
         self._driver(client)
@@ -348,9 +340,7 @@ class TestTagGroupAndTagCrud:
             data={"function_code": "read_holding_registers", "address": "0"},
         )
         # modbus_tcp tag_groups.scan_rate_ms minimum is 50
-        response = client.post(
-            "/ui/config/drivers/d1/tag-groups/g1", data={"scan_rate_ms": "10"}
-        )
+        response = client.post("/ui/config/drivers/d1/tag-groups/g1", data={"scan_rate_ms": "10"})
         assert "error" in response.text.lower()
 
     def test_add_and_edit_tag_with_enum_and_scaling(
@@ -551,9 +541,7 @@ class TestTagGroupAndTagCrud:
 
 
 class TestAdvancedYamlEditor:
-    def test_advanced_page_shows_current_yaml(
-        self, tmp_path: Path, core_schema_path: Path
-    ) -> None:
+    def test_advanced_page_shows_current_yaml(self, tmp_path: Path, core_schema_path: Path) -> None:
         _seed_config(tmp_path, {"schema_version": "0.1", "logging": {"level": "DEBUG"}})
         app = _build_app(tmp_path, core_schema_path)
         client = _authenticated_client(app)

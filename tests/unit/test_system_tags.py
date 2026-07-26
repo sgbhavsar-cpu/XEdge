@@ -57,7 +57,9 @@ def test_rate_tracker_averages_over_longer_window_using_oldest_available_sample(
     tracker.sample("d1", 0, t0)
     rates = tracker.sample("d1", 60, t0 + timedelta(seconds=30))
 
-    assert rates["reads_per_hour"] == 2.0  # 60 reads / 30s = 2/s, reported as the only rate available
+    assert (
+        rates["reads_per_hour"] == 2.0
+    )  # 60 reads / 30s = 2/s, reported as the only rate available
 
 
 def _status(**overrides: object) -> DriverInstanceStatus:
@@ -82,7 +84,9 @@ def test_build_system_tags_produces_all_nine_names_with_reserved_ids() -> None:
 
     tags = build_system_tags(status, rates, now)
 
-    assert {tag.tag_id for tag in tags} == {system_tag_id("modbus_01", name) for name in SYSTEM_TAG_NAMES}
+    assert {tag.tag_id for tag in tags} == {
+        system_tag_id("modbus_01", name) for name in SYSTEM_TAG_NAMES
+    }
     by_name = {tag.tag_id.rsplit("/", 1)[-1]: tag for tag in tags}
     assert by_name["status"].value == "running"
     assert by_name["tag_count"].value == 5

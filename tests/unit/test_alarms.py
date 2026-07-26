@@ -72,9 +72,7 @@ def test_value_returns_to_normal_clears_alarm() -> None:
 
 
 def test_rate_of_change_trips_alarm_on_second_sample() -> None:
-    engine = AlarmEngine(
-        {"d1/temp": AlarmRule(tag_id="d1/temp", rate_of_change_per_second=10)}
-    )
+    engine = AlarmEngine({"d1/temp": AlarmRule(tag_id="d1/temp", rate_of_change_per_second=10)})
     t0 = datetime.now(UTC)
     first = engine.evaluate(_tag(0.0, t0))
     assert first.is_alarm is False  # no prior sample to compare against
@@ -85,9 +83,7 @@ def test_rate_of_change_trips_alarm_on_second_sample() -> None:
 
 
 def test_rate_of_change_within_limit_does_not_trip() -> None:
-    engine = AlarmEngine(
-        {"d1/temp": AlarmRule(tag_id="d1/temp", rate_of_change_per_second=100)}
-    )
+    engine = AlarmEngine({"d1/temp": AlarmRule(tag_id="d1/temp", rate_of_change_per_second=100)})
     t0 = datetime.now(UTC)
     engine.evaluate(_tag(0.0, t0))
     result = engine.evaluate(_tag(5.0, t0 + timedelta(seconds=1)))

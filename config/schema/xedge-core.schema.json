@@ -12,6 +12,11 @@
       "description": "Config schema version, e.g. '0.1'. Used by the migration tool (NFR-M-003).",
       "pattern": "^[0-9]+\\.[0-9]+$"
     },
+    "data_dir": {
+      "type": "string",
+      "default": "/data",
+      "description": "Root directory for all persistent state (system-architecture.md §6.4). Every other persistent path defaults to a subdirectory of this one: store.directory -> <data_dir>/store, config_management.history_directory -> <data_dir>/config-history, plus the Web UI auth/audit state and the fleet device token. Set this one value to relocate all of them; the individual path settings still override it where a deployment needs to split them across volumes."
+    },
     "logging": {
       "type": "object",
       "additionalProperties": false,
@@ -115,8 +120,7 @@
       "properties": {
         "directory": {
           "type": "string",
-          "default": "/data/store",
-          "description": "Cold-tier database directory (system-architecture.md §6.4)."
+          "description": "Cold-tier database directory (system-architecture.md §6.4). Defaults to <data_dir>/store."
         },
         "ram_max_depth": {
           "type": "integer",
@@ -152,8 +156,7 @@
         },
         "history_directory": {
           "type": "string",
-          "default": "/data/config-history",
-          "description": "system-architecture.md §6.4."
+          "description": "system-architecture.md §6.4. Defaults to <data_dir>/config-history."
         },
         "max_versions": {
           "type": "integer",

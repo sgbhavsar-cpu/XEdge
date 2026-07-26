@@ -132,6 +132,15 @@ async def test_state_changed_at_updates_on_transition(
             await asyncio.sleep(0.01)
         running_changed_at = supervisor.status("fake_01").state_changed_at
 
+        # Let the wall clock advance past its coarsest supported granularity
+        # before forcing the next transition. Windows' `datetime.now()` ticks
+        # at ~15.6 ms on Python 3.12, so without this the two timestamps can
+        # be identical and the strict `>` below fails — on the dev machine
+        # only, never on Linux CI. Sleeping keeps the assertion strict rather
+        # than relaxing it to `>=`, which would also pass if the timestamp
+        # were never updated at all.
+        await asyncio.sleep(0.02)
+
         await supervisor.stop("fake_01")
         stopped_changed_at = supervisor.status("fake_01").state_changed_at
 

@@ -24,6 +24,7 @@ import re
 import secrets
 import time
 from pathlib import Path
+from typing import Any
 
 import bcrypt
 from starlette.requests import HTTPConnection
@@ -130,17 +131,20 @@ class UserStore:
     def _load_users(self) -> dict[str, dict[str, str]]:
         if not self._path.is_file():
             return {}
-        raw = json.loads(self._path.read_text(encoding="utf-8"))
+        raw: dict[str, Any] = json.loads(self._path.read_text(encoding="utf-8"))
         if "users" not in raw:
             # Pre-Sprint-14 single-account shape ({"password_hash": "..."})
             # — migrate transparently: same hash (no re-hash), promoted to
             # `admin`, no forced re-setup.
             migrated = {
-                "users": {DEFAULT_ROLE: {"password_hash": raw["password_hash"], "role": DEFAULT_ROLE}}
+                "users": {
+                    DEFAULT_ROLE: {"password_hash": raw["password_hash"], "role": DEFAULT_ROLE}
+                }
             }
             self._path.write_text(json.dumps(migrated), encoding="utf-8")
             return migrated["users"]
-        return raw["users"]
+        users: dict[str, dict[str, str]] = raw["users"]
+        return users
 
     def _save_users(self, users: dict[str, dict[str, str]]) -> None:
         self._path.write_text(json.dumps({"users": users}), encoding="utf-8")

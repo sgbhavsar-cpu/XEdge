@@ -200,3 +200,70 @@ async def test_purge_loop_purges_expired_samples_periodically(tmp_path: Path) ->
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+def test_stream_keys_lists_streams_written_by_this_store(tmp_path: Path) -> None:
+    store = SqliteColdStore(tmp_path)
+    store.append("modbus_01", _tag(1, "INT64"))
+    store.append("opcua_01", _tag(2, "INT64"))
+
+    assert store.stream_keys() == ["modbus_01", "opcua_01"]
+
+
+def test_stream_keys_finds_backlog_written_before_this_process_started(tmp_path: Path) -> None:
+    """XEDGE-404 regression: the dispatcher replays from stream_keys() after a
+    reconnect. A backlog persisted by a previous process must be discoverable
+    by a freshly-constructed store, or it is never replayed."""
+    previous_process = SqliteColdStore(tmp_path)
+    previous_process.append("modbus_01", _tag(1, "INT64"))
+    previous_process.close()
+
+    after_restart = SqliteColdStore(tmp_path)
+    assert after_restart.stream_keys() == ["modbus_01"]
+    assert after_restart.count("modbus_01") == 1
+
+
+def test_stream_keys_roundtrips_keys_that_the_filename_cannot_represent(tmp_path: Path) -> None:
+    """`_safe_filename` maps every non-alphanumeric character to `_`, so
+    `modbus_01::alarm` and `modbus_01__alarm` share a filename. The key has to
+    come from inside the database, not from its name — otherwise peek/delete_ids
+    would be handed a key that opens a different file."""
+    previous_process = SqliteColdStore(tmp_path)
+    previous_process.append("modbus_01::alarm", _tag(1, "INT64", is_alarm=True))
+    previous_process.close()
+
+    keys = SqliteColdStore(tmp_path).stream_keys()
+    assert keys == ["modbus_01::alarm"]
+
+
+def test_stream_keys_skips_databases_predating_the_meta_table(tmp_path: Path) -> None:
+    """A database with no `meta` row cannot have its key recovered safely, so
+    it is skipped rather than guessed at — a wrong guess would silently open a
+    different file and strand the real backlog."""
+    legacy = tmp_path / "legacy_stream.db"
+    conn = sqlite3.connect(str(legacy))
+    conn.execute("CREATE TABLE samples (id INTEGER PRIMARY KEY AUTOINCREMENT)")
+    conn.commit()
+    conn.close()
+
+    store = SqliteColdStore(tmp_path)
+    assert store.stream_keys() == []
+
+
+def test_touching_a_legacy_database_by_its_real_key_makes_it_discoverable(tmp_path: Path) -> None:
+    """The meta row is written on every open, not only on create, so a
+    pre-XEDGE-404 database becomes self-describing as soon as any code path
+    uses it under its real key."""
+    legacy = tmp_path / "legacy_stream.db"
+    conn = sqlite3.connect(str(legacy))
+    conn.execute("CREATE TABLE samples (id INTEGER PRIMARY KEY AUTOINCREMENT)")
+    conn.commit()
+    conn.close()
+
+    store = SqliteColdStore(tmp_path)
+    assert store.stream_keys() == []
+
+    store.count("legacy_stream")
+    store.close()
+
+    assert SqliteColdStore(tmp_path).stream_keys() == ["legacy_stream"]

@@ -6,6 +6,10 @@
 # Sprint 13; this connects in plaintext.
 schema_version: "0.1"
 
+# Root for all persistent state (Sprint 0, XEDGE-402). Every other
+# persistent path defaults to a subdirectory of this one.
+data_dir: /data
+
 logging:
   level: INFO
 
@@ -61,7 +65,8 @@ northbound:
     qos: 1
 
 store:
-  directory: /data/store
+  # directory: defaults to <data_dir>/store; set it only to split
+  # telemetry onto a different volume from the rest of the state.
   ram_max_depth: 10000
   retention_duration_seconds: 604800 # 7 days
   purge_interval_seconds: 3600
@@ -69,7 +74,7 @@ store:
 config_management:
   hot_reload_enabled: true
   poll_interval_seconds: 2.0
-  history_directory: /data/config-history
+  # history_directory: defaults to <data_dir>/config-history
   max_versions: 10
 
 api:

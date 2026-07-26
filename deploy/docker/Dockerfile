@@ -4,6 +4,16 @@
 
 FROM python:3.11-slim AS builder
 
+# armv7 has no prebuilt wheel for cffi (a transitive dependency of
+# `cryptography`), so pip falls back to building it from source and the
+# stock slim image has no compiler — the armv7 leg of the multi-arch build
+# failed on `gcc: No such file or directory` from the first push until
+# Sprint 0 (XEDGE-403). These are builder-stage only; the runtime stage
+# below copies just /install, so the shipped image stays slim.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y build-essential libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /build
 COPY pyproject.toml README.md ./
 COPY xedge ./xedge

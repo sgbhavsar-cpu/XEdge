@@ -203,9 +203,7 @@ def _check_local_address_available(local_address: str) -> None:
     this is the only way `connect()` can surface one to the supervisor."""
     host, _, port_str = local_address.rpartition(":")
     if not host or not port_str.isdigit():
-        raise DriverConnectionError(
-            f"local_address must be 'host:port', got {local_address!r}"
-        )
+        raise DriverConnectionError(f"local_address must be 'host:port', got {local_address!r}")
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.bind((host, int(port_str)))

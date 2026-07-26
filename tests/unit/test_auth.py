@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import json
 import time
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 import bcrypt
 import pytest
 
+from xedge.api import auth as auth_module
 from xedge.api.auth import (
     AuthError,
     LoginAttemptTracker,
@@ -166,7 +168,23 @@ class TestSessionManager:
         token = manager.issue("admin")
         assert manager.refresh_if_valid(token) is not None
 
-    def test_issue_and_refresh_round_trips_username(self) -> None:
+    def test_issue_and_refresh_round_trips_username(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The refreshed token must be a *new* one — that is what slides the
+        idle window forward (FR-WU-007).
+
+        The clock is driven explicitly rather than read from the host. A token
+        is derived deterministically from `username|issued_at`, so two issued
+        within the same clock tick are byte-identical — which made this test
+        fail on Windows, whose `time.time()` granularity is ~15.6 ms on
+        Python 3.12, while passing on Linux CI's nanosecond clock. Injecting
+        time tests the actual property on every platform.
+        """
+        # Advances 0.5 s per read, well inside the idle timeout.
+        # `refresh_if_valid` reads the clock twice (expiry check, then
+        # `issue`), so a fixed two-element sequence is not enough.
+        clock = itertools.count(1000.0, 0.5)
+        monkeypatch.setattr(auth_module.time, "time", lambda: next(clock))
+
         manager = SessionManager(secret_key=b"test-secret-key")
         token = manager.issue("alice")
         result = manager.refresh_if_valid(token)

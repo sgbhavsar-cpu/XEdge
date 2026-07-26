@@ -93,7 +93,10 @@ def create_fleet_manager_app(
         device_id: str, body: _HeartbeatBody, _auth: None = Depends(require_device_token)
     ) -> dict[str, Any]:
         registry.heartbeat(
-            device_id, body.agent_version, body.driver_count, body.uptime_seconds,
+            device_id,
+            body.agent_version,
+            body.driver_count,
+            body.uptime_seconds,
             body.last_config_apply,
         )
         pending = registry.take_pending_config(device_id)

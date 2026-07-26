@@ -85,9 +85,7 @@ class BaseModbusPollingDriver(BaseDriver):
 
     async def configure(self, config: DriverConfig) -> None:
         self._config = config
-        self._tags_by_id = {
-            tag["id"]: tag for group in config.tag_groups for tag in group["tags"]
-        }
+        self._tags_by_id = {tag["id"]: tag for group in config.tag_groups for tag in group["tags"]}
 
     async def run(self, output: asyncio.Queue[TagUpdate]) -> None:
         config = self._require_config()

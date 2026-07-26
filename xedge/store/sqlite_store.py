@@ -43,6 +43,21 @@ CREATE TABLE IF NOT EXISTS samples (
     metadata_json TEXT NOT NULL
 )
 """
+
+# Records the stream key this database belongs to (Sprint 0, XEDGE-404).
+# The filename can't serve as the key: `_safe_filename` is lossy, so both
+# `a/b` and `a_b` — and every alarm stream, whose `::alarm` suffix becomes
+# `__alarm` — map onto the same file. `stream_keys()` needs the real key to
+# hand back to `peek`/`delete_ids`, so it is stored explicitly.
+_CREATE_META_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+)
+"""
+
+_STREAM_KEY_META = "stream_key"
+
 _COLUMNS = (
     "tag_id",
     "timestamp_ns",
@@ -137,8 +152,66 @@ class SqliteColdStore:
             synchronous = "FULL" if stream_key.endswith(ALARM_STREAM_KEY_SUFFIX) else "NORMAL"
             conn.execute(f"PRAGMA synchronous={synchronous}")
             conn.execute(_CREATE_TABLE_SQL)
+            conn.execute(_CREATE_META_TABLE_SQL)
+            # Written on every open, not just on create, so a database
+            # predating XEDGE-404 becomes self-describing as soon as any
+            # code path touches it under its real key.
+            conn.execute(
+                "INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)",
+                (_STREAM_KEY_META, stream_key),
+            )
             self._connections[stream_key] = conn
         return conn
+
+    def stream_keys(self) -> list[str]:
+        """Every stream key with a database in this store, including streams
+        this process has not touched since starting.
+
+        The northbound dispatcher replays cold-store backlog after a
+        reconnect. Before Sprint 0 (XEDGE-404) it enumerated the *ring
+        buffer's* stream keys — which are empty immediately after a restart,
+        so a backlog persisted across a restart went unreplayed until each
+        stream happened to push again, and a backlog belonging to a driver
+        since removed from config was never replayed at all.
+
+        Keys come from each database's `meta` table rather than from its
+        filename, since `_safe_filename` is lossy (see `_CREATE_META_TABLE_SQL`).
+        A database written before XEDGE-404 has no `meta` row and cannot have
+        its key recovered safely — guessing would send `peek`/`delete_ids` at
+        a different file and silently strand the real backlog — so it is
+        skipped with a warning instead.
+        """
+        keys = set(self._connections)
+        for db_path in sorted(self._directory.glob("*.db")):
+            key = self._read_stream_key(db_path)
+            if key is None:
+                logger.warning(
+                    "cold_store.stream_key_unrecoverable",
+                    path=str(db_path),
+                    reason="no meta row; database predates XEDGE-404",
+                )
+                continue
+            keys.add(key)
+        return sorted(keys)
+
+    @staticmethod
+    def _read_stream_key(db_path: Path) -> str | None:
+        """Read a database's recorded stream key without registering a
+        long-lived connection for it."""
+        try:
+            conn = sqlite3.connect(str(db_path))
+        except sqlite3.Error:
+            return None
+        try:
+            row = conn.execute(
+                "SELECT value FROM meta WHERE key = ?", (_STREAM_KEY_META,)
+            ).fetchone()
+        except sqlite3.Error:
+            # No `meta` table at all — a pre-XEDGE-404 database.
+            return None
+        finally:
+            conn.close()
+        return str(row[0]) if row is not None else None
 
     def append(self, stream_key: str, tag: UnifiedTag) -> None:
         conn = self._connection(stream_key)

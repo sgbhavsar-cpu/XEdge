@@ -35,7 +35,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="xedge-cli", description="Remote diagnostic client for a running xEdge instance"
     )
     parser.add_argument(
-        "--base-url", default=_DEFAULT_BASE_URL, help=f"xEdge base URL (default: {_DEFAULT_BASE_URL})"
+        "--base-url",
+        default=_DEFAULT_BASE_URL,
+        help=f"xEdge base URL (default: {_DEFAULT_BASE_URL})",
     )
     parser.add_argument("--username", default="admin", help="Account username (default: admin)")
     parser.add_argument(
