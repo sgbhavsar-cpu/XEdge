@@ -74,7 +74,7 @@ transaction rather than N.
 | XEDGE-410 | 5 | Transport-neutral **fixed-period scheduler**: schedule next-due-time rather than sleeping after work. Fixes scan-rate drift (F-6). Foundation for ADR-011 Part 2 |
 | XEDGE-411 | 6 | **Block-read batching**: coalesce contiguous addresses within a tag group into single FC01/02/03/04 requests; configurable max batch size; correct splitting at non-contiguous boundaries and at the protocol's 125-register / 2000-coil limits |
 | XEDGE-412 | 5 | **Multi-register data types**: int32/uint32/int64/uint64/float32/float64 with configurable word order and byte order. CRD's "combine multiple registers into a single value" |
-| XEDGE-413 | 2 | Lower poll-interval floor to 1 ms with **per-transport minimums** documented; RS-485 floor derived from baud rate and frame size. Decision D-10 |
+| XEDGE-413 | 2 | Lower poll-interval floor to 1 ms with **per-transport minimums** documented; RS-485 floor derived from baud rate and frame size. Decision D-10. **Q-2 resolved — customer accepted the RS-485 limitation (2026-07-26)** |
 | XEDGE-414 | 2 | Configurable retry count and retry-on-exception per instance |
 | XEDGE-415 | 2 | Web UI + schema: batching, data type, word/byte order, retry fields on the Modbus driver forms |
 
@@ -82,8 +82,9 @@ transaction rather than N.
 Batching correctness at boundaries is where this sprint can silently go
 wrong — property-based tests over address layouts are worth the time here.
 
-**Customer input needed by sprint end:** open item Q-2 (poll-floor
-acceptance, and that RS-485 cannot reach 1 ms).
+**Customer input needed by sprint end:** ~~open item Q-2 (poll-floor
+acceptance, and that RS-485 cannot reach 1 ms)~~ — **resolved 2026-07-26,
+accepted.**
 
 ---
 
@@ -305,7 +306,56 @@ completed stories, carry-over, and a re-forecast against 2026-12-06.
 
 | Sprint | Status | Completed | Carried | Forecast vs M-C7 |
 |---|---|---|---|---|
-| 0 | Not started | — | — | On plan |
+| 0 | ✅ Complete ([PR #2](https://github.com/sgbhavsar-cpu/XEdge/pull/2)) | XEDGE-400/401/402/403/404/405/406/407/408 | — | On plan |
+| C1 | ✅ Complete ([PR #3](https://github.com/sgbhavsar-cpu/XEdge/pull/3)) | XEDGE-410/411/412/413/414/415 | — | On plan |
+
+### Sprint 0 notes (2026-07-27 → 08-02)
+
+**Exit criterion met** — first fully green CI run in the project's history,
+including the armv7 image, which had never once built.
+
+CI turned out to have **four** independent failures, not one: each job masked
+the next. Beyond the three known ones, `bandit -r xedge` was also exiting 1 on
+a B101 finding nobody had seen, because the lint job failed before reaching
+it. The suppression there targeted ruff's `S101`, which does nothing for
+bandit.
+
+XEDGE-402 was a design smell rather than a test bug. `/data` was hardcoded at
+four independent call sites; the failing test proved it by carefully
+overriding `store.directory` and still hitting `/data`, because
+`config_management.history_directory` had its own separate default.
+
+Two pre-existing Windows-only test flakes were also fixed. They did not block
+CI (Linux has a nanosecond clock) but made the suite unrunnable on the
+development machine, which matters across eight remaining sprints.
+
+### Sprint C1 notes (2026-08-03 → 08-16)
+
+All six stories delivered. Coverage 88%; planner 100%, datatypes 98%,
+polling 91%.
+
+**Open item Q-2 resolved** — the customer accepted that RS-485 cannot reach a
+1 ms poll floor. XEDGE-413 lowered the schema floor to 1 ms and added a
+computed per-transport achievable-floor warning, so the acceptance is backed
+by xEdge stating what *is* achievable rather than failing silently.
+
+**A scheduler bug was caught by its own test.** The first XEDGE-410
+implementation advanced the deadline by whole intervals on overrun, so a 3 ms
+overrun on a 60 ms group pushed the next read 57 ms further out — halving the
+effective rate because a cycle ran 5% late. Corrected to reset the deadline to
+now. Worth noting as evidence that the timing tests earn their keep.
+
+**Batching's cost was paid back explicitly.** A device rejects a whole block
+for one unmapped register, which would have marked every tag in that block
+Bad. A rejected multi-tag block is re-read tag by tag, preserving the per-tag
+error attribution the unbatched loop had.
+
+`serial.py` remains at 34% coverage — the `pty`-based fake-serial fixture is
+XEDGE-430, already scheduled first in C3 as a prerequisite for the bus
+manager. Its new floor-calculation logic is unit-tested.
+
+**Carried into C2:** nothing. XEDGE-423 (FC15/FC16) was already C2 scope;
+multi-register *writes* are refused rather than truncated until it lands.
 
 ---
 

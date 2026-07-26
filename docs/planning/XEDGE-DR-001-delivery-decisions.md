@@ -145,7 +145,7 @@ answered unfavourably late. All are carried as risks in
 | # | Question | Impact if answered late | Latest useful answer |
 |---|---|---|---|
 | **Q-1** | The exclusion list referenced as "protocols in the image" (D-09) | Could remove entire sprints from scope — or confirm all eight areas, which is what we are building to | Before Sprint C7 (first net-new protocol driver) |
-| **Q-2** | Acceptance of the 1–10 ms poll floor and of per-transport floors, particularly that RS-485 cannot reach 1 ms (D-10) | Schema and scheduler rework in Modbus | Before Sprint C1 completes |
+| ~~**Q-2**~~ | ~~Acceptance of the 1–10 ms poll floor and of per-transport floors, particularly that RS-485 cannot reach 1 ms (D-10)~~ | **✅ RESOLVED 2026-07-26 — customer accepted.** Schema floor lowered 50 ms → 1 ms in Sprint C1 (XEDGE-413). The serial driver now computes the achievable floor from baud rate, framing and planned block sizes, and warns at `configure()` naming the rate that would actually work | — |
 | **Q-3** | Whether "Asset" must be the primary configuration entity or may be a metadata layer (D-11) | UI rework in Sprint C6; the data model itself survives either way | Before Sprint C6 |
 | **Q-4** | Target gateway hardware (D-21) | RS-485 RTS timing, armv7 necessity, OTA mechanism, and the HIL plan all depend on it | Before Sprint C3 |
 | **Q-5** | Acceptance that OTA updates the application container, not the host OS/kernel (D-25) | Would force RAUC into scope, which needs hardware we do not have | Before Delivery 2 planning |
