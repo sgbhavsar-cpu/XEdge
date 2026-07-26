@@ -75,8 +75,8 @@ async def test_holding_register_matches_pymodbus_oracle(oracle_server: tuple[str
     await driver.configure(_driver_config(host, port))
     await driver.connect()
     try:
-        value = await driver._read_one(codec.FunctionCode.READ_HOLDING_REGISTERS, 100)  # noqa: SLF001
-        assert value == 12345
+        values = await driver._read_block(codec.FunctionCode.READ_HOLDING_REGISTERS, 100, 1)  # noqa: SLF001
+        assert values == [12345]
     finally:
         await driver.disconnect()
 
@@ -87,8 +87,8 @@ async def test_coil_matches_pymodbus_oracle(oracle_server: tuple[str, int]) -> N
     await driver.configure(_driver_config(host, port))
     await driver.connect()
     try:
-        value = await driver._read_one(codec.FunctionCode.READ_COILS, 5)  # noqa: SLF001
-        assert value is True
+        values = await driver._read_block(codec.FunctionCode.READ_COILS, 5, 1)  # noqa: SLF001
+        assert values == [True]
     finally:
         await driver.disconnect()
 
@@ -102,7 +102,9 @@ async def test_illegal_address_raises_modbus_exception_against_oracle(
     await driver.connect()
     try:
         with pytest.raises(codec.ModbusException) as exc_info:
-            await driver._read_one(codec.FunctionCode.READ_HOLDING_REGISTERS, _ILLEGAL_ADDRESS)  # noqa: SLF001
+            await driver._read_block(  # noqa: SLF001
+                codec.FunctionCode.READ_HOLDING_REGISTERS, _ILLEGAL_ADDRESS, 1
+            )
         assert exc_info.value.exception_code == codec.ExceptionCode.ILLEGAL_DATA_ADDRESS
     finally:
         await driver.disconnect()

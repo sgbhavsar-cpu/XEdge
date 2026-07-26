@@ -51,9 +51,20 @@ def test_build_driver_config_missing_host_raises() -> None:
 
 def test_build_driver_config_bad_scan_rate_raises() -> None:
     entry = _valid_entry()
-    entry["tag_groups"][0]["scan_rate_ms"] = 10  # below the 50ms FR-SA-009 minimum
+    # XEDGE-413 lowered the floor from 50ms to 1ms (open item Q-2), so 0 is
+    # now the boundary rather than 10.
+    entry["tag_groups"][0]["scan_rate_ms"] = 0
     with pytest.raises(ConfigValidationError):
         build_driver_config(entry)
+
+
+def test_build_driver_config_accepts_sub_50ms_scan_rate() -> None:
+    """XEDGE-413: the 50ms floor is gone. Whether 1ms is *achievable* depends
+    on transport and block count — the serial driver warns when it is not
+    (xedge.drivers.modbus.serial) — but the schema no longer forbids it."""
+    entry = _valid_entry()
+    entry["tag_groups"][0]["scan_rate_ms"] = 1
+    assert build_driver_config(entry).tag_groups[0]["scan_rate_ms"] == 1
 
 
 def test_build_driver_config_bad_function_code_raises() -> None:

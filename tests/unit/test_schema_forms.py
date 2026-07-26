@@ -1,6 +1,17 @@
 from __future__ import annotations
 
-from xedge.api.schema_forms import build_field, build_object_fields, humanize, unflatten
+import json
+from pathlib import Path
+from typing import Any
+
+from xedge.api.schema_forms import (
+    FieldDescriptor,
+    build_field,
+    build_object_fields,
+    humanize,
+    unflatten,
+)
+from xedge.drivers.modbus.datatypes import DATA_TYPE_NAMES
 
 
 class TestHumanize:
@@ -229,3 +240,56 @@ class TestUnflatten:
             {"id": "should-be-ignored", "scan_rate_ms": "500"}, schema, skip=frozenset({"id"})
         )
         assert result == {"scan_rate_ms": 500}
+
+
+class TestSprintC1FieldsRenderFromSchema:
+    """XEDGE-415. The Web UI form generator is schema-driven (ADR-007), so
+    adding the Sprint C1 settings to the driver schemas should surface them in
+    the config editor with no template work. These tests lock that in — a
+    future schema edit that drops a field would otherwise silently remove it
+    from the UI with every test still passing.
+    """
+
+    @staticmethod
+    def _modbus_schema() -> dict[str, Any]:
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "config"
+            / "schema"
+            / "drivers"
+            / "modbus_tcp.schema.json"
+        )
+        return json.loads(path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+
+    def _fields(self, section: str) -> dict[str, FieldDescriptor]:
+        schema = self._modbus_schema()
+        group = schema["properties"]["tag_groups"]["items"]
+        target = {
+            "tag": group["properties"]["tags"]["items"],
+            "group": group,
+            "config": schema["properties"]["config"],
+        }[section]
+        return {field.name: field for field in build_object_fields(target, {})}
+
+    def test_data_type_is_a_dropdown_of_the_supported_widths(self) -> None:
+        field = self._fields("tag")["data_type"]
+        assert field.control == "select"
+        assert field.options is not None
+        assert set(field.options) == set(DATA_TYPE_NAMES)
+
+    def test_word_and_byte_order_are_dropdowns(self) -> None:
+        fields = self._fields("tag")
+        for name in ("word_order", "byte_order"):
+            assert fields[name].control == "select"
+            assert fields[name].options == ["big", "little"]
+
+    def test_batching_controls_appear_on_the_tag_group_form(self) -> None:
+        fields = self._fields("group")
+        assert fields["max_block_size"].control == "number"
+        assert fields["max_block_gap"].control == "number"
+
+    def test_retry_controls_appear_on_the_driver_config_form(self) -> None:
+        fields = self._fields("config")
+        assert fields["retry_count"].control == "number"
+        assert fields["retry_on_exception"].control == "checkbox"
+        assert fields["retry_backoff_seconds"].control == "number"

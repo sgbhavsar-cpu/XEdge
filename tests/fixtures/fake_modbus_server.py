@@ -33,6 +33,15 @@ class _ModbusDatastore:
         self.coils: dict[int, bool] = {}
         self.discrete_inputs: dict[int, bool] = {}
         self.exceptions: dict[tuple[int, int], int] = {}
+        # (function_code, address, quantity) per request received, in order.
+        # Sprint C1 (XEDGE-411) — read batching is a claim about how many
+        # round trips a scan cycle costs, so tests need to count and size the
+        # actual requests rather than infer batching from the values returned.
+        self.request_log: list[tuple[int, int, int]] = []
+
+    @property
+    def read_request_count(self) -> int:
+        return sum(1 for fc, _, _ in self.request_log if fc in (0x01, 0x02, 0x03, 0x04))
 
     def handle_request(self, pdu: bytes) -> bytes:
         function_code = pdu[0]
@@ -41,6 +50,7 @@ class _ModbusDatastore:
         # layout either way, so unpacking once and branching on meaning
         # below is correct for both.
         address, second_field = struct.unpack(">HH", pdu[1:5])
+        self.request_log.append((function_code, address, second_field))
 
         forced_exception = self.exceptions.get((function_code, address))
         if forced_exception is not None:

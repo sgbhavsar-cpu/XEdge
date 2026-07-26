@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 
-from xedge.drivers.base import TagValue
 from xedge.drivers.modbus import codec, rtu_codec
 from xedge.drivers.modbus.polling import BaseModbusPollingDriver, ModbusDriverStateError
 
@@ -51,10 +50,11 @@ class ModbusRtuOverTcpDriver(BaseModbusPollingDriver):
             self._writer = None
             self._reader = None
 
-    async def _read_one(self, function_code: codec.FunctionCode, address: int) -> TagValue:
+    async def _read_block(
+        self, function_code: codec.FunctionCode, address: int, quantity: int
+    ) -> list[int] | list[bool]:
         cfg = self._require_config().config
         reader, writer = self._require_connection()
-        quantity = 1
         request_pdu = codec.encode_read_request(function_code, address, quantity)
 
         async with self._request_lock:
@@ -69,10 +69,8 @@ class ModbusRtuOverTcpDriver(BaseModbusPollingDriver):
 
         _, response_pdu = rtu_codec.decode_rtu_frame(response_frame)
         if codec.is_bit_function(function_code):
-            bits = codec.decode_bits_response(response_pdu, quantity)
-            return bits[0]
-        registers = codec.decode_registers_response(response_pdu)
-        return registers[0]
+            return codec.decode_bits_response(response_pdu, quantity)
+        return codec.decode_registers_response(response_pdu)
 
     async def _read_frame(self, reader: asyncio.StreamReader) -> bytes:
         head = await reader.readexactly(2)  # unit address, function code (or exception)
