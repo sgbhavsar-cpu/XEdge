@@ -308,6 +308,7 @@ completed stories, carry-over, and a re-forecast against 2026-12-06.
 |---|---|---|---|---|
 | 0 | ✅ Complete ([PR #2](https://github.com/sgbhavsar-cpu/XEdge/pull/2)) | XEDGE-400/401/402/403/404/405/406/407/408 | — | On plan |
 | C1 | ✅ Complete ([PR #3](https://github.com/sgbhavsar-cpu/XEdge/pull/3)) | XEDGE-410/411/412/413/414/415 | — | On plan |
+| C2 | ✅ Complete ([PR #4](https://github.com/sgbhavsar-cpu/XEdge/pull/4)) | XEDGE-420/421/422/423/424/425/426 | — | On plan |
 
 ### Sprint 0 notes (2026-07-27 → 08-02)
 
@@ -356,6 +357,54 @@ manager. Its new floor-calculation logic is unit-tested.
 
 **Carried into C2:** nothing. XEDGE-423 (FC15/FC16) was already C2 scope;
 multi-register *writes* are refused rather than truncated until it lands.
+
+### Sprint C2 notes (2026-08-17 → 08-30)
+
+All seven stories delivered. Coverage 88%; `connectivity.py`, `planner.py`
+and `scheduler.py` at 100%, `polling.py` at 94%.
+
+**A hang bug was caught before it shipped, the same way C1's scheduler bug
+was — by the tests that were already there.** The first XEDGE-424
+implementation tied the write-priority scheduler's start/stop to `run()`
+(the poll loop), on the reasoning that reads and writes both need it
+running. That reasoning missed a real case: `write()` is a valid call the
+moment a driver is *connected*, and the write-back path — plus several of
+this package's own pre-existing tests — call `configure()` → `connect()` →
+`write()` directly without ever starting the poll loop. Every one of those
+hung indefinitely, awaiting a consumer that was never started. Fixed by
+making `connect()`/`disconnect()` concrete methods on
+`BaseModbusPollingDriver` that own the scheduler's lifecycle around a new
+`_connect_transport()`/`_disconnect_transport()` hook, rather than tying it
+to `run()`. Worth flagging as a pattern: both sprints' most serious bugs
+were caught by pre-existing or newly-written tests, not by inspection.
+
+**XEDGE-426 turned out not to be a bug.** The original compliance review
+flagged `build_tag_pipeline_configs` as "Modbus-shaped only," quoting its
+own docstring. The function itself branches on nothing driver-type-specific,
+and the OPC UA/BACnet schemas already declare
+`scaling`/`deadband`/`engineering_unit` identically to Modbus — confirmed
+by calling the function directly against a hand-built OPC UA and BACnet
+config before changing anything. The docstring was stale; the code was
+already correct. Fixed the docstring and added regression tests (including
+a mixed three-driver-type fleet in one call) so the claim is now backed by
+a test, not just a docstring. **Lesson for the remaining sprints:** a
+finding from the original compliance report is a hypothesis to verify
+against current code, not a confirmed defect to fix on sight — this is the
+second time in two sprints (after C1's FC01–04/FC05/FC06 status) that
+direct verification changed the diagnosis.
+
+**FC15 (write multiple coils) is implemented and tested at the codec
+level, with no runtime caller** — stated in the PR rather than papered
+over. No bulk-write concept exists yet in `write()`'s single-tag API to
+call it from; manufacturing one to give FC15 a caller would be scope
+invented to satisfy an estimate line, not the CRD. This mirrors the
+project's own precedent: FC16 sat uncalled from Sprint 2 until this sprint
+gave it one, documented plainly the whole time.
+
+**`serial.py` remains untested by the RTU fixture** (34%, unchanged from
+C1) — XEDGE-430 (C3, first story) is still the fix.
+
+**Carried into C3:** nothing.
 
 ---
 
