@@ -406,6 +406,73 @@ C1) — XEDGE-430 (C3, first story) is still the fix.
 
 **Carried into C3:** nothing.
 
+### Sprint C3 notes (2026-08-31 → 09-13)
+
+All eight stories delivered (XEDGE-430–437, 29 points).
+
+**Multi-drop RS-485 works end to end.** `SerialBusManager` (XEDGE-431) is a
+port-level arbiter: several `ModbusRtuSerialDriver` instances (several
+slave IDs) sharing one physical port now acquire/release one shared
+connection and one shared `RequestScheduler`, instead of racing each other
+for the handle. What made this fit the existing per-transport driver shape
+without a parallel class hierarchy: `_scheduler` became an overridable
+property (a private per-instance scheduler by default; the serial driver
+overrides it to return the bus manager's shared one), on top of the
+`connect()`/`disconnect()` → `_connect_transport()`/`_disconnect_transport()`
+restructuring C2's write-priority scheduler already needed — reused rather
+than duplicated.
+
+**RTS timing ships, but genuinely unverified against real hardware.**
+XEDGE-432's pre/post-transmit delay (µs) is a custom serial transport
+(`pyserial-asyncio` doesn't expose RTS toggle timing) that degrades to a
+logged warning, not a crash, on a platform/adapter that doesn't support
+RTS toggling at all. Open item Q-4 (target hardware) is still unresolved —
+RTS timing requirements are converter-specific, so this is correct against
+the spec but not yet validated against the customer's actual RS-485
+transceivers.
+
+**pty-based serial testing (XEDGE-430) is Linux-only by necessity, not by
+choice.** `pty.openpty()` needs `termios`, unavailable on Windows. The
+fixture and its 8 dependent tests (`test_serial_bus_manager.py`) skip
+cleanly on a Windows dev machine and are validated by Linux CI only — the
+gap C1's notes flagged for `serial.py`'s 34% coverage is now closed there.
+
+**XEDGE-435 and XEDGE-436 both add an "on_demand" knob — deliberately
+independent ones.** XEDGE-435's `polling_mode: on_demand` controls when a
+*tag group* reads (never automatically; only via
+`POST .../tag-groups/{id}/poll`, which calls the driver's own `poll_now()`).
+XEDGE-436's `connection_mode: on_demand` controls when a *TCP socket* is
+open (never held between transactions; every read and write dials and
+closes its own). They compose freely — an on_demand tag group over an
+on_demand connection is a legitimate combination — but the shared word is a
+real risk for anyone skimming the schema without reading both descriptions.
+No renaming done: each name is the obviously correct word for its own
+concern in isolation. Flagging it here so nobody "fixes" it into something
+worse by looking at only one side.
+
+**A second hang bug, this time in test infrastructure rather than product
+code — found while investigating a stuck CI job, not part of any planned
+story.** PR #4's (Sprint C2) Python 3.11 CI job ran 90+ minutes (vs. 13 for
+the identical 3.12 job) with zero test output past `test_diagnostics_ws.py`.
+In-progress logs aren't fetchable from GitHub's API; cancelling the run and
+re-fetching its logs afterward showed it stalled immediately on entering
+`test_e2e_modbus_to_sparkplug.py`, before that file's one test printed
+anything at all. Root cause: `paho.mqtt.Client.connect()`'s third
+positional argument is the MQTT keepalive interval, not a connect timeout —
+it is a blocking socket call with no timeout of its own, so a broker that
+accepts the TCP connection but never answers CONNECT hangs that call, and
+the whole event loop thread, forever. Why this only manifested on 3.11
+remains unconfirmed (most likely an `amqtt`-internal timing/scheduling
+difference between minor versions); what's fixed is that it can no longer
+hang silently — the connect now runs off-thread and bounded with
+`asyncio.wait_for`, and `amqtt`'s own `broker.start()` is bounded the same
+defensive way. Pushed directly to the C2 branch (PR #4) rather than carried
+into C3, since every stacked branch inherits the same test file and would
+hit the identical hang.
+
+**Carried into C4:** open item Q-4 (RTS timing vs. real hardware) — same
+as this sprint, unresolved.
+
 ---
 
 ## 8. Revision history
