@@ -13,6 +13,7 @@ from xedge.api.server import create_app
 from xedge.core.alarms import AlarmEngine, AlarmRule
 from xedge.core.config import ConfigVersionHistory
 from xedge.core.pipeline import UnifiedTag
+from xedge.core.sntp import SntpSyncStatus
 from xedge.core.supervisor import DriverConfig, DriverRegistry, DriverSupervisor
 from xedge.drivers.base import Quality, TagUpdate
 from xedge.fleet.agent import FleetAgentStatus
@@ -27,6 +28,7 @@ def _build_app(
     supervisor: DriverSupervisor | None = None,
     fleet_status: FleetAgentStatus | None = None,
     alarm_engine: AlarmEngine | None = None,
+    sntp_status: SntpSyncStatus | None = None,
 ) -> FastAPI:
     config_path = tmp_path / "xedge.yaml"
     if not config_path.is_file():
@@ -45,6 +47,7 @@ def _build_app(
         ring_buffers=RingBufferManager(),
         fleet_status=fleet_status,
         alarm_engine=alarm_engine,
+        sntp_status=sntp_status,
     )
 
 
@@ -262,6 +265,68 @@ def test_fleet_status_endpoint_reports_live_agent_state(
     assert body["registered"] is True
     assert body["device_id"] == "dev1"
     assert body["last_heartbeat_ok"] is True
+
+
+def test_dashboard_omits_sntp_card_when_sntp_disabled(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    app = _build_app(tmp_path, core_schema_path, sntp_status=SntpSyncStatus())
+    client = TestClient(app)
+    client.post(
+        "/ui/setup", data={"password": "correct-password", "confirm_password": "correct-password"}
+    )
+    response = client.get("/ui/dashboard")
+    assert "Time Sync</h1>" not in response.text
+
+
+def test_dashboard_shows_sntp_card_when_sntp_enabled(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    status = SntpSyncStatus(enabled=True, servers=["pool.ntp.org"])
+    app = _build_app(tmp_path, core_schema_path, sntp_status=status)
+    client = TestClient(app)
+    client.post(
+        "/ui/setup", data={"password": "correct-password", "confirm_password": "correct-password"}
+    )
+    response = client.get("/ui/dashboard")
+    assert "Time Sync</h1>" in response.text
+
+
+def test_sntp_status_endpoint_reports_disabled_by_default(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    app = _build_app(tmp_path, core_schema_path)
+    client = TestClient(app)
+    client.post(
+        "/ui/setup", data={"password": "correct-password", "confirm_password": "correct-password"}
+    )
+    response = client.get("/api/v1/sntp/status")
+    assert response.status_code == 200
+    assert response.json() == {"enabled": False}
+
+
+def test_sntp_status_endpoint_reports_live_sync_state(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    status = SntpSyncStatus(
+        enabled=True,
+        servers=["pool.ntp.org"],
+        sync_interval_seconds=3600,
+        last_sync_server="pool.ntp.org",
+        offset_seconds=0.012,
+    )
+    status.last_sync_at = datetime.now(UTC)
+    app = _build_app(tmp_path, core_schema_path, sntp_status=status)
+    client = TestClient(app)
+    client.post(
+        "/ui/setup", data={"password": "correct-password", "confirm_password": "correct-password"}
+    )
+    response = client.get("/api/v1/sntp/status")
+    body = response.json()
+    assert body["enabled"] is True
+    assert body["last_sync_server"] == "pool.ntp.org"
+    assert body["offset_seconds"] == 0.012
+    assert body["stale"] is False
 
 
 def test_logout_redirects_to_login_and_clears_session(

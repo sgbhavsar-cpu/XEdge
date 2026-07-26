@@ -32,6 +32,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
+from serial.tools import list_ports
 
 from xedge import __version__
 from xedge.api.auth import SESSION_COOKIE_NAME as _SESSION_COOKIE_NAME
@@ -51,7 +52,8 @@ from xedge.core.alarms import AlarmEngine
 from xedge.core.config import ConfigValidationError, ConfigValidator, ConfigVersionHistory
 from xedge.core.connectivity import ConnectivityState
 from xedge.core.driver_config import build_driver_config
-from xedge.core.supervisor import DriverSupervisor
+from xedge.core.sntp import SntpSyncStatus
+from xedge.core.supervisor import DriverState, DriverSupervisor
 from xedge.core.write_router import WriteRouter
 from xedge.drivers.base import DriverMetrics
 from xedge.fleet.agent import FleetAgentStatus
@@ -133,6 +135,7 @@ def create_app(
     requests_per_minute: int = 100,
     fleet_status: FleetAgentStatus | None = None,
     alarm_engine: AlarmEngine | None = None,
+    sntp_status: SntpSyncStatus | None = None,
 ) -> FastAPI:
     app = FastAPI(title="xEdge API", version=__version__)
     started_at = datetime.now(UTC)
@@ -440,6 +443,42 @@ def create_app(
             return {"valid": False, "errors": [str(exc)]}
         return {"valid": True, "errors": []}
 
+    @app.post("/api/v1/drivers/{instance_id}/tag-groups/{group_id}/poll")
+    async def poll_tag_group_now(
+        instance_id: str, group_id: str, _user: str = Depends(require_permission("tag:read"))
+    ) -> dict[str, Any]:
+        """Trigger an immediate read of an `on_demand` tag group (XEDGE-435,
+        ADR-011 Part 2) — the REST side of `poll_now()` on the live driver
+        instance. Gated on `tag:read`, matching the permission that already
+        governs seeing this data at all: this endpoint changes *when* a read
+        happens, not what an authorized caller may already read or write.
+        """
+        try:
+            status_ = supervisor.status(instance_id)
+        except KeyError:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, f"No driver instance {instance_id!r}"
+            ) from None
+        if status_.state != DriverState.RUNNING:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"Driver instance {instance_id!r} is not running (state: {status_.state.value})",
+            )
+        driver = supervisor.get_driver(instance_id)
+        poll_now = getattr(driver, "poll_now", None) if driver is not None else None
+        if poll_now is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Driver instance {instance_id!r} does not support on-demand polling",
+            )
+        triggered = await poll_now(group_id)
+        if not triggered:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"No on-demand tag group {group_id!r} on driver instance {instance_id!r}",
+            )
+        return {"instance_id": instance_id, "tag_group": group_id, "triggered": True}
+
     @app.get("/api/v1/logs")
     def get_logs(
         since_seq: int = 0,
@@ -451,6 +490,22 @@ def create_app(
         return get_log_ring_buffer().tail(
             since_seq=since_seq, instance_id=instance_id, source=source, limit=limit
         )
+
+    @app.get("/api/v1/serial-ports")
+    def get_serial_ports(
+        _user: str = Depends(require_permission("config:read")),
+    ) -> list[str]:
+        """Serial device paths physically present on this host right now
+        (XEDGE-434) — backs the `port` field's suggestion list on the
+        Modbus RTU serial driver form (`x-suggestions-endpoint`, see
+        xedge.api.schema_forms). `pyserial` (already a dependency via
+        pyserial-asyncio) does the actual OS-specific enumeration; no
+        detected list is ever authoritative here, only a convenience — the
+        field stays a free-text input an operator can fill in by hand for
+        a port this pass doesn't find (a mount that appears later, an
+        unusual adapter).
+        """
+        return sorted(port.device for port in list_ports.comports())
 
     @app.get("/api/v1/config")
     def get_config(_user: str = Depends(require_permission("config:read"))) -> dict[str, Any]:
@@ -540,6 +595,30 @@ def create_app(
             "last_heartbeat_ok": fleet_status.last_heartbeat_ok,
             "last_error": fleet_status.last_error,
             "last_config_apply": fleet_status.last_config_apply,
+        }
+
+    @app.get("/api/v1/sntp/status")
+    def get_sntp_status(_user: str = Depends(require_permission("tag:read"))) -> dict[str, Any]:
+        """XEDGE-437 (CRD §4.8) sync-status reporting: whether HLR's ASM-001
+        assumption (host OS is NTP-synced) is actually holding, from
+        xEdge's own independent point of view — which server last answered,
+        how large the offset was, and whether it's gone stale."""
+        if sntp_status is None:
+            return {"enabled": False}
+        return {
+            "enabled": sntp_status.enabled,
+            "servers": sntp_status.servers,
+            "sync_interval_seconds": sntp_status.sync_interval_seconds,
+            "timezone": sntp_status.timezone,
+            "last_sync_at": (
+                sntp_status.last_sync_at.isoformat() if sntp_status.last_sync_at else None
+            ),
+            "last_sync_server": sntp_status.last_sync_server,
+            "offset_seconds": sntp_status.offset_seconds,
+            "round_trip_delay_seconds": sntp_status.round_trip_delay_seconds,
+            "consecutive_failures": sntp_status.consecutive_failures,
+            "last_error": sntp_status.last_error,
+            "stale": sntp_status.is_stale,
         }
 
     @app.get("/api/v1/alarms")
@@ -635,6 +714,7 @@ def create_app(
             dashboard_url=dashboard_url,
             fleet_status=fleet_status,
             alarm_engine=alarm_engine,
+            sntp_status=sntp_status,
         )
     )
     app.include_router(

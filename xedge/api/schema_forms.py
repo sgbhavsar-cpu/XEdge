@@ -47,6 +47,16 @@ class FieldDescriptor:
     options: list[Any] = field(default_factory=list)
     children: list[FieldDescriptor] = field(default_factory=list)
     """Populated only when control == "object": the nested fields."""
+    suggestions_endpoint: str | None = None
+    """Set from the schema's `x-suggestions-endpoint` (XEDGE-434) — a REST
+    GET endpoint returning `list[str]` the client fetches once, on page
+    load, to populate an HTML `<datalist>` bound to this text input. Unlike
+    `enum` (a fixed, schema-known set of values), this is for a set only
+    knowable at runtime on the *device itself* — e.g. which serial ports are
+    physically present right now — so the operator can still type a value
+    the endpoint didn't happen to detect (a port that appears after the
+    list loaded, one on an unusual path) rather than being locked out of it
+    the way a `<select>` would."""
 
 
 def humanize(key: str) -> str:
@@ -132,6 +142,7 @@ def build_field(
         value=value if value is not None else schema.get("default", ""),
         required=required,
         description=description,
+        suggestions_endpoint=schema.get("x-suggestions-endpoint"),
     )
 
 

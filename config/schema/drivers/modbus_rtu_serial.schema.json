@@ -20,7 +20,8 @@
         "port": {
           "type": "string",
           "minLength": 1,
-          "description": "Serial device path, e.g. /dev/ttyUSB0, /dev/ttyAMA0 (IR-HW-001)."
+          "description": "Serial device path, e.g. /dev/ttyUSB0, /dev/ttyAMA0 (IR-HW-001). XEDGE-434: the config form suggests serial ports detected on this host (via pyserial's own OS-native enumeration) as you type, without limiting you to only what was detected -- unplugged/not-yet-mounted ports still work if typed directly.",
+          "x-suggestions-endpoint": "/api/v1/serial-ports"
         },
         "baud_rate": {
           "type": "integer",
@@ -94,6 +95,18 @@
           "minimum": 1,
           "default": 3,
           "description": "XEDGE-421: consecutive successful read requests required to leave Not Connected and report Connected again. Deliberately independent of consecutive_failure_threshold \u2014 recovering from a confirmed outage is harder than degrading into one, so one lucky response doesn't flip the state straight back to green."
+        },
+        "rts_pre_delay_us": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "XEDGE-432. Microseconds to hold RTS asserted before transmitting, for RS-485 converters that don't auto-toggle their transceiver's direction. 0 (default) disables RTS toggling entirely. Shared by every instance on this port (xedge.drivers.modbus.bus_manager.SerialBusManager) -- set it on whichever instance connects first, or (simpler) the same value on all of them. Unverified against real hardware -- converter-specific and no target hardware was available this sprint (XEDGE-DR-001 open item Q-4); degrades to a logged no-op if the underlying transport doesn't support RTS at all."
+        },
+        "rts_post_delay_us": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "XEDGE-432. Microseconds to hold RTS asserted after transmitting, before dropping back to receive -- lets the last bits fully leave the wire before the transceiver switches. 0 (default) disables RTS toggling. See rts_pre_delay_us."
         }
       }
     },
@@ -242,6 +255,16 @@
             "minimum": 0,
             "default": 0,
             "description": "How many unrequested registers may sit inside one read block. 0 (default) keeps blocks strictly contiguous. Raise it only for devices known to tolerate reads of unmapped registers \u2014 many answer ILLEGAL_DATA_ADDRESS, which fails the whole block."
+          },
+          "polling_mode": {
+            "type": "string",
+            "enum": [
+              "continuous",
+              "on_connect",
+              "on_demand"
+            ],
+            "default": "continuous",
+            "description": "XEDGE-435. 'continuous' (default) matches this group's behavior before this field existed: read on a fixed period forever. 'on_connect' reads this group's tags exactly once right after connect, then stops -- no ongoing poll cost. 'on_demand' never reads automatically; a read happens only when triggered via POST /api/v1/drivers/{id}/tag-groups/{group_id}/poll."
           }
         }
       }

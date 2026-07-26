@@ -89,6 +89,32 @@ class TestBuildFieldSecretMasking:
         assert f.required is False
 
 
+class TestBuildFieldSuggestionsEndpoint:
+    """XEDGE-434 — same custom-`x-`-keyword mechanism as `x-secret` above,
+    for a field whose valid values are only knowable at runtime on the
+    device itself (e.g. which serial ports are physically present)."""
+
+    def test_carries_the_endpoint_through_to_the_field(self) -> None:
+        f = build_field(
+            "port", {"type": "string", "x-suggestions-endpoint": "/api/v1/serial-ports"}, None
+        )
+        assert f.control == "text"
+        assert f.suggestions_endpoint == "/api/v1/serial-ports"
+
+    def test_defaults_to_none_when_the_schema_has_no_such_keyword(self) -> None:
+        f = build_field("host", {"type": "string"}, "127.0.0.1")
+        assert f.suggestions_endpoint is None
+
+    def test_the_field_stays_freely_editable_not_a_select(self) -> None:
+        """Unlike `enum`, this must never turn the field into a `<select>` —
+        the whole point is that an operator can still type a value the
+        detection endpoint didn't happen to find."""
+        f = build_field(
+            "port", {"type": "string", "x-suggestions-endpoint": "/api/v1/serial-ports"}, None
+        )
+        assert f.control != "select"
+
+
 class TestBuildFieldNestedObject:
     def test_object_field_recurses_into_children(self) -> None:
         schema = {
@@ -328,3 +354,35 @@ class TestSprintC2FieldsRenderFromSchema:
         fields = self._fields("config")
         assert fields["consecutive_failure_threshold"].control == "number"
         assert fields["recovery_threshold"].control == "number"
+
+
+class TestSprintC3FieldsRenderFromSchema:
+    """XEDGE-432/434, against the real modbus_rtu_serial schema — the RTS
+    delay fields and the port suggestions endpoint."""
+
+    @staticmethod
+    def _serial_schema() -> dict[str, Any]:
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "config"
+            / "schema"
+            / "drivers"
+            / "modbus_rtu_serial.schema.json"
+        )
+        return json.loads(path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+
+    def test_port_field_carries_the_serial_ports_suggestions_endpoint(self) -> None:
+        schema = self._serial_schema()
+        config_schema = schema["properties"]["config"]
+        fields = {f.name: f for f in build_object_fields(config_schema, {})}
+
+        assert fields["port"].control == "text"
+        assert fields["port"].suggestions_endpoint == "/api/v1/serial-ports"
+
+    def test_rts_delay_fields_are_numbers_on_the_driver_config_form(self) -> None:
+        schema = self._serial_schema()
+        config_schema = schema["properties"]["config"]
+        fields = {f.name: f for f in build_object_fields(config_schema, {})}
+
+        assert fields["rts_pre_delay_us"].control == "number"
+        assert fields["rts_post_delay_us"].control == "number"

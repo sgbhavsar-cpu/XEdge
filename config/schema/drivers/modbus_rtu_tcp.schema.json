@@ -220,6 +220,16 @@
             "minimum": 0,
             "default": 0,
             "description": "How many unrequested registers may sit inside one read block. 0 (default) keeps blocks strictly contiguous. Raise it only for devices known to tolerate reads of unmapped registers \u2014 many answer ILLEGAL_DATA_ADDRESS, which fails the whole block."
+          },
+          "polling_mode": {
+            "type": "string",
+            "enum": [
+              "continuous",
+              "on_connect",
+              "on_demand"
+            ],
+            "default": "continuous",
+            "description": "XEDGE-435. 'continuous' (default) matches this group's behavior before this field existed: read on a fixed period forever. 'on_connect' reads this group's tags exactly once right after connect, then stops -- no ongoing poll cost. 'on_demand' never reads automatically; a read happens only when triggered via POST /api/v1/drivers/{id}/tag-groups/{group_id}/poll."
           }
         }
       }

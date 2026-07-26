@@ -71,6 +71,32 @@
           "minimum": 1,
           "default": 3,
           "description": "XEDGE-421: consecutive successful read requests required to leave Not Connected and report Connected again. Deliberately independent of consecutive_failure_threshold \u2014 recovering from a confirmed outage is harder than degrading into one, so one lucky response doesn't flip the state straight back to green."
+        },
+        "connection_mode": {
+          "type": "string",
+          "enum": [
+            "persistent",
+            "on_demand"
+          ],
+          "default": "persistent",
+          "description": "XEDGE-436. 'persistent' (default) matches this driver's behavior before this field existed: one TCP connection, held open from connect() to disconnect(). 'on_demand' holds no connection between transactions \u2014 every read and write dials a fresh one and closes it immediately after, for devices/gateways that only accept one connection at a time from multiple polling masters."
+        },
+        "keepalive_interval_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "XEDGE-436: enables SO_KEEPALIVE on a persistent connection (ignored under connection_mode: on_demand, whose sockets never live long enough to matter) and sets the probe interval, so a dead peer or silently-dropped NAT/firewall session is noticed instead of hanging the next read forever. Omit to leave keepalive off, matching behavior before this field existed."
+        },
+        "connection_retry_count": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "XEDGE-436: retries per failed *connection attempt* (dialing the socket itself), beyond the first attempt \u2014 distinct from retry_count above, which retries a read on an already-open connection. Default 0 matches behavior before this field existed: one attempt, then the failure propagates (to the supervisor's own restart-with-backoff for a persistent connection, or to that one transaction's caller for on_demand)."
+        },
+        "connection_retry_backoff_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.5,
+          "description": "Delay between connection-attempt retries."
         }
       }
     },
@@ -221,6 +247,16 @@
             "minimum": 0,
             "default": 0,
             "description": "How many unrequested registers may sit inside one read block. 0 (default) keeps blocks strictly contiguous. Raise it only for devices known to tolerate reads of unmapped registers \u2014 many answer ILLEGAL_DATA_ADDRESS, which fails the whole block."
+          },
+          "polling_mode": {
+            "type": "string",
+            "enum": [
+              "continuous",
+              "on_connect",
+              "on_demand"
+            ],
+            "default": "continuous",
+            "description": "XEDGE-435. 'continuous' (default) matches this group's behavior before this field existed: read on a fixed period forever. 'on_connect' reads this group's tags exactly once right after connect, then stops -- no ongoing poll cost. 'on_demand' never reads automatically; a read happens only when triggered via POST /api/v1/drivers/{id}/tag-groups/{group_id}/poll."
           }
         }
       }

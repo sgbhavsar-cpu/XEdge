@@ -59,3 +59,52 @@ def _load_schema(schema_path: Path) -> dict[str, Any]:
     with schema_path.open("r", encoding="utf-8") as f:
         result: dict[str, Any] = json.load(f)
     return result
+
+
+# Driver types that share a physical port across instances (currently just
+# RTU serial — TCP-based transports each own their own socket, so two
+# instances can never collide the way two RTU-serial instances on the same
+# /dev/ttyUSBx would).
+_SHARED_PORT_DRIVER_TYPES = frozenset({"modbus_rtu_serial"})
+
+
+def find_duplicate_serial_slave_ids(
+    drivers: list[dict[str, Any]],
+) -> dict[tuple[str, int], list[str]]:
+    """Group enabled `modbus_rtu_serial` instance ids by (port, unit_id),
+    returning only the groups with more than one instance (XEDGE-433).
+
+    Different unit_ids sharing one port is exactly the multi-drop topology
+    `SerialBusManager` (ADR-011 Part 1) exists to support — this only flags
+    the case that's still wrong even with the bus manager in place: two
+    slaves claiming the *same* address on the *same* wire, which no amount
+    of correct serialization can make into two distinct devices.
+
+    An entry with a missing `port`/`unit_id` is skipped here rather than
+    raising — that's a shape error the per-instance driver-type schema
+    (`build_driver_config`) already catches on its own, and this function
+    only needs to reason about entries specific enough to compare.
+    """
+    by_slave: dict[tuple[str, int], list[str]] = {}
+    for entry in drivers:
+        if entry.get("type") not in _SHARED_PORT_DRIVER_TYPES:
+            continue
+        if not entry.get("enabled", True):
+            continue
+        config = entry.get("config", {})
+        port = config.get("port")
+        unit_id = config.get("unit_id")
+        if port is None or unit_id is None:
+            continue
+        by_slave.setdefault((port, unit_id), []).append(entry["id"])
+    return {key: ids for key, ids in by_slave.items() if len(ids) > 1}
+
+
+def conflicting_serial_instance_ids(drivers: list[dict[str, Any]]) -> frozenset[str]:
+    """Every instance id involved in *any* slave-ID collision — the set a
+    caller should refuse to start, alongside whichever ones it starts
+    normally. Both sides of a collision are included: given two instances
+    both claiming (port, unit_id), neither is more "correct" than the
+    other, so there is no safe way to prefer one over the other."""
+    duplicates = find_duplicate_serial_slave_ids(drivers)
+    return frozenset(instance_id for ids in duplicates.values() for instance_id in ids)

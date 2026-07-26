@@ -39,6 +39,21 @@
 </div>
 {% endif %}
 
+{% if sntp_enabled %}
+<div class="xedge-card">
+  <h1>Time Sync</h1>
+  <table class="xedge-table">
+    <tbody>
+      <tr><th>Status</th><td id="sntp-stale">&hellip;</td></tr>
+      <tr><th>Last synced server</th><td id="sntp-last-server">&hellip;</td></tr>
+      <tr><th>Last sync</th><td id="sntp-last-sync-at">&hellip;</td></tr>
+      <tr><th>Offset</th><td id="sntp-offset">&hellip;</td></tr>
+      <tr><th>Consecutive failures</th><td id="sntp-consecutive-failures">&hellip;</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
 <div class="xedge-card">
   <h1>Drivers</h1>
   <table class="xedge-table" id="drivers-table">
@@ -70,9 +85,9 @@
     </tbody>
   </table>
 </div>
-<script src="/ui-static/xedge-ui.js"></script>
 <script>
   xedgeUi.pollDashboard();
   {% if fleet_enabled %}xedgeUi.pollFleetStatus();{% endif %}
+  {% if sntp_enabled %}xedgeUi.pollSntpStatus();{% endif %}
 </script>
 {% endblock %}

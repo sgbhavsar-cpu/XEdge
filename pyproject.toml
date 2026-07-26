@@ -22,6 +22,11 @@ dependencies = [
     "jsonschema>=4.21",
     "structlog>=24.1",
     "pyserial-asyncio>=0.6",
+    # Already present as a transitive dependency of pyserial-asyncio above;
+    # declared explicitly since Sprint C3 (XEDGE-434) — xedge.api.server's
+    # serial-port auto-detection endpoint imports serial.tools.list_ports
+    # directly.
+    "pyserial>=3.5",
     "paho-mqtt>=2.1",
     # MVP OPC UA runtime (ADR-006 §7 amendment) — GPL edition only until
     # LGPL-3.0 obligations are reviewed for the commercial edition; the
@@ -75,6 +80,7 @@ dev = [
     "bandit==1.9.4",
     "types-PyYAML==6.0.12.20260724",
     "types-jsonschema==4.26.0.20260518",
+    "types-pyserial==3.5.0.20260712",
 ]
 test = [
     "pytest>=8.2",

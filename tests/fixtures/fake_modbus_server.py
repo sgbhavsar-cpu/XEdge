@@ -10,8 +10,46 @@ from __future__ import annotations
 
 import asyncio
 import struct
+from collections.abc import Awaitable, Callable
 
 from xedge.drivers.modbus import codec, rtu_codec
+
+# Function codes whose request PDU has a *variable*-length remainder
+# (address + quantity + a byte-count field + that many data bytes), unlike
+# every other supported function code, where the remainder is a fixed 4
+# bytes (address + quantity, or address + value). Read one via
+# `read_rtu_request_pdu` below.
+_VARIABLE_LENGTH_REQUEST_CODES = frozenset(
+    {codec.FunctionCode.WRITE_MULTIPLE_COILS, codec.FunctionCode.WRITE_MULTIPLE_REGISTERS}
+)
+
+
+async def read_rtu_request_pdu(read_exact: Callable[[int], Awaitable[bytes]]) -> tuple[int, bytes]:
+    """Read one complete RTU-framed Modbus *request* — address + PDU + CRC —
+    from any async byte source exposing `read_exact(n) -> bytes`, and return
+    (unit_id, pdu) with the CRC consumed but not re-validated (these fixtures
+    test our driver's request shape, not CRC correctness — rtu_codec's own
+    tests already cover CRC).
+
+    Shared by `FakeModbusRtuServer` (TCP-backed) and the pty-based serial
+    fixture (fd-backed) so the request-framing logic — including FC15/16's
+    variable-length remainder, added here rather than left as a second gap
+    alongside the one this fixture already had — is written once.
+    """
+    head = await read_exact(2)  # unit id, function code
+    unit_id, function_code = head[0], head[1]
+    if function_code in _VARIABLE_LENGTH_REQUEST_CODES:
+        # address(2) + quantity(2) + byte_count(1)
+        prefix = await read_exact(5)
+        byte_count = prefix[-1]
+        data = await read_exact(byte_count)
+        pdu = head[1:] + prefix + data
+    else:
+        # FC01-04 (read) and FC05/06 (single write) are all
+        # address(2) + quantity_or_value(2) = 4 bytes.
+        pdu = head[1:] + await read_exact(4)
+    await read_exact(2)  # CRC
+    return unit_id, pdu
 
 
 def _pack_bits(values: list[bool]) -> bytes:
@@ -105,6 +143,13 @@ class FakeModbusServer(_ModbusDatastore):
         self.host = "127.0.0.1"
         self.port = 0
         self._server: asyncio.base_events.Server | None = None
+        # How many separate TCP connections this server has accepted
+        # (Sprint C3, XEDGE-436) — the one thing that actually distinguishes
+        # a `persistent` connection_mode driver (one, reused for every
+        # transaction) from an `on_demand` one (a fresh connection dialed
+        # and closed per transaction) on the wire, the same rationale
+        # `request_log` already exists for batching.
+        self.connection_count = 0
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(self._handle_client, self.host, 0)
@@ -118,6 +163,7 @@ class FakeModbusServer(_ModbusDatastore):
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        self.connection_count += 1
         try:
             while True:
                 header = await reader.readexactly(codec.MBAP_HEADER_LENGTH)
@@ -155,16 +201,9 @@ class FakeModbusRtuServer(_ModbusDatastore):
     ) -> None:
         try:
             while True:
-                head = await reader.readexactly(2)  # address, function code
-                request_pdu_head = head[1:2]
-                # Read requests (FC01/02/03/04) all have a fixed 4-byte
-                # remainder after the function code: address(2) + quantity(2).
-                remainder = await reader.readexactly(4)
-                request_pdu = request_pdu_head + remainder
-                await reader.readexactly(2)  # request CRC — not re-validated by this fake
-
+                unit_id, request_pdu = await read_rtu_request_pdu(reader.readexactly)
                 response_pdu = self.handle_request(request_pdu)
-                frame = rtu_codec.encode_rtu_frame(head[0], response_pdu)
+                frame = rtu_codec.encode_rtu_frame(unit_id, response_pdu)
                 writer.write(frame)
                 await writer.drain()
         except (asyncio.IncompleteReadError, ConnectionResetError):

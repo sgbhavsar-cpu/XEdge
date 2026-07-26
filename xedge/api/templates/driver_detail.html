@@ -71,7 +71,6 @@
   <pre id="log-pane" class="xedge-log-pane"></pre>
 </div>
 
-<script src="/ui-static/xedge-ui.js"></script>
 <script>
   xedgeUi.pollDriverTags({{ instance_id | tojson }});
   xedgeUi.startLogTail("log-pane", () => ({ instanceId: {{ instance_id | tojson }}, source: null }));
