@@ -79,6 +79,18 @@ class _ModbusDatastore:
         if function_code == codec.FunctionCode.WRITE_SINGLE_REGISTER:
             self.holding_registers[address] = second_field
             return pdu[:5]  # success response is an echo of the request
+        if function_code == codec.FunctionCode.WRITE_MULTIPLE_REGISTERS:
+            # pdu[5] is the byte-count field; register data follows it.
+            values = struct.unpack(f">{quantity}H", pdu[6 : 6 + quantity * 2])
+            for i, value in enumerate(values):
+                self.holding_registers[address + i] = value
+            return pdu[:5]  # response echoes function code + address + quantity
+        if function_code == codec.FunctionCode.WRITE_MULTIPLE_COILS:
+            byte_count = pdu[5]
+            data = pdu[6 : 6 + byte_count]
+            for i in range(quantity):
+                self.coils[address + i] = bool(data[i // 8] & (1 << (i % 8)))
+            return pdu[:5]  # response echoes function code + address + quantity
 
         return bytes(
             [function_code | codec.EXCEPTION_RESPONSE_FLAG, codec.ExceptionCode.ILLEGAL_FUNCTION]

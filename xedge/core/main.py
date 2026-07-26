@@ -24,6 +24,7 @@ from xedge.api.server import create_app
 from xedge.api.tls import load_or_create_server_certificate
 from xedge.core.alarms import ALARM_STREAM_KEY_SUFFIX, AlarmEngine, build_alarm_rules
 from xedge.core.config import ConfigEngine, ConfigStore, ConfigValidator, ConfigVersionHistory
+from xedge.core.connectivity import ConnectivityState
 from xedge.core.driver_config import build_driver_config
 from xedge.core.hot_reload import config_watch_loop
 from xedge.core.pipeline import (
@@ -285,6 +286,7 @@ _SYSTEM_TAG_INITIAL_VALUES: dict[str, TagValue] = {
     "error_count": 0,
     "consecutive_failures": 0,
     "uptime_seconds": 0.0,
+    "connectivity_state": ConnectivityState.UNKNOWN.value,
 }
 
 

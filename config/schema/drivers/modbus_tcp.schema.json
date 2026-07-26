@@ -59,6 +59,18 @@
           "minimum": 0,
           "default": 0.05,
           "description": "Delay between retry attempts."
+        },
+        "consecutive_failure_threshold": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3,
+          "description": "XEDGE-421: consecutive failed read requests before this instance's connectivity_state moves from Connected/Degraded to Not Connected. A single shared threshold with recovery_threshold below would make a flapping link oscillate; see xedge.core.connectivity."
+        },
+        "recovery_threshold": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3,
+          "description": "XEDGE-421: consecutive successful read requests required to leave Not Connected and report Connected again. Deliberately independent of consecutive_failure_threshold \u2014 recovering from a confirmed outage is harder than degrading into one, so one lucky response doesn't flip the state straight back to green."
         }
       }
     },
@@ -185,6 +197,16 @@
                   ],
                   "default": "big",
                   "description": "Endianness within each 16-bit register. Almost always 'big'; 'little' (BADC) is for byte-swapped devices."
+                },
+                "access": {
+                  "type": "string",
+                  "enum": [
+                    "read_write",
+                    "read_only",
+                    "write_only"
+                  ],
+                  "default": "read_write",
+                  "description": "XEDGE-422. 'read_write' (default) matches every tag's behavior before this field existed: polled, and writable if its function code supports it. 'read_only' is polled but write() always refuses it, regardless of function code. 'write_only' is never polled (excluded from this tag group's read plan entirely) but remains writable -- for command/setpoint registers some devices reject reading."
                 }
               }
             }

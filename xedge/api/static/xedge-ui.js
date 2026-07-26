@@ -21,6 +21,7 @@ const xedgeUi = (() => {
     "error_count",
     "consecutive_failures",
     "uptime_seconds",
+    "connectivity_state",
   ];
   const SYSTEM_RATE_FIELDS = new Set(["reads_per_second", "reads_per_minute", "reads_per_hour"]);
 
@@ -32,6 +33,8 @@ const xedgeUi = (() => {
       if (!row) continue;
       const stateCell = row.querySelector(".xedge-state");
       if (stateCell) stateCell.textContent = driver.state;
+      const connectivityCell = row.querySelector(".xedge-connectivity-state");
+      if (connectivityCell) connectivityCell.textContent = driver.connectivity_state;
       const readsCell = row.querySelector(".xedge-tag-read-count");
       if (readsCell) readsCell.textContent = driver.metrics.tag_read_count;
       const errorsCell = row.querySelector(".xedge-error-count");
@@ -82,7 +85,7 @@ const xedgeUi = (() => {
     if (tags.length === 0) {
       const row = document.createElement("tr");
       const cell = document.createElement("td");
-      cell.colSpan = 5;
+      cell.colSpan = 6;
       cell.textContent = "No tags collected yet.";
       row.appendChild(cell);
       tbody.appendChild(row);
@@ -90,7 +93,8 @@ const xedgeUi = (() => {
     }
     for (const tag of tags) {
       const row = document.createElement("tr");
-      for (const field of [tag.tag_id, tag.value, tag.quality, tag.timestamp, tag.source_address]) {
+      const fields = [tag.tag_id, tag.value, tag.quality, tag.timestamp, tag.source_address, tag.detail];
+      for (const field of fields) {
         const cell = document.createElement("td");
         cell.textContent = field === null || field === undefined ? "" : String(field);
         row.appendChild(cell);

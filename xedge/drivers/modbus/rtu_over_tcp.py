@@ -6,6 +6,13 @@ be inferred from its own content: address + function code (2 bytes), then
 either an exception PDU (fixed: 1 exception-code byte + 2 CRC bytes) or a
 read response (1 byte-count byte + that many data bytes + 2 CRC bytes) —
 both fully determined by the function code we just requested.
+
+The per-instance `asyncio.Lock` this transport used through Sprint C1 is
+gone as of Sprint C2 (XEDGE-424): `BaseModbusPollingDriver`'s
+`RequestScheduler` now serializes every read and write onto this
+connection (with writes ahead of pending reads), which already guarantees
+at most one in-flight request — a second lock here would be redundant, not
+additional safety.
 """
 
 from __future__ import annotations
@@ -26,21 +33,20 @@ class ModbusRtuOverTcpDriver(BaseModbusPollingDriver):
         super().__init__()
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
-        self._request_lock = asyncio.Lock()
 
     def _require_connection(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         if self._reader is None or self._writer is None:
             raise ModbusDriverStateError("connect() must be called before this operation")
         return self._reader, self._writer
 
-    async def connect(self) -> None:
+    async def _connect_transport(self) -> None:
         cfg = self._require_config().config
         self._reader, self._writer = await asyncio.wait_for(
             asyncio.open_connection(cfg["host"], cfg.get("port", 502)),
             timeout=cfg.get("connect_timeout_seconds", _DEFAULT_CONNECT_TIMEOUT_SECONDS),
         )
 
-    async def disconnect(self) -> None:
+    async def _disconnect_transport(self) -> None:
         if self._writer is not None:
             self._writer.close()
             try:
@@ -57,15 +63,14 @@ class ModbusRtuOverTcpDriver(BaseModbusPollingDriver):
         reader, writer = self._require_connection()
         request_pdu = codec.encode_read_request(function_code, address, quantity)
 
-        async with self._request_lock:
-            frame = rtu_codec.encode_rtu_frame(cfg.get("unit_id", 1), request_pdu)
-            writer.write(frame)
-            await writer.drain()
+        frame = rtu_codec.encode_rtu_frame(cfg.get("unit_id", 1), request_pdu)
+        writer.write(frame)
+        await writer.drain()
 
-            response_frame = await asyncio.wait_for(
-                self._read_frame(reader),
-                timeout=cfg.get("read_timeout_seconds", _DEFAULT_READ_TIMEOUT_SECONDS),
-            )
+        response_frame = await asyncio.wait_for(
+            self._read_frame(reader),
+            timeout=cfg.get("read_timeout_seconds", _DEFAULT_READ_TIMEOUT_SECONDS),
+        )
 
         _, response_pdu = rtu_codec.decode_rtu_frame(response_frame)
         if codec.is_bit_function(function_code):
@@ -84,7 +89,7 @@ class ModbusRtuOverTcpDriver(BaseModbusPollingDriver):
         return head + rest
 
     async def _read_write_response_frame(self, reader: asyncio.StreamReader) -> bytes:
-        """FC05/06/16 responses aren't byte-count-prefixed like read
+        """FC05/06/15/16 responses aren't byte-count-prefixed like read
         responses (see `_read_frame`) — success echoes a fixed 4-byte
         address+value/quantity payload; only an exception response is
         shorter."""
@@ -107,15 +112,33 @@ class ModbusRtuOverTcpDriver(BaseModbusPollingDriver):
             else codec.encode_write_single_register(address, int(value))
         )
 
-        async with self._request_lock:
-            frame = rtu_codec.encode_rtu_frame(cfg.get("unit_id", 1), request_pdu)
-            writer.write(frame)
-            await writer.drain()
+        frame = rtu_codec.encode_rtu_frame(cfg.get("unit_id", 1), request_pdu)
+        writer.write(frame)
+        await writer.drain()
 
-            response_frame = await asyncio.wait_for(
-                self._read_write_response_frame(reader),
-                timeout=cfg.get("read_timeout_seconds", _DEFAULT_READ_TIMEOUT_SECONDS),
-            )
+        response_frame = await asyncio.wait_for(
+            self._read_write_response_frame(reader),
+            timeout=cfg.get("read_timeout_seconds", _DEFAULT_READ_TIMEOUT_SECONDS),
+        )
 
         _, response_pdu = rtu_codec.decode_rtu_frame(response_frame)
         codec.decode_write_single_response(response_pdu)
+
+    async def _write_registers(self, address: int, values: list[int]) -> None:
+        """FC16 (Sprint C2, XEDGE-423) — a tag whose data_type spans more
+        than one register."""
+        cfg = self._require_config().config
+        reader, writer = self._require_connection()
+        request_pdu = codec.encode_write_multiple_registers(address, values)
+
+        frame = rtu_codec.encode_rtu_frame(cfg.get("unit_id", 1), request_pdu)
+        writer.write(frame)
+        await writer.drain()
+
+        response_frame = await asyncio.wait_for(
+            self._read_write_response_frame(reader),
+            timeout=cfg.get("read_timeout_seconds", _DEFAULT_READ_TIMEOUT_SECONDS),
+        )
+
+        _, response_pdu = rtu_codec.decode_rtu_frame(response_frame)
+        codec.decode_write_multiple_response(response_pdu)

@@ -47,6 +47,7 @@
         <th>Instance</th>
         <th>Type</th>
         <th>State</th>
+        <th>Connectivity</th>
         <th>Tag reads</th>
         <th>Errors</th>
         <th>Last error</th>
@@ -58,12 +59,13 @@
         <td><a href="/ui/dashboard/drivers/{{ d.instance_id }}">{{ d.instance_id }}</a></td>
         <td>{{ d.driver_type }}</td>
         <td class="xedge-state">{{ d.state }}</td>
+        <td class="xedge-connectivity-state">{{ d.connectivity_state }}</td>
         <td class="xedge-tag-read-count">{{ d.metrics.tag_read_count }}</td>
         <td class="xedge-error-count">{{ d.metrics.error_count }}</td>
         <td class="xedge-last-error">{{ d.last_error or "" }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="6">No drivers configured.</td></tr>
+      <tr><td colspan="7">No drivers configured.</td></tr>
       {% endfor %}
     </tbody>
   </table>

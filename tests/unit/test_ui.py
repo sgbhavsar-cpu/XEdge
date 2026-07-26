@@ -194,6 +194,11 @@ async def test_dashboard_shows_driver_status_when_authenticated(
         assert response.status_code == 200
         assert "d1" in response.text
         assert "fake" in response.text
+        # XEDGE-421: the dashboard's Connectivity column, server-rendered on
+        # first load (not only filled in later by the JS poller) — "unknown"
+        # is correct here since FakeDriver doesn't implement
+        # get_connectivity_state().
+        assert "unknown" in response.text
     finally:
         await supervisor.stop_all()
 

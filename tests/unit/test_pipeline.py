@@ -297,3 +297,143 @@ class TestBuildTagPipelineConfigs:
         from xedge.core.pipeline import build_tag_pipeline_configs
 
         assert build_tag_pipeline_configs([{"id": "d1", "type": "modbus_tcp"}]) == {}
+
+
+class TestBuildTagPipelineConfigsIsDriverTypeAgnostic:
+    """XEDGE-426. An earlier review flagged this function as "Modbus-shaped
+    only" based on its docstring, which said exactly that. On inspection the
+    function itself branches on nothing driver-type-specific — it was
+    already correct for every driver type whose schema uses the common
+    `scaling`/`deadband`/`engineering_unit` shape, which per
+    config/schema/drivers/*.schema.json is all three shipped types. The bug
+    was the docstring, not the function; these tests are the regression
+    coverage for the function actually having this property, since a
+    docstring alone can drift out of sync with the code again exactly the
+    way the previous one did.
+    """
+
+    def test_opcua_client_tags_get_scaling_and_deadband(self) -> None:
+        from xedge.core.pipeline import build_tag_pipeline_configs
+
+        drivers = [
+            {
+                "id": "opcua_1",
+                "type": "opcua_client",
+                "tag_groups": [
+                    {
+                        "id": "g1",
+                        "scan_rate_ms": 500,
+                        "deadband": {"type": "absolute", "value": 0.5},
+                        "tags": [
+                            {
+                                "id": "temp",
+                                "node_id": "ns=2;i=1",
+                                "scaling": {"scale": 0.1, "offset": 2.0},
+                                "engineering_unit": "C",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+
+        config = build_tag_pipeline_configs(drivers)["opcua_1/temp"]
+
+        assert config.scaling is not None
+        assert (config.scaling.scale, config.scaling.offset) == (0.1, 2.0)
+        assert config.engineering_unit == "C"
+        assert config.deadband is not None
+        assert (config.deadband.kind, config.deadband.value) == ("absolute", 0.5)
+
+    def test_bacnet_ip_tags_get_scaling_and_deadband(self) -> None:
+        from xedge.core.pipeline import build_tag_pipeline_configs
+
+        drivers = [
+            {
+                "id": "bacnet_1",
+                "type": "bacnet_ip",
+                "tag_groups": [
+                    {
+                        "id": "g1",
+                        "scan_rate_ms": 1000,
+                        "deadband": {"type": "percentage", "value": 2.0},
+                        "tags": [
+                            {
+                                "id": "pressure",
+                                "device_address": "192.168.1.60",
+                                "object_identifier": "analog-input,1",
+                                "scaling": {"scale": 2.0, "offset": 0.0},
+                                "engineering_unit": "kPa",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+
+        config = build_tag_pipeline_configs(drivers)["bacnet_1/pressure"]
+
+        assert config.scaling is not None
+        assert config.scaling.scale == 2.0
+        assert config.engineering_unit == "kPa"
+        assert config.deadband is not None
+        assert config.deadband.kind == "percentage"
+
+    def test_mixed_fleet_of_all_three_driver_types_in_one_call(self) -> None:
+        """The realistic case: one xedge.yaml with several protocols
+        configured together, not one driver type in isolation."""
+        from xedge.core.pipeline import build_tag_pipeline_configs
+
+        drivers = [
+            {
+                "id": "modbus_1",
+                "type": "modbus_tcp",
+                "tag_groups": [
+                    {
+                        "id": "g1",
+                        "scan_rate_ms": 100,
+                        "tags": [
+                            {
+                                "id": "t1",
+                                "function_code": "read_holding_registers",
+                                "address": 0,
+                                "scaling": {"scale": 1.0, "offset": 0.0},
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "id": "opcua_1",
+                "type": "opcua_client",
+                "tag_groups": [
+                    {
+                        "id": "g1",
+                        "scan_rate_ms": 500,
+                        "tags": [{"id": "t1", "node_id": "ns=2;i=1", "engineering_unit": "V"}],
+                    }
+                ],
+            },
+            {
+                "id": "bacnet_1",
+                "type": "bacnet_ip",
+                "tag_groups": [
+                    {
+                        "id": "g1",
+                        "scan_rate_ms": 1000,
+                        "tags": [
+                            {
+                                "id": "t1",
+                                "device_address": "10.0.0.5",
+                                "object_identifier": "binary-input,1",
+                            }
+                        ],
+                    }
+                ],
+            },
+        ]
+
+        configs = build_tag_pipeline_configs(drivers)
+
+        assert set(configs) == {"modbus_1/t1", "opcua_1/t1", "bacnet_1/t1"}
+        assert configs["opcua_1/t1"].engineering_unit == "V"

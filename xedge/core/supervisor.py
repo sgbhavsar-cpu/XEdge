@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
+from xedge.core.connectivity import ConnectivityState
 from xedge.drivers.base import BaseDriver, DriverConfig, DriverMetrics, TagUpdate
 from xedge.observability.logging import get_logger
 
@@ -57,6 +58,15 @@ class DriverInstanceStatus:
     # for a config change (xedge.core.hot_reload.apply_driver_changes).
     tag_count: int = 0
     state_changed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # Device-level connectivity (Sprint C2, XEDGE-420/421) — deliberately
+    # distinct from `state` above. `state` is process-level: is the
+    # asyncio task alive. A Modbus exception never tears down that task
+    # (FR-DP-005), so a device that has been rejecting every read for the
+    # last ten cycles still reports `state: running` with nothing else
+    # to show for it — this is the "something else" a driver that
+    # implements `get_connectivity_state()` (currently: Modbus) supplies.
+    # Stays UNKNOWN for driver types that don't implement the hook.
+    connectivity_state: ConnectivityState = ConnectivityState.UNKNOWN
 
 
 def _set_state(status: DriverInstanceStatus, new_state: DriverState) -> None:
@@ -131,7 +141,17 @@ class DriverSupervisor:
         driver = self._drivers.get(status.instance_id)
         if driver is None:
             return status
-        return replace(status, metrics=driver.get_metrics())
+        # `get_connectivity_state` is an optional, duck-typed capability
+        # (Sprint C2) rather than a `BaseDriver` abstract method — adding it
+        # to every driver type is not this sprint's scope (only the Modbus
+        # family implements it so far), so a driver that lacks it simply
+        # keeps reporting UNKNOWN rather than every other driver type
+        # needing a no-op override.
+        connectivity_getter = getattr(driver, "get_connectivity_state", None)
+        connectivity_state = (
+            connectivity_getter() if connectivity_getter is not None else status.connectivity_state
+        )
+        return replace(status, metrics=driver.get_metrics(), connectivity_state=connectivity_state)
 
     def start(self, config: DriverConfig) -> None:
         """Start supervising a driver instance. Raises if already running."""

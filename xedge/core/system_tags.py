@@ -39,6 +39,11 @@ SYSTEM_TAG_NAMES = (
     "error_count",
     "consecutive_failures",
     "uptime_seconds",
+    # Device-level connectivity (Sprint C2, XEDGE-420/421) — distinct from
+    # `status` above, which only reflects whether this instance's asyncio
+    # task is alive. Stays "unknown" for driver types that don't implement
+    # `get_connectivity_state()` yet (currently: only the Modbus family).
+    "connectivity_state",
 )
 
 _ONE_HOUR_SECONDS = 3600.0
@@ -117,6 +122,7 @@ def build_system_tags(
         "error_count": status.metrics.error_count,
         "consecutive_failures": status.consecutive_failures,
         "uptime_seconds": uptime_seconds,
+        "connectivity_state": status.connectivity_state.value,
         **rates,
     }
     return [
