@@ -181,7 +181,8 @@ def create_diagnostics_router(
         config = _full_config()
         for entry in config.get("drivers", []):
             if entry.get("id") == instance_id:
-                return entry
+                found: dict[str, Any] = entry
+                return found
         raise DiagnosticCommandError(f"No driver {instance_id!r} in current config")
 
     def _tag_read(args: list[Any]) -> dict[str, Any]:
@@ -262,7 +263,7 @@ def create_diagnostics_router(
         analysis, not silently glossed over here)."""
         failed_logins = audit_log.tail(event="auth.login_failure", limit=1000)
         successful_logins = audit_log.tail(event="auth.login_success", limit=1000)
-        dependency_versions = {}
+        dependency_versions: dict[str, str | None] = {}
         for package in ("fastapi", "uvicorn", "cryptography", "bcrypt", "jsonschema", "pyyaml"):
             try:
                 dependency_versions[package] = version(package)
@@ -307,7 +308,10 @@ def create_diagnostics_router(
                     return {"passed": False, "error": "write() reported failure"}
                 second = await asyncio.wait_for(queue.get(), timeout=2.0)
                 if second.value != 2:
-                    return {"passed": False, "error": f"write did not round-trip: got {second.value!r}"}
+                    return {
+                        "passed": False,
+                        "error": f"write did not round-trip: got {second.value!r}",
+                    }
             finally:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
@@ -343,7 +347,11 @@ def create_diagnostics_router(
     def _self_test_northbound() -> dict[str, Any]:
         if dispatcher is None:
             return {"configured": False}
-        return {"configured": True, "connected": dispatcher.connected, "is_alive": dispatcher.is_alive()}
+        return {
+            "configured": True,
+            "connected": dispatcher.connected,
+            "is_alive": dispatcher.is_alive(),
+        }
 
     @router.websocket("/ws/diagnostics")
     async def diagnostics_ws(websocket: WebSocket) -> None:

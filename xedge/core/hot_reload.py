@@ -47,12 +47,8 @@ async def apply_driver_changes(
     is correctly detected as a change against a *remembered* disabled
     entry, not treated as brand new.
     """
-    enabled_by_id = {
-        entry["id"]: entry for entry in new_drivers if entry.get("enabled", True)
-    }
-    disabled_by_id = {
-        entry["id"]: entry for entry in new_drivers if not entry.get("enabled", True)
-    }
+    enabled_by_id = {entry["id"]: entry for entry in new_drivers if entry.get("enabled", True)}
+    disabled_by_id = {entry["id"]: entry for entry in new_drivers if not entry.get("enabled", True)}
     all_present_ids = enabled_by_id.keys() | disabled_by_id.keys()
 
     for instance_id in list(current):

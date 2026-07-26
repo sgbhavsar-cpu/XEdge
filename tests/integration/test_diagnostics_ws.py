@@ -20,13 +20,15 @@ from xedge.api.server import create_app
 from xedge.core.config import ConfigVersionHistory
 from xedge.core.pipeline import UnifiedTag
 from xedge.core.supervisor import DriverRegistry, DriverSupervisor
-from xedge.drivers.base import Quality, TagUpdate
+from xedge.drivers.base import Quality
 from xedge.observability.audit_log import AuditLog
 from xedge.store.latest_values import LatestValueStore
 from xedge.store.ring_buffer import RingBufferManager
 
 
-def _build_app(tmp_path: Path, core_schema_path: Path, supervisor: DriverSupervisor | None = None) -> FastAPI:
+def _build_app(
+    tmp_path: Path, core_schema_path: Path, supervisor: DriverSupervisor | None = None
+) -> FastAPI:
     config_path = tmp_path / "xedge.yaml"
     config_path.write_text(
         "schema_version: '0.1'\ndrivers:\n  - id: modbus_sim_01\n    type: modbus_tcp\n"
@@ -172,7 +174,9 @@ def test_network_check_command(tmp_path: Path, core_schema_path: Path) -> None:
     assert "drivers" in response["result"]
 
 
-def test_self_test_command_passes_without_northbound(tmp_path: Path, core_schema_path: Path) -> None:
+def test_self_test_command_passes_without_northbound(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
     app = _build_app(tmp_path, core_schema_path)
     client = _authenticated_client(app)
     with client.websocket_connect("/ws/diagnostics") as ws:

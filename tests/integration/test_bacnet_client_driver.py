@@ -18,7 +18,9 @@ def _free_udp_port() -> int:
         return int(s.getsockname()[1])
 
 
-def _driver_config(tags: list[dict], scan_rate_ms: int = 100, **config_overrides: object) -> DriverConfig:
+def _driver_config(
+    tags: list[dict], scan_rate_ms: int = 100, **config_overrides: object
+) -> DriverConfig:
     return DriverConfig(
         instance_id="bacnet_01",
         driver_type="bacnet_ip",
@@ -51,7 +53,13 @@ async def _run_one_cycle(driver: BacnetIpDriver, config: DriverConfig) -> list[T
 async def test_reads_analog_value(bacnet_test_device: tuple[str, str, str]) -> None:
     device_address, analog_object_id, _binary_object_id = bacnet_test_device
     config = _driver_config(
-        [{"id": "temperature_01", "device_address": device_address, "object_identifier": analog_object_id}]
+        [
+            {
+                "id": "temperature_01",
+                "device_address": device_address,
+                "object_identifier": analog_object_id,
+            }
+        ]
     )
     driver = BacnetIpDriver()
     updates = await _run_one_cycle(driver, config)
@@ -64,7 +72,13 @@ async def test_reads_analog_value(bacnet_test_device: tuple[str, str, str]) -> N
 async def test_reads_binary_value_as_bool(bacnet_test_device: tuple[str, str, str]) -> None:
     device_address, _analog_object_id, binary_object_id = bacnet_test_device
     config = _driver_config(
-        [{"id": "pump_running", "device_address": device_address, "object_identifier": binary_object_id}]
+        [
+            {
+                "id": "pump_running",
+                "device_address": device_address,
+                "object_identifier": binary_object_id,
+            }
+        ]
     )
     driver = BacnetIpDriver()
     updates = await _run_one_cycle(driver, config)
@@ -75,7 +89,13 @@ async def test_reads_binary_value_as_bool(bacnet_test_device: tuple[str, str, st
 async def test_unknown_object_maps_to_bad_quality(bacnet_test_device: tuple[str, str, str]) -> None:
     device_address, _analog_object_id, _binary_object_id = bacnet_test_device
     config = _driver_config(
-        [{"id": "missing", "device_address": device_address, "object_identifier": "analog-value,99"}]
+        [
+            {
+                "id": "missing",
+                "device_address": device_address,
+                "object_identifier": "analog-value,99",
+            }
+        ]
     )
     driver = BacnetIpDriver()
     updates = await _run_one_cycle(driver, config)
@@ -84,14 +104,22 @@ async def test_unknown_object_maps_to_bad_quality(bacnet_test_device: tuple[str,
     assert updates[0].value == 0
 
 
-async def test_unreachable_device_maps_to_bad_quality(bacnet_test_device: tuple[str, str, str]) -> None:
+async def test_unreachable_device_maps_to_bad_quality(
+    bacnet_test_device: tuple[str, str, str],
+) -> None:
     # Unlike OPC UA (a persistent TCP session), BACnet/IP has no connect-time
     # handshake with a remote device — an unreachable device only ever
     # surfaces per-tag, at read time, never as a connect() failure.
     _device_address, analog_object_id, _binary_object_id = bacnet_test_device
     nothing_listening = f"127.0.0.1:{_free_udp_port()}"
     config = _driver_config(
-        [{"id": "unreachable", "device_address": nothing_listening, "object_identifier": analog_object_id}]
+        [
+            {
+                "id": "unreachable",
+                "device_address": nothing_listening,
+                "object_identifier": analog_object_id,
+            }
+        ]
     )
     driver = BacnetIpDriver()
     updates = await _run_one_cycle(driver, config)
@@ -99,7 +127,9 @@ async def test_unreachable_device_maps_to_bad_quality(bacnet_test_device: tuple[
     assert updates[0].quality == Quality.BAD
 
 
-async def test_connect_raises_on_local_bind_conflict(bacnet_test_device: tuple[str, str, str]) -> None:
+async def test_connect_raises_on_local_bind_conflict(
+    bacnet_test_device: tuple[str, str, str],
+) -> None:
     device_address, _analog_object_id, _binary_object_id = bacnet_test_device
     # device_address is already bound by the fixture's own Application —
     # binding a second Application to the same local address must fail.
@@ -130,7 +160,9 @@ async def test_write_returns_not_supported(bacnet_test_device: tuple[str, str, s
         await driver.disconnect()
 
 
-async def test_get_metrics_tracks_reads_and_errors(bacnet_test_device: tuple[str, str, str]) -> None:
+async def test_get_metrics_tracks_reads_and_errors(
+    bacnet_test_device: tuple[str, str, str],
+) -> None:
     device_address, analog_object_id, _binary_object_id = bacnet_test_device
     config = _driver_config(
         [
@@ -151,7 +183,13 @@ async def test_read_produces_driver_read_span(
 ) -> None:
     device_address, analog_object_id, _binary_object_id = bacnet_test_device
     config = _driver_config(
-        [{"id": "span_tag", "device_address": device_address, "object_identifier": analog_object_id}]
+        [
+            {
+                "id": "span_tag",
+                "device_address": device_address,
+                "object_identifier": analog_object_id,
+            }
+        ]
     )
     driver = BacnetIpDriver()
     await _run_one_cycle(driver, config)
@@ -168,7 +206,13 @@ async def test_unknown_object_produces_error_span(
 ) -> None:
     device_address, _analog_object_id, _binary_object_id = bacnet_test_device
     config = _driver_config(
-        [{"id": "missing", "device_address": device_address, "object_identifier": "analog-value,99"}]
+        [
+            {
+                "id": "missing",
+                "device_address": device_address,
+                "object_identifier": "analog-value,99",
+            }
+        ]
     )
     driver = BacnetIpDriver()
     await _run_one_cycle(driver, config)

@@ -83,8 +83,13 @@ async def test_agent_registers_heartbeats_and_applies_pushed_config(
 
     agent_task = asyncio.create_task(
         fleet_heartbeat_loop(
-            fleet_config, token_path, supervisor, config_path, validator,
-            datetime.now(UTC), fleet_status,
+            fleet_config,
+            token_path,
+            supervisor,
+            config_path,
+            validator,
+            datetime.now(UTC),
+            fleet_status,
         )
     )
 
@@ -95,8 +100,10 @@ async def test_agent_registers_heartbeats_and_applies_pushed_config(
 
         async with httpx.AsyncClient(base_url=manager_base_url) as admin_client:
             await _wait_until(
-                lambda: registry.get("test-device-1") is not None
-                and registry.get("test-device-1").status == "online"
+                lambda: (
+                    registry.get("test-device-1") is not None
+                    and registry.get("test-device-1").status == "online"
+                )
             )
 
             push = await admin_client.post(
@@ -110,14 +117,13 @@ async def test_agent_registers_heartbeats_and_applies_pushed_config(
             # to the same file hot-reload watches (not applied here directly
             # — this test only proves the write, matching what
             # fleet_heartbeat_loop actually owns).
-            await _wait_until(
-                lambda: "level: DEBUG" in config_path.read_text(encoding="utf-8")
-            )
+            await _wait_until(lambda: "level: DEBUG" in config_path.read_text(encoding="utf-8"))
 
             # Reported back on the heartbeat after that.
             await _wait_until(
-                lambda: (registry.get("test-device-1").last_config_apply or {}).get("success")
-                is True
+                lambda: (
+                    (registry.get("test-device-1").last_config_apply or {}).get("success") is True
+                )
             )
             record = registry.get("test-device-1")
             assert record.last_config_apply == {"version": 1, "success": True, "error": None}
@@ -170,8 +176,13 @@ async def test_agent_reports_a_rejected_config_without_writing_it(
 
     agent_task = asyncio.create_task(
         fleet_heartbeat_loop(
-            fleet_config, token_path, supervisor, config_path, validator,
-            datetime.now(UTC), fleet_status,
+            fleet_config,
+            token_path,
+            supervisor,
+            config_path,
+            validator,
+            datetime.now(UTC),
+            fleet_status,
         )
     )
     try:
@@ -187,8 +198,9 @@ async def test_agent_reports_a_rejected_config_without_writing_it(
             assert push.status_code == 202
 
             await _wait_until(
-                lambda: (registry.get("test-device-2").last_config_apply or {}).get("success")
-                is False
+                lambda: (
+                    (registry.get("test-device-2").last_config_apply or {}).get("success") is False
+                )
             )
             record = registry.get("test-device-2")
             assert record.last_config_apply["error"]

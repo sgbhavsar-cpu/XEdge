@@ -27,6 +27,12 @@ from xedge.drivers.base import (
 )
 
 
+class LoopbackDriverStateError(RuntimeError):
+    """Raised when a lifecycle method is called out of order (e.g. run()
+    before configure()) — same shape as
+    xedge.drivers.modbus.polling.ModbusDriverStateError."""
+
+
 class LoopbackDriver(BaseDriver):
     def __init__(self) -> None:
         self._config: DriverConfig | None = None
@@ -43,8 +49,15 @@ class LoopbackDriver(BaseDriver):
         pass
 
     async def run(self, output: asyncio.Queue[TagUpdate]) -> None:
+        # An explicit raise rather than `assert` — asserts are stripped under
+        # `python -O`, so the invariant would vanish exactly where it still
+        # matters, and bandit flags B101 on it. The suppression comment this
+        # replaces targeted ruff's S101, which does nothing for bandit, so
+        # `bandit -r xedge` had been failing CI unnoticed behind an earlier
+        # lint failure.
         config = self._config
-        assert config is not None  # noqa: S101 — configure() always precedes run() (BaseDriver contract)
+        if config is None:
+            raise LoopbackDriverStateError("configure() must be called before run()")
         instance_id = config.instance_id
         group_tasks = [
             asyncio.create_task(self._poll_group(instance_id, group, output))

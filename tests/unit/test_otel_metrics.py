@@ -60,7 +60,9 @@ def test_northbound_metrics_are_exported_when_dispatcher_present() -> None:
         ConnectorMetrics(published_count=999, error_count=7, reconnect_count=2)
     )
     registry = CollectorRegistry()
-    configure_metrics(_FakeSupervisor({}), dispatcher, RingBufferManager(), "0.1.0", registry=registry)
+    configure_metrics(
+        _FakeSupervisor({}), dispatcher, RingBufferManager(), "0.1.0", registry=registry
+    )
 
     output = _scrape(registry)
     assert "xedge_northbound_published_total" in output
@@ -92,6 +94,6 @@ def test_ring_buffer_metrics_are_exported_per_stream() -> None:
     configure_metrics(_FakeSupervisor({}), None, ring_buffers, "0.1.0", registry=registry)
 
     output = _scrape(registry)
-    assert 'xedge_ring_buffer_depth{' in output
+    assert "xedge_ring_buffer_depth{" in output
     assert 'stream_key="modbus_sim_01"' in output
     assert "xedge_ring_buffer_evicted_total" in output

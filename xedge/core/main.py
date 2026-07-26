@@ -65,6 +65,59 @@ _MODBUS_BIT_FUNCTION_CODES = frozenset({"read_coils", "read_discrete_inputs"})
 _SCHEMA_FILENAME = "xedge-core.schema.json"
 _TAG_QUEUE_MAX_DEPTH = 10_000
 
+DEFAULT_DATA_DIR = Path("/data")
+
+
+class DataPaths:
+    """Every persistent path the app writes to, resolved from one root
+    (Sprint 0, XEDGE-402).
+
+    Before this, `/data` was hardcoded independently at four call sites, so
+    relocating state meant knowing to override several unrelated settings —
+    and missing one wrote to the production default anyway. That is exactly
+    how four integration tests came to fail in CI with
+    `PermissionError: '/data'` despite the suite carefully overriding
+    `store.directory`: `config_management.history_directory` had its own
+    separate default.
+
+    `store.directory` and `config_management.history_directory` still
+    override individually, for deployments that genuinely split state across
+    volumes (e.g. config history on internal flash, telemetry on a
+    removable SD card).
+    """
+
+    def __init__(
+        self,
+        data_dir: Path,
+        store_directory: Path | None = None,
+        history_directory: Path | None = None,
+    ) -> None:
+        self.data_dir = data_dir
+        self.store = store_directory or data_dir / "store"
+        self.config_history = history_directory or data_dir / "config-history"
+        # ADR-007 Web UI auth/audit state, and the fleet agent's device
+        # token, are siblings of the above under the same root
+        # (system-architecture.md §6.4).
+        self.webui = data_dir / "webui"
+        self.fleet = data_dir / "fleet"
+
+    @property
+    def fleet_device_token(self) -> Path:
+        return self.fleet / "device_token"
+
+    @classmethod
+    def from_config(cls, store: ConfigStore) -> DataPaths:
+        data_dir = Path(store.get_section("data_dir", str(DEFAULT_DATA_DIR)))
+        store_config = store.get_section("store", {})
+        config_mgmt = store.get_section("config_management", {})
+        store_directory = store_config.get("directory")
+        history_directory = config_mgmt.get("history_directory")
+        return cls(
+            data_dir=data_dir,
+            store_directory=Path(store_directory) if store_directory else None,
+            history_directory=Path(history_directory) if history_directory else None,
+        )
+
 
 def _default_schema_path() -> Path:
     """Locate the bundled core config schema.
@@ -213,8 +266,11 @@ def _all_tag_ids(drivers: list[dict[str, Any]]) -> frozenset[str]:
         for group in driver.get("tag_groups", [])
         for tag in group.get("tags", [])
     }
+    # `id` is required by the core schema, so index rather than .get() — a
+    # driver entry without one is a config-validation bug, and silently
+    # emitting a `None/...` tag id would hide it.
     system_tag_ids = {
-        system_tag_id(driver.get("id"), name) for driver in drivers for name in SYSTEM_TAG_NAMES
+        system_tag_id(driver["id"], name) for driver in drivers for name in SYSTEM_TAG_NAMES
     }
     return frozenset(real_tag_ids | system_tag_ids)
 
@@ -248,7 +304,7 @@ def _infer_tag_initial_values(drivers: list[dict[str, Any]]) -> dict[str, TagVal
     see OpcUaServerConfig.tag_ids."""
     values: dict[str, TagValue] = {}
     for driver in drivers:
-        instance_id = driver.get("id")
+        instance_id: str = driver["id"]  # schema-required; see _all_tag_ids
         driver_type = driver.get("type")
         # System tags (docs/planning/pendingtasks.md — "Driver system
         # tags"): every driver type gets these, unlike the Modbus-only
@@ -400,9 +456,12 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
     tracing_config = store.get_section("tracing", {})
     configure_tracing(tracing_config, __version__)
 
+    paths = DataPaths.from_config(store)
+    logger.info("xedge.data_paths", data_dir=str(paths.data_dir), store=str(paths.store))
+
     config_mgmt = store.get_section("config_management", {})
     version_history = ConfigVersionHistory(
-        Path(config_mgmt.get("history_directory", "/data/config-history")),
+        paths.config_history,
         max_versions=config_mgmt.get("max_versions", 10),
     )
     engine.attach_version_history(version_history)
@@ -445,14 +504,14 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
         await opcua_server.start()
 
     store_config = store.get_section("store", {})
-    cold_store = SqliteColdStore(Path(store_config.get("directory", "/data/store")))
+    cold_store = SqliteColdStore(paths.store)
 
-    # Web UI auth state (ADR-007): siblings of the store/config-history
-    # dirs under /data, matching system-architecture.md §6.4's layout.
+    # Web UI auth state (ADR-007): a sibling of the store/config-history
+    # dirs under the same data root, matching system-architecture.md §6.4.
     # Constructed unconditionally (not gated on api.enabled) since Sprint 31
     # (XEDGE-223)'s MQTT NCMD write-back path needs `audit_log` for its
     # WriteRouter too, independent of whether the REST API/Web UI is on.
-    webui_dir = Path(store_config.get("directory", "/data/store")).parent / "webui"
+    webui_dir = paths.webui
     audit_log = AuditLog(webui_dir / "audit.jsonl")
 
     ring_buffers = RingBufferManager(
@@ -512,9 +571,7 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
 
     fleet_status = FleetAgentStatus()
     fleet_agent_config = _build_fleet_agent_config(store)
-    fleet_token_path = (
-        Path(store_config.get("directory", "/data/store")).parent / "fleet" / "device_token"
-    )
+    fleet_token_path = paths.fleet_device_token
     fleet_task = (
         asyncio.create_task(
             fleet_heartbeat_loop(

@@ -36,7 +36,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="xedge-fleet-manager", description="xEdge Fleet Manager service"
     )
     parser.add_argument(
-        "--data-dir", type=Path, default=Path("/data/fleet-manager"),
+        "--data-dir",
+        type=Path,
+        default=Path("/data/fleet-manager"),
         help="Directory for the device registry database and auto-generated tokens",
     )
     # nosec B104 — a fleet manager must be reachable from every enrolled
@@ -44,18 +46,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")  # nosec B104
     parser.add_argument("--port", type=int, default=8090)
     parser.add_argument(
-        "--join-token", default=None,
+        "--join-token",
+        default=None,
         help="Shared secret devices present to enroll "
         "(default: auto-generated, persisted in --data-dir)",
     )
     parser.add_argument(
-        "--admin-token", default=None,
+        "--admin-token",
+        default=None,
         help="Bearer token for operator/CLI calls "
         "(default: auto-generated, persisted in --data-dir)",
     )
-    parser.add_argument(
-        "--version", action="version", version=f"xedge-fleet-manager {__version__}"
-    )
+    parser.add_argument("--version", action="version", version=f"xedge-fleet-manager {__version__}")
     return parser.parse_args(argv)
 
 

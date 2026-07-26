@@ -136,9 +136,7 @@ def test_config_push_is_delivered_on_next_heartbeat_and_reported_on_the_one_afte
     )
     assert report.status_code == 200
 
-    status_after = client.get(
-        "/api/v1/fleet/devices/dev1/config/status", headers=admin_auth
-    ).json()
+    status_after = client.get("/api/v1/fleet/devices/dev1/config/status", headers=admin_auth).json()
     assert status_after["has_pending_config"] is False
     assert status_after["last_config_apply"] == {"version": 1, "success": True, "error": None}
 

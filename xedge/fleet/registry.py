@@ -88,9 +88,7 @@ def _row_to_record(row: sqlite3.Row) -> DeviceRecord:
         registered_at=datetime.fromisoformat(row["registered_at"]),
         agent_version=row["agent_version"],
         heartbeat_interval_seconds=row["heartbeat_interval_seconds"],
-        last_seen_at=(
-            datetime.fromisoformat(row["last_seen_at"]) if row["last_seen_at"] else None
-        ),
+        last_seen_at=(datetime.fromisoformat(row["last_seen_at"]) if row["last_seen_at"] else None),
         driver_count=row["driver_count"],
         uptime_seconds=row["uptime_seconds"],
         last_config_apply=(

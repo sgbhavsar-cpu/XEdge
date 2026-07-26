@@ -561,7 +561,9 @@ class TestAuditLogEndpoint:
         supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
         history = ConfigVersionHistory(tmp_path)
         app = _build_app(supervisor, history, tmp_path, core_schema_path)
-        client = _authenticated_client(app)  # setup -> auth.setup, auth.login_success not logged here (setup path)
+        client = _authenticated_client(
+            app
+        )  # setup -> auth.setup, auth.login_success not logged here (setup path)
 
         client.put("/api/v1/config", json={"schema_version": "0.1"})
         client.post(
@@ -858,9 +860,7 @@ class TestTagWriteEndpoint:
             "/api/v1/auth/login", json={"username": "viewer", "password": "viewerpass123"}
         )
 
-        response = viewer_client.post(
-            "/api/v1/drivers/d1/tags/setpoint/write", json={"value": 1}
-        )
+        response = viewer_client.post("/api/v1/drivers/d1/tags/setpoint/write", json={"value": 1})
 
         assert response.status_code == 403
         await supervisor.stop_all()
@@ -895,9 +895,7 @@ class TestAlarmsEndpoint:
         assert response.status_code == 200
         assert response.json() == []
 
-    def test_list_alarms_reports_active_alarm(
-        self, tmp_path: Path, core_schema_path: Path
-    ) -> None:
+    def test_list_alarms_reports_active_alarm(self, tmp_path: Path, core_schema_path: Path) -> None:
         supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
         history = ConfigVersionHistory(tmp_path)
         app = _build_app(
@@ -971,9 +969,7 @@ class TestAlarmsEndpoint:
         assert unshelve_response.status_code == 200
         assert client.get("/api/v1/alarms").json()[0]["shelved_until"] is None
 
-    def test_unshelve_when_not_shelved_is_422(
-        self, tmp_path: Path, core_schema_path: Path
-    ) -> None:
+    def test_unshelve_when_not_shelved_is_422(self, tmp_path: Path, core_schema_path: Path) -> None:
         supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
         history = ConfigVersionHistory(tmp_path)
         app = _build_app(

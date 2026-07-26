@@ -21,6 +21,7 @@ codebase already guaranteed never to contain a resolved plaintext secret.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -142,7 +143,10 @@ def create_app(
             RateLimitMiddleware, audit_log=audit_log, requests_per_minute=requests_per_minute
         )
 
-    def require_permission(permission: str):  # noqa: ANN201 — returns a FastAPI dependency callable
+    def require_permission(permission: str) -> Callable[[Request, Response], str]:
+        """Build a FastAPI dependency that enforces `permission` and returns
+        the authenticated username."""
+
         def dependency(request: Request, response: Response) -> str:
             session = resolve_session(request, session_manager)
             if session is None:
@@ -324,7 +328,8 @@ def create_app(
     def _find_driver_entry(config: dict[str, Any], instance_id: str) -> dict[str, Any]:
         for entry in config.get("drivers", []):
             if entry.get("id") == instance_id:
-                return entry
+                found: dict[str, Any] = entry
+                return found
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"No driver {instance_id!r} in config")
 
     @app.get("/api/v1/drivers/{instance_id}/health")

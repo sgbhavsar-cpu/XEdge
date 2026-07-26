@@ -28,15 +28,21 @@ async def test_async_main_starts_and_shuts_down_cleanly(monkeypatch, tmp_path: P
 
     monkeypatch.setattr(main_module, "_wait_for_shutdown_signal", immediate_shutdown)
 
-    # Override the store directory so this doesn't touch the production
-    # default (/data/store) on the machine running the tests, and disable
-    # the REST API — its live behavior has its own dedicated test below,
-    # and the default port can hit host-specific bind restrictions
-    # (e.g. WinError 10013 on some Windows setups) unrelated to this test.
+    # Override `data_dir` so this doesn't touch the production default
+    # (/data) on the machine running the tests — one setting now relocates
+    # every persistent path (Sprint 0, XEDGE-402). Overriding only
+    # `store.directory`, as this did before, left
+    # `config_management.history_directory` pointing at /data/config-history
+    # and failed in CI with PermissionError.
+    #
+    # The REST API is disabled here — its live behavior has its own dedicated
+    # test below, and the default port can hit host-specific bind
+    # restrictions (e.g. WinError 10013 on some Windows setups) unrelated to
+    # this test.
     config_path = tmp_path / "xedge.yaml"
     config_path.write_text(
         MINIMAL_CONFIG.read_text(encoding="utf-8")
-        + f"\nstore:\n  directory: {tmp_path / 'store'}\n"
+        + f"\ndata_dir: {tmp_path}\n"
         + "\napi:\n  enabled: false\n"
         # Only test_async_main_serves_rest_api_over_real_http exercises the
         # real configure_metrics() wiring (with a live /metrics assertion) —
@@ -70,7 +76,7 @@ async def test_async_main_serves_rest_api_over_real_http(monkeypatch, tmp_path: 
     config_path = tmp_path / "xedge.yaml"
     config_path.write_text(
         MINIMAL_CONFIG.read_text(encoding="utf-8")
-        + f"\nstore:\n  directory: {tmp_path / 'store'}\n"
+        + f"\ndata_dir: {tmp_path}\n"
         + f"\napi:\n  port: {_TEST_API_PORT}\n"
         # tls.enabled now defaults to true (Sprint 13, XEDGE-107/280) — this
         # test is specifically about the plain-HTTP path, so it opts out;
@@ -147,11 +153,10 @@ async def test_async_main_serves_rest_api_over_https(monkeypatch, tmp_path: Path
 
     monkeypatch.setattr(main_module, "_wait_for_shutdown_signal", wait_for_test_shutdown)
 
-    store_dir = tmp_path / "store"
     config_path = tmp_path / "xedge.yaml"
     config_path.write_text(
         MINIMAL_CONFIG.read_text(encoding="utf-8")
-        + f"\nstore:\n  directory: {store_dir}\n"
+        + f"\ndata_dir: {tmp_path}\n"
         + f"\napi:\n  port: {_TEST_HTTPS_API_PORT}\n"
         + "\nmetrics:\n  enabled: false\n",
         encoding="utf-8",
@@ -234,7 +239,7 @@ async def test_async_main_survives_rest_api_bind_failure(monkeypatch, tmp_path: 
     config_path = tmp_path / "xedge.yaml"
     config_path.write_text(
         MINIMAL_CONFIG.read_text(encoding="utf-8")
-        + f"\nstore:\n  directory: {tmp_path / 'store'}\n"
+        + f"\ndata_dir: {tmp_path}\n"
         + "\nmetrics:\n  enabled: false\n",
         encoding="utf-8",
     )

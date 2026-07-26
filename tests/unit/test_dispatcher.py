@@ -110,8 +110,6 @@ async def test_dispatcher_replays_cold_store_backlog_on_connect(tmp_path: Path) 
     cold_store.append("d1", _tag(101))
     connector = FakeConnector()
     buffers = RingBufferManager()
-    buffers.push("d1", _tag(1))  # ensures "d1" is a known stream key to replay
-    buffers.drain_all()  # drain it back out so only the replay batch is observed live
     dispatcher = NorthboundDispatcher(
         connector, buffers, publish_interval_seconds=0.01, cold_store=cold_store
     )
@@ -137,8 +135,6 @@ async def test_replay_cold_store_keeps_data_on_publish_failure(tmp_path: Path) -
     cold_store.append("d1", _tag(100))
     connector = FakeConnector(fail_publish_count=1)
     buffers = RingBufferManager()
-    buffers.push("d1", _tag(1))
-    buffers.drain_all()  # only "d1" needs to be a known stream key
     dispatcher = NorthboundDispatcher(connector, buffers, cold_store=cold_store)
 
     await dispatcher._replay_cold_store()  # noqa: SLF001
@@ -151,6 +147,31 @@ async def test_replay_cold_store_keeps_data_on_publish_failure(tmp_path: Path) -
     await dispatcher._replay_cold_store()  # noqa: SLF001
     assert connector.published_batches[0][0].value == 100
     assert cold_store.count("d1") == 0
+
+
+async def test_replays_backlog_for_a_stream_the_ring_buffer_never_saw(tmp_path: Path) -> None:
+    """XEDGE-404 regression. Replay used to enumerate the *ring buffer's*
+    stream keys, which are empty right after a restart — so a backlog that
+    survived a restart went unreplayed until that stream happened to push
+    again, and a backlog belonging to a driver since removed from config was
+    stranded permanently. Enumeration now comes from the cold store itself.
+
+    The ring buffer here is deliberately left completely untouched.
+    """
+    previous_process = SqliteColdStore(tmp_path)
+    previous_process.append("removed_driver", _tag(42))
+    previous_process.close()
+
+    cold_store = SqliteColdStore(tmp_path)
+    connector = FakeConnector()
+    dispatcher = NorthboundDispatcher(
+        connector, RingBufferManager(), publish_interval_seconds=0.01, cold_store=cold_store
+    )
+
+    await dispatcher._replay_cold_store()  # noqa: SLF001
+
+    assert [tag.value for batch in connector.published_batches for tag in batch] == [42]
+    assert cold_store.count("removed_driver") == 0
 
 
 async def _wait_until(predicate: object, poll_interval: float = 0.01) -> None:

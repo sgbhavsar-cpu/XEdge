@@ -94,9 +94,7 @@ class TestApplyDriverChanges:
         assert updated == {}
         assert supervisor.status("d1").state == DriverState.STOPPED
 
-    async def test_re_enabling_a_disabled_driver_restarts_it(
-        self, registry_and_supervisor
-    ) -> None:  # type: ignore[no-untyped-def]
+    async def test_re_enabling_a_disabled_driver_restarts_it(self, registry_and_supervisor) -> None:  # type: ignore[no-untyped-def]
         registry, supervisor = registry_and_supervisor
         current = await apply_driver_changes([_entry("d1")], {}, registry, supervisor)
         disabled_entry = {**_entry("d1"), "enabled": False}

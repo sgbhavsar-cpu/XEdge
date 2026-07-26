@@ -100,11 +100,19 @@ class NorthboundDispatcher:
         (not drain, which deletes unconditionally) so a failed publish
         leaves the batch on disk to retry after the next reconnect, instead
         of losing it (FR-SF-002's whole point). Stops (without raising) on
-        the first publish failure."""
+        the first publish failure.
+
+        Streams are enumerated from the *cold store*, not the ring buffers
+        (Sprint 0, XEDGE-404). Ring-buffer keys only exist for streams this
+        process has already pushed, so asking them which backlogs exist
+        misses exactly the case replay is for: a backlog that survived a
+        restart, and a backlog belonging to a driver removed from config —
+        the latter previously stranded forever.
+        """
         cold_store = self._cold_store
         if cold_store is None:
             return
-        for stream_key in self._ring_buffers.stream_keys():
+        for stream_key in cold_store.stream_keys():
             while True:
                 rows = cold_store.peek(stream_key, self._replay_batch_size)
                 if not rows:

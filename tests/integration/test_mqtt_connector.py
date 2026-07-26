@@ -217,8 +217,10 @@ async def test_ncmd_write_command_reaches_the_driver_through_write_router(
             seq=None,
             metrics=[
                 SparkplugMetric(
-                    name="fake_01/setpoint", timestamp_ms=1700000000123,
-                    datatype=DataType.DOUBLE, value=42.5,
+                    name="fake_01/setpoint",
+                    timestamp_ms=1700000000123,
+                    datatype=DataType.DOUBLE,
+                    value=42.5,
                 )
             ],
         )
@@ -265,8 +267,11 @@ async def test_ncmd_null_metric_is_ignored(mqtt_broker: tuple[str, int], tmp_pat
             seq=None,
             metrics=[
                 SparkplugMetric(
-                    name="fake_01/setpoint", timestamp_ms=1700000000123,
-                    datatype=DataType.DOUBLE, value=None, is_null=True,
+                    name="fake_01/setpoint",
+                    timestamp_ms=1700000000123,
+                    datatype=DataType.DOUBLE,
+                    value=None,
+                    is_null=True,
                 )
             ],
         )
