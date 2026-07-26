@@ -1,9 +1,25 @@
 # xEdge — High-Level Requirements (HLR)
 
-**Document ID:** XEDGE-HLR-001  
-**Version:** 1.0  
-**Status:** Draft  
-**Date:** 2026-07-03  
+**Document ID:** XEDGE-HLR-001
+**Version:** 1.1
+**Status:** Draft
+**Date:** 2026-07-03 (implementation status annotated 2026-07-26)
+
+> ### ⚠ Read this first — requirements vs. implementation
+>
+> **This document states requirements, not delivered capability.** Every
+> requirement below uses SHALL because that is what a requirements
+> specification does. Many are **not implemented**.
+>
+> As of 2026-07-26, of the ten Tier-2 protocols in §4.1.2, **one**
+> (BACnet/IP) exists. IEC 104, DNP3, BACnet MS/TP, EtherNet/IP, PROFINET,
+> IEC 61850 MMS/GOOSE/SV and DLMS/COSEM do not. Fleet management exists in
+> a v1 form; OTA does not exist at all. See §1.4 for the group-by-group
+> status and [`README.md`](../../README.md) for the capability matrix.
+>
+> Annotated per XEDGE-DR-001 decision D-30. Status is maintained at every
+> sprint boundary in
+> [`crd-delivery-plan.md`](../planning/crd-delivery-plan.md).
 
 ---
 
@@ -55,6 +71,29 @@ xEdge does **not** include:
 ### 1.3 Definitions
 
 See [Section 10 — Glossary](#10-glossary).
+
+### 1.4 Implementation status by requirement group
+
+Assessed 2026-07-26 against the code, not against intent.
+
+**Legend:** ✅ Implemented · 🟡 Partial (works, with named gaps) · ❌ Not implemented · 📅 Scheduled (sprint reference into [`crd-delivery-plan.md`](../planning/crd-delivery-plan.md))
+
+| Group | Requirements | Status | Notes |
+|---|---|---|---|
+| §4.1.1 Tier-1 protocols | FR-SA-001..010 | 🟡 Partial | Modbus TCP/RTU/RTU-over-TCP and OPC UA client all exist. **FR-SA-004 is not met** — FC15 is absent and FC16 has no caller (📅 C2). **FR-SA-002's 256 servers per instance is not met** — one `unit_id` per instance today (📅 C3). **FR-SA-009's 50 ms floor** is being lowered to 1–10 ms per transport (📅 C1) |
+| §4.1.2 Tier-2 protocols | FR-SB-001..010 | ❌ Mostly not implemented | Only FR-SB-003 (BACnet/IP) exists. See the per-requirement table in §4.1.2 |
+| §4.1.3 Driver framework | | ✅ Implemented | Plugin registry, supervisor, hot-reload, enable/disable, health API |
+| §4.2 Data pipeline | FR-DP-* | 🟡 Partial | Normalization, scaling, deadband, quality and alarms all work. **Scaling/deadband config is Modbus-shaped only** — OPC UA and BACnet tags get none (📅 C2) |
+| §4.3 Store & forward | FR-SF-* | ✅ Implemented | Ring buffer, SQLite cold tier, replay on reconnect, retention purge |
+| §4.4 Northbound publishing | FR-NB-* | 🟡 Partial | MQTT + Sparkplug B works. **No TLS at all** (📅 C4). No general subscriber, no configurable payload, no broker (📅 C5) |
+| §4.5 OPC UA server | | ✅ Implemented | Basic information model |
+| §4.6 Configuration management | FR-CM-* | ✅ Implemented | JSON Schema validation, versioned history, rollback, hot-reload |
+| §4.7 Fleet management & OTA | | 🟡 / ❌ | Fleet agent + Manager v1 exist (registration, heartbeat, pull-based config). **OTA does not exist in any form** — Delivery 2, and container-image based rather than RAUC ([ADR-013](../architecture/adr-013-central-management-platform.md) §7) |
+| §4.8 Remote diagnostics | | ✅ Implemented | WebSocket diagnostics + `xedge-cli` |
+| §4.9 Web UI | | ✅ Implemented | Server-rendered, schema-driven config forms, monitoring, first-login setup |
+| §5 Non-functional | NFR-* | ⚠ Largely unverified | Performance targets have not been benchmarked on target hardware; **no HIL testing has been performed at all**. See XEDGE-DR-001 D-20 |
+| §6 Security | SR-* | 🟡 Partial | RBAC, audit log, rate limiting, Web UI TLS implemented. **PKI/certificate management does not exist** (`xedge/security/` is an empty package). **mTLS not implemented.** See the [SL-1 gap analysis](../security/iec62443-sl1-gap-analysis.md) for control-by-control status (📅 C4) |
+| §7 Compliance | | 🟡 Partial | SL-1 gap analysis complete and honest. SL-2, NERC CIP evidence, SOC 2 mapping and pen test are all Delivery 2 |
 
 ---
 
@@ -130,18 +169,35 @@ See [Section 10 — Glossary](#10-glossary).
 
 #### 4.1.2 Tier-2 Protocols (Post-MVP)
 
-| ID | Requirement |
-|---|---|
-| FR-SB-001 | The system SHALL support IEC 60870-5-104 (IEC 104) as a controlling station (master/client), including spontaneous data (ASDU types 1–45), general interrogation (type 100), counter interrogation, and command issuance (types 45–51, 58–64). |
-| FR-SB-002 | The system SHALL support DNP3 (IEEE 1815) as a master station over TCP and serial, including unsolicited responses, data link layer confirmation, and application-layer retries. |
-| FR-SB-003 | The system SHALL support BACnet/IP (ASHRAE 135) as a client, including object discovery, COV subscriptions, and property polling for Analog Input/Output/Value, Binary Input/Output/Value, Multi-state objects. |
-| FR-SB-004 | The system SHALL support BACnet MS/TP over RS-485, acting as a master node with configurable MAC address (0–127). |
-| FR-SB-005 | The system SHALL support EtherNet/IP (CIP) as an originator (client), reading and writing tags from Allen-Bradley / Rockwell PLCs (ControlLogix, CompactLogix) using symbolic tag names. |
-| FR-SB-006 | The system SHALL support PROFINET IO as a controller (IO-Controller), reading process data from PROFINET IO devices using their GSD/GSDML device descriptions. |
-| FR-SB-007 | The system SHALL support IEC 61850 MMS client for reading XCBR, XSWI, MMXU, MMTR, and other LNs from IEDs, subscribing to reports (RCB buffered and unbuffered), and issuing control operations (SBO, direct). |
-| FR-SB-008 | The system SHALL support IEC 61850 GOOSE subscriber, receiving GOOSE messages on Ethernet multicast, with stale-data detection per GOOSE dataset. |
-| FR-SB-009 | The system SHALL support IEC 61850 Sampled Values (SV/SMV) subscriber for power quality and protection applications. |
-| FR-SB-010 | The system SHALL support DLMS/COSEM (IEC 62056) as a client over HDLC (serial), TCP, and UDP wrappers, supporting logical device addressing, OBIS code data access, and push notifications. |
+> **Nine of the ten requirements in this table are not implemented.** The
+> `README.md` capability table previously advertised six of them as
+> shipped; that has been corrected (XEDGE-DR-001 D-29).
+
+| ID | Requirement | Status |
+|---|---|---|
+| FR-SB-001 | The system SHALL support IEC 60870-5-104 (IEC 104) as a controlling station (master/client), including spontaneous data (ASDU types 1–45), general interrogation (type 100), counter interrogation, and command issuance (types 45–51, 58–64). | ❌ 📅 Delivery 2 (P5) |
+| FR-SB-002 | The system SHALL support DNP3 (IEEE 1815) as a master station over TCP and serial, including unsolicited responses, data link layer confirmation, and application-layer retries. | ❌ 📅 Delivery 2 (P6, subject to ADR-006 gate) |
+| FR-SB-003 | The system SHALL support BACnet/IP (ASHRAE 135) as a client, including object discovery, COV subscriptions, and property polling for Analog Input/Output/Value, Binary Input/Output/Value, Multi-state objects. | ✅ Implemented (`xedge/drivers/bacnet/`) |
+| FR-SB-004 | The system SHALL support BACnet MS/TP over RS-485, acting as a master node with configurable MAC address (0–127). | ❌ 📅 Delivery 2 (P7) — substantially cheaper after the C3 RS-485 bus manager ([ADR-011](../architecture/adr-011-serial-bus-and-connectivity.md)) |
+| FR-SB-005 | The system SHALL support EtherNet/IP (CIP) as an originator (client), reading and writing tags from Allen-Bradley / Rockwell PLCs (ControlLogix, CompactLogix) using symbolic tag names. | ❌ 📅 **Delivery 1, sprint C7** — pulled forward by XEDGE-CRD-001 §4.5 |
+| FR-SB-006 | The system SHALL support PROFINET IO as a controller (IO-Controller), reading process data from PROFINET IO devices using their GSD/GSDML device descriptions. | ❌ 📅 Delivery 2 (P8) |
+| FR-SB-007 | The system SHALL support IEC 61850 MMS client for reading XCBR, XSWI, MMXU, MMTR, and other LNs from IEDs, subscribing to reports (RCB buffered and unbuffered), and issuing control operations (SBO, direct). | ❌ 📅 Delivery 2 (P9) — requires the libiec61850 commercial license |
+| FR-SB-008 | The system SHALL support IEC 61850 GOOSE subscriber, receiving GOOSE messages on Ethernet multicast, with stale-data detection per GOOSE dataset. | ❌ 📅 Delivery 2 (P10) |
+| FR-SB-009 | The system SHALL support IEC 61850 Sampled Values (SV/SMV) subscriber for power quality and protection applications. | ❌ 📅 Delivery 2 (P10) |
+| FR-SB-010 | The system SHALL support DLMS/COSEM (IEC 62056) as a client over HDLC (serial), TCP, and UDP wrappers, supporting logical device addressing, OBIS code data access, and push notifications. | ❌ 📅 Delivery 2 (P10) — build-vs-buy still open |
+
+#### 4.1.2a Protocols added by XEDGE-CRD-001
+
+Not present in HLR v1.0; introduced by the customer requirement document
+and scheduled into Delivery 1.
+
+| ID | Requirement | Status |
+|---|---|---|
+| FR-SC-001 | The system SHALL support SNMP as a manager (GET/GETNEXT/GETBULK/SET, v1/v2c/v3 with USM) **and** as an agent, including TRAP/INFORM origination and reception, and MIB upload/parse/browse. | ❌ 📅 Delivery 1, sprint C8 |
+| FR-SC-002 | The system SHALL support SMTP as a client with SSL/TLS and authentication, wired to the alarm engine as a notification channel and supporting scheduled reports. | ❌ 📅 Delivery 1, sprint C6 |
+| FR-SC-003 | The system SHALL support SNTP time synchronisation with configurable servers, sync interval and timezone, and shall report sync status. | ❌ 📅 Delivery 1, sprint C3 |
+| FR-SC-004 | The system SHALL provide a general-purpose MQTT subscriber ingesting external broker data into tags, a publisher with configurable payload structure, and an embedded MQTT broker. | ❌ 📅 Delivery 1, sprint C5 |
+| FR-SC-005 | The system SHALL model Assets as first-class entities with metadata (name, serial, type, make, firmware, description, alias, units), gateway assignment, connection state, and a parameter list with per-parameter storage control. | ❌ 📅 Delivery 1, sprint C6 ([ADR-010](../architecture/adr-010-asset-management-model.md)) |
 
 #### 4.1.3 Driver Framework
 

@@ -1,13 +1,56 @@
 # xEdge — Detailed Sprint Planning
 
-**Document ID:** XEDGE-PLAN-002  
-**Version:** 1.0  
-**Status:** Draft  
-**Date:** 2026-07-03  
+**Document ID:** XEDGE-PLAN-002
+**Version:** 1.0
+**Status:** ⛔ **SUPERSEDED** — retained as the source backlog for Delivery 2
+**Date:** 2026-07-03 (superseded 2026-07-26)
 
-Sprint duration: **2 weeks**  
-Team: **10 engineers** (core), expanding per phase  
-Capacity per sprint: ~100 story points (10 engineers × 2 weeks × avg 5 SP/engineer/day × 1 day/sprint overhead)
+> ## ⛔ This is not the active plan
+>
+> Superseded by [XEDGE-DR-001](XEDGE-DR-001-delivery-decisions.md) decision
+> D-28. It is retained, not deleted, because Phase 4/5/6 remains a planned
+> delivery (D-06) and this document is where that backlog lives.
+>
+> **The active plans are:**
+> - [development-plan.md](development-plan.md) v2.0 — structure, capacity, risk
+> - [crd-delivery-plan.md](crd-delivery-plan.md) — the active sprint backlog
+>
+> **Two things in this document are wrong and should not be relied on:**
+>
+> 1. **The team and capacity model.** "10 engineers, ~100 story points per
+>    sprint" describes a team that never existed. Actual capacity is the
+>    project owner plus Claude Code (D-03). Every point estimate below is
+>    calibrated to the fictional team.
+> 2. **The implied delivery status.** Sprints 1–32 read as a plan of record.
+>    In reality Sprints 4–12, 26–28, 30 and 32–36 were never executed, and
+>    Sprints 13–25 were collapsed into a single commit covering a subset of
+>    their content. Most notably, **the entire Phase 4 Tier-2 protocol suite
+>    (IEC 104, DNP3, BACnet MS/TP, EtherNet/IP, PROFINET) was never built**,
+>    nor was OTA (Sprint 30) or the fleet dashboard (Sprint 32).
+>
+> ### Mapping to the active plan
+>
+> | This document | Now lives in | Notes |
+> |---|---|---|
+> | Sprints 1–18 (Phases 1–3) | Delivered, partially | See [development-plan.md §1](development-plan.md) for what actually exists |
+> | Sprint 19 (IEC 104) | Delivery 2, P5 | |
+> | Sprint 20 (DNP3) | Delivery 2, P6 | ADR-006 go/no-go gate still applies |
+> | Sprint 21 (BACnet IP) | ✅ Delivered | |
+> | Sprint 22 (BACnet MS/TP) | Delivery 2, P7 | Substantially cheaper after C3's RS-485 bus manager ([ADR-011](../architecture/adr-011-serial-bus-and-connectivity.md)) |
+> | Sprint 23 (EtherNet/IP) | **Delivery 1, C7** | Pulled forward by XEDGE-CRD-001 §4.5 |
+> | Sprint 24 (PROFINET) | Delivery 2, P8 | |
+> | Sprint 25 (Driver framework v2) | ✅ Delivered | |
+> | Sprint 26 (Phase 4 integration, M5) | Delivery 2 | Alarm engine v1 delivered early as v2 in Sprint 31 |
+> | Sprints 27–28 (IEC 61850, DLMS) | Delivery 2, P9–P10 | |
+> | Sprint 29 (Fleet agent + manager) | ✅ Delivered (v1) | Extended by [ADR-013](../architecture/adr-013-central-management-platform.md) |
+> | Sprint 30 (OTA, multi-cloud) | Delivery 2, P4 | **Container-image OTA, not RAUC** (ADR-013 §7) |
+> | Sprint 31 (Write-back, alarms v2, import/export) | ✅ Delivered | |
+> | Sprint 32 (Fleet dashboard) | Delivery 2, P3 | **React SPA, not server-rendered** (ADR-013 §6) |
+> | Sprints 33–36 (SL-2, pen test, GA) | Delivery 2, P11–P12 | |
+
+Sprint duration: **2 weeks**
+Team: **10 engineers** (core), expanding per phase — *see the superseded notice above; this team does not exist*
+Capacity per sprint: ~100 story points — *calibrated to the fictional team; not a usable planning figure*
 
 ---
 
