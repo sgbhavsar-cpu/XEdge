@@ -35,6 +35,14 @@ from xedge.core.pipeline import (
     build_tag_pipeline_configs,
     normalize,
 )
+from xedge.core.smtp import (
+    SmtpStatus,
+    alarm_notification_loop,
+    build_alarm_notification_config,
+    build_scheduled_report_configs,
+    build_smtp_config,
+    scheduled_report_loop,
+)
 from xedge.core.sntp import SntpConfig, SntpSyncStatus, sntp_sync_loop
 from xedge.core.supervisor import DriverRegistry, DriverSupervisor
 from xedge.core.system_tags import SYSTEM_TAG_NAMES, system_tag_id, system_tag_publish_loop
@@ -748,6 +756,36 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
         else None
     )
 
+    smtp_config_section = store.get_section("smtp", {})
+    smtp_config = build_smtp_config(smtp_config_section)
+    smtp_status = SmtpStatus(enabled=smtp_config.enabled)
+    smtp_tasks: list[asyncio.Task[None]] = []
+    if smtp_config.enabled:
+        alarm_notification_config = build_alarm_notification_config(smtp_config_section)
+        # Notifying about alarms that don't exist (alarms.enabled: false)
+        # would be a no-op forever, not a useful degraded mode -- gated on
+        # alarm_engine actually existing rather than spawning a task that
+        # would just poll an absent engine.
+        if alarm_notification_config.enabled and alarm_engine is not None:
+            smtp_tasks.append(
+                asyncio.create_task(
+                    alarm_notification_loop(
+                        alarm_engine, smtp_config, alarm_notification_config, smtp_status
+                    )
+                )
+            )
+        # One task per configured report, matching how every driver
+        # instance already gets its own task rather than one task
+        # iterating a list -- a slow/stuck report must not delay another.
+        for report_config in build_scheduled_report_configs(smtp_config_section):
+            smtp_tasks.append(
+                asyncio.create_task(
+                    scheduled_report_loop(
+                        report_config, smtp_config, store, alarm_engine, latest_values, smtp_status
+                    )
+                )
+            )
+
     metrics_config = store.get_section("metrics", {})
     if metrics_config.get("enabled", True):
         configure_metrics(supervisor, dispatcher, ring_buffers, __version__)
@@ -797,6 +835,7 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
             fleet_status=fleet_status,
             alarm_engine=alarm_engine,
             sntp_status=sntp_status,
+            smtp_status=smtp_status,
         )
         api_server = uvicorn.Server(
             uvicorn.Config(
@@ -835,6 +874,9 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
         if sntp_task is not None:
             sntp_task.cancel()
             tasks_to_await.append(sntp_task)
+        for smtp_task in smtp_tasks:
+            smtp_task.cancel()
+            tasks_to_await.append(smtp_task)
         if api_server is not None and api_task is not None:
             api_server.should_exit = True
             tasks_to_await.append(api_task)

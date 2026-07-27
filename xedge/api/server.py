@@ -53,6 +53,7 @@ from xedge.core.assets import Asset, derive_asset_connection_state, parse_assets
 from xedge.core.config import ConfigValidationError, ConfigValidator, ConfigVersionHistory
 from xedge.core.connectivity import ConnectivityState
 from xedge.core.driver_config import build_driver_config
+from xedge.core.smtp import SmtpStatus
 from xedge.core.sntp import SntpSyncStatus
 from xedge.core.supervisor import DriverState, DriverSupervisor
 from xedge.core.write_router import WriteRouter
@@ -137,6 +138,7 @@ def create_app(
     fleet_status: FleetAgentStatus | None = None,
     alarm_engine: AlarmEngine | None = None,
     sntp_status: SntpSyncStatus | None = None,
+    smtp_status: SmtpStatus | None = None,
 ) -> FastAPI:
     app = FastAPI(title="xEdge API", version=__version__)
     started_at = datetime.now(UTC)
@@ -705,6 +707,23 @@ def create_app(
             "consecutive_failures": sntp_status.consecutive_failures,
             "last_error": sntp_status.last_error,
             "stale": sntp_status.is_stale,
+        }
+
+    @app.get("/api/v1/smtp/status")
+    def get_smtp_status(_user: str = Depends(require_permission("tag:read"))) -> dict[str, Any]:
+        """XEDGE-466 (CRD §4.7): whether the last attempted email (an
+        alarm notification or a scheduled report -- this doesn't
+        distinguish which) actually went out."""
+        if smtp_status is None:
+            return {"enabled": False}
+        return {
+            "enabled": smtp_status.enabled,
+            "last_send_at": (
+                smtp_status.last_send_at.isoformat() if smtp_status.last_send_at else None
+            ),
+            "last_send_ok": smtp_status.last_send_ok,
+            "last_error": smtp_status.last_error,
+            "emails_sent": smtp_status.emails_sent,
         }
 
     @app.get("/api/v1/alarms")

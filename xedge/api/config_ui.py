@@ -91,12 +91,21 @@ _SKIP_ID_AND_PARAMETERS = frozenset({"id", "parameters"})
 # to teaching schema_forms a general keyed-collection widget.
 _SKIP_MQTT_BROKER_MANAGED_FIELDS = frozenset({"users", "publish_acl", "subscribe_acl"})
 
+# smtp.alarm_notifications is a nested object whose own `recipients` is a
+# plain string array; smtp.scheduled_reports is an array of objects. Same
+# schema_forms gap as mqtt_broker's fields above (no keyed-collection/
+# array widget) -- neither involves secrets the way mqtt_broker.users
+# did, so both simply stay on the Advanced editor rather than getting a
+# dedicated page, with a note on the SMTP settings page pointing there.
+_SKIP_SMTP_MANAGED_FIELDS = frozenset({"alarm_notifications", "scheduled_reports"})
+
 CORE_SECTIONS = [
     ("logging", "Logging"),
     ("watchdog", "Watchdog"),
     ("northbound", "Northbound (MQTT)"),
     ("opcua_server", "OPC UA Server"),
     ("mqtt_broker", "MQTT Broker"),
+    ("smtp", "SMTP"),
     ("store", "Store & Forward"),
     ("config_management", "Config Management"),
     ("api", "REST API / Web UI"),
@@ -265,7 +274,11 @@ def create_config_ui_router(
     # ---- Core sections ----
 
     def _core_section_skip(section: str) -> frozenset[str]:
-        return _SKIP_MQTT_BROKER_MANAGED_FIELDS if section == "mqtt_broker" else frozenset()
+        if section == "mqtt_broker":
+            return _SKIP_MQTT_BROKER_MANAGED_FIELDS
+        if section == "smtp":
+            return _SKIP_SMTP_MANAGED_FIELDS
+        return frozenset()
 
     @router.get("/core/{section}", response_class=HTMLResponse)
     def core_section_form(request: Request, section: str) -> Response:

@@ -17,6 +17,14 @@
     unrestricted).
   </p>
   {% endif %}
+  {% if section == "smtp" %}
+  <p class="xedge-hint">
+    Alarm notification recipients and scheduled reports aren't editable
+    here yet; use the <a href="/ui/config/advanced">Advanced (raw YAML)</a>
+    editor's <code>smtp.alarm_notifications</code> / <code>scheduled_reports</code>
+    — see config/examples/smtp-example.yaml for the shape.
+  </p>
+  {% endif %}
   <form method="post" action="/ui/config/core/{{ section }}">
     {% for f in fields %}
     {{ macros.render_field(f) }}

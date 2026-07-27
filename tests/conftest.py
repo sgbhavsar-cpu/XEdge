@@ -17,6 +17,11 @@ from tests.fixtures.mqtt_broker import (  # noqa: F401 — re-exported fixtures
     mqtt_broker_tls,
 )
 from tests.fixtures.opcua_server import opcua_test_server  # noqa: F401 — re-exported fixture
+from tests.fixtures.smtp_server import (  # noqa: F401 — re-exported fixtures
+    smtp_server,
+    smtp_server_requiring_auth,
+    smtp_server_starttls,
+)
 from xedge.drivers.base import TagUpdate
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

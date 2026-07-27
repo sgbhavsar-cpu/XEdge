@@ -174,6 +174,75 @@ class TestCoreSectionForms:
         assert (tmp_path / "xedge.yaml").read_text(encoding="utf-8") == original
 
 
+class TestCoreSectionSkippedFieldsSurviveUnrelatedSaves:
+    """mqtt_broker.users and smtp.alarm_notifications/scheduled_reports
+    are excluded from their section's generic schema-driven form
+    (xedge.api.config_ui._core_section_skip -- neither has a widget in
+    xedge.api.schema_forms), which means a save of that section's *other*
+    fields must not wipe them: _replace_editable_fields only touches the
+    schema's properties minus the skip set, in place, so a naive
+    `current[section] = new_section` (which this code deliberately does
+    NOT do) would otherwise delete them on every unrelated save."""
+
+    def test_saving_smtp_host_preserves_alarm_notifications_and_reports(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        _seed_config(
+            tmp_path,
+            {
+                "schema_version": "0.1",
+                "smtp": {
+                    "enabled": True,
+                    "host": "old-host.example.com",
+                    "alarm_notifications": {"enabled": True, "recipients": ["ops@example.com"]},
+                    "scheduled_reports": [{"id": "daily", "interval_seconds": 86400}],
+                },
+            },
+        )
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.post(
+            "/ui/config/core/smtp", data={"enabled": "on", "host": "new-host.example.com"}
+        )
+
+        assert response.status_code == 200
+        assert "Saved" in response.text
+        smtp_config = _current_config(tmp_path)["smtp"]
+        assert smtp_config["host"] == "new-host.example.com"
+        assert smtp_config["alarm_notifications"] == {
+            "enabled": True,
+            "recipients": ["ops@example.com"],
+        }
+        assert smtp_config["scheduled_reports"] == [{"id": "daily", "interval_seconds": 86400}]
+
+    def test_smtp_form_does_not_render_recipients_list_as_raw_text(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        """Not a secret like mqtt_broker.users, but still shouldn't show
+        up as an ugly Python-list repr in a text input's value attribute
+        -- confirms alarm_notifications is actually excluded, not just
+        that saves happen to be lossless."""
+        _seed_config(
+            tmp_path,
+            {
+                "schema_version": "0.1",
+                "smtp": {
+                    "alarm_notifications": {
+                        "enabled": True,
+                        "recipients": ["distinctive-recipient@example.com"],
+                    }
+                },
+            },
+        )
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.get("/ui/config/core/smtp")
+
+        assert "distinctive-recipient@example.com" not in response.text
+
+
 class TestDriverCrud:
     def test_add_driver_form_lists_known_types(
         self, tmp_path: Path, core_schema_path: Path

@@ -106,6 +106,13 @@ test = [
     # README): its own pin of paho-mqtt<2 conflicts with our real paho-mqtt
     # 2.x dependency above, but we only use its payload decode classes,
     # which don't touch its MQTT client at all.
+    #
+    # aiosmtpd (Sprint C6, XEDGE-466): real local SMTP server for
+    # xedge.core.smtp's tests -- the same test-oracle role pymodbus/amqtt
+    # play, needed because Python 3.12 removed the stdlib `smtpd` module
+    # this would otherwise have used. Apache-2.0; deps attrs (MIT) and
+    # atpublic (Apache-2.0) both checked too.
+    "aiosmtpd>=1.4",
 ]
 
 [project.scripts]

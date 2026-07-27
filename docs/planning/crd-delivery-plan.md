@@ -312,6 +312,7 @@ completed stories, carry-over, and a re-forecast against 2026-12-06.
 | C3 | ✅ Complete ([PR #5](https://github.com/sgbhavsar-cpu/XEdge/pull/5)) | XEDGE-430/431/432/433/434/435/436/437 | — | On plan |
 | C4 | ✅ Complete ([PR #6](https://github.com/sgbhavsar-cpu/XEdge/pull/6), [PR #7](https://github.com/sgbhavsar-cpu/XEdge/pull/7)) | XEDGE-440/441/442/443/444/445/446/447 | Agent-side proactive cert rotation (see notes) | On plan |
 | C5 | ✅ Complete ([PR #8](https://github.com/sgbhavsar-cpu/XEdge/pull/8), [PR #9](https://github.com/sgbhavsar-cpu/XEdge/pull/9), [PR #10](https://github.com/sgbhavsar-cpu/XEdge/pull/10)) | XEDGE-450/451/452/453/454/455; XEDGE-443's agent-side rotation (carried from C4, resolved in PR #10 — see addendum) | mqtt_broker ACL editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan |
+| C6 | ✅ Complete ([PR #11](https://github.com/sgbhavsar-cpu/XEdge/pull/11), PR #12) | XEDGE-460/461/462/463/464/465/466/467 | smtp.alarm_notifications/scheduled_reports editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan |
 
 ### Sprint 0 notes (2026-07-27 → 08-02)
 
@@ -675,6 +676,98 @@ on the first heartbeat, rather than waiting out real time) whose
 heartbeats keep succeeding *after* the rotation, over a client presenting
 the new certificate — not just that the file on disk changed.
 
+### Sprint C6 notes (Asset Management, SMTP)
+
+All eight stories delivered, across two PRs ([#11](https://github.com/sgbhavsar-cpu/XEdge/pull/11):
+XEDGE-460/461/462/463/464/465; PR #12: XEDGE-466/467).
+
+**Open item Q-3 resolved: reference/grouping view, not asset-first.**
+ADR-010 already fixed the *data model* (metadata layer over the driver-
+first config); Q-3 was only ever about the Web UI's presentation, and the
+answer keeps XEDGE-465 at its cheaper estimate — an asset's parameters
+are picked from a `<select>` of every existing `instance_id/tag_id`
+(`xedge.core.assets.all_tag_refs`), never a flow that also creates
+drivers/tags underneath. The data model still survives the other answer
+unchanged, per ADR-010's own escape hatch, if this is ever revisited.
+
+**A real, pre-existing gap surfaced by adding the first validation rule
+that can make a deletion fail.** Driver/tag-group/tag deletion could
+never before fail core-schema validation, so `driver_delete`/
+`tag_group_delete`/`tag_delete` all ignored `_save_full_config`'s return
+value entirely — deleting something always "succeeded" from the
+operator's point of view, even on the rare config shapes that already
+made JSON-Schema-only validation fail for unrelated reasons. Asset
+referential integrity (XEDGE-461, wired into `ConfigValidator.validate()`
+itself, so it runs on *every* apply path — hot-reload, the fleet agent's
+pushed-config path, both Web UI save paths — not just one) is the first
+rule where "an asset still references this" makes a deletion fail in
+practice. Fixed all three routes to surface the error and restore the
+in-memory entry to its prior state before re-rendering, with regression
+tests proving a blocked deletion leaves the file genuinely untouched on
+disk — found and fixed during this sprint, not shipped as a latent bug
+for whichever later story happened to add the next failable-on-delete
+rule.
+
+**Asset connection state's "no data yet" case is this project's own
+interpretation, same caveat as gateway state in C4.** Most driver types
+still don't implement `get_connectivity_state()` (only Modbus does,
+since Sprint C2) — an asset backed entirely by such drivers reports
+`UNKNOWN`, not `NOT_CONNECTED`: "no information yet" and "confirmed down"
+are different claims, and collapsing them would make every non-Modbus-
+backed asset look like a failure at a glance for a reason unrelated to
+its actual health. Recorded in `xedge.core.assets.compute_asset_connection_state`'s
+docstring, not silently picked.
+
+**The Web UI's schema-driven form engine's array-widget gap (first found
+for `mqtt_broker.users` in C5) recurred twice more, for two different
+reasons.** `assets[].parameters` is a child collection with its own add/
+delete routes (same treatment tag_groups/tags already get) — not a gap,
+a deliberate design choice, ADR-010's own reference model made concrete.
+`smtp.alarm_notifications`/`scheduled_reports` *are* the same pre-existing
+gap `alarms.rules` already has (no secrets involved this time, just an
+array schema_forms can't render), so both stay on the raw-YAML "Advanced"
+editor rather than getting a dedicated page — XEDGE-467 was scoped to
+the SMTP connection settings' usability, not to teaching schema_forms a
+general array widget a third time.
+
+**Python 3.12 removed the stdlib `smtpd` module** this project would
+otherwise have reached for to test an SMTP client against a real local
+server (the same role `pymodbus`/`amqtt` already play for other
+protocols) — `aiosmtpd` (Apache-2.0; deps `attrs`/MIT and `atpublic`/
+Apache-2.0, both checked) is that role's direct replacement, added as a
+test-only dependency, not a new testing philosophy.
+
+**A real gap in the SMTP client, found by that same real-server test
+failing first**: `SmtpConfig` had no way to trust a self-signed or
+private-CA server certificate — every *other* TLS-consuming config
+section in this codebase (`northbound.mqtt`, the `mqtt_subscriber`
+driver, the fleet agent) already has a `tls_ca_certs_path` for exactly
+this case, and SMTP's own STARTTLS test caught the omission immediately
+(`CERTIFICATE_VERIFY_FAILED: self-signed certificate`, against a fixture
+built the same way the MQTT broker's own TLS test already was). Added
+`smtp.tls_ca_certs_path`, same semantics as its MQTT counterpart.
+
+**Notification triggering is a poll, not a callback, because
+`AlarmEngine` has neither** — `alarm_notification_loop` diffs
+`AlarmEngine.all_status()` against its own previous snapshot every 2s by
+default, deliberately not adding an event hook to `AlarmEngine` itself
+for a single consumer. An ACTIVE -> ACTIVE_ACKED acknowledgement crosses
+no NORMAL/alarming boundary and so sends nothing (the person acking
+already knows); a shelved alarm never notifies for as long as it's
+shelved, respecting `AlarmEngine.shelve`'s own existing intent
+("stops being reported as active") rather than working around it.
+
+**A scheduled report's "alarm summary" is a live snapshot at send time,
+not a historical digest of what transitioned since the last report** —
+stated as a scope choice in `xedge.core.smtp`'s module docstring, not
+discovered as a limitation later. The alternative (either duplicating the
+notification loop's diff bookkeeping, or a cold-store query this module
+would otherwise have no reason to depend on) wasn't worth it for a
+"what's currently wrong" summary that's already useful as specified.
+
+**Customer input needed:** none outstanding for this sprint — Q-3 above
+was the one open item, now resolved.
+
 ---
 
 ## 8. Revision history
@@ -686,3 +779,4 @@ the new certificate — not just that the file on disk changed.
 | 1.2 | 2026-07-27 | Sprint C4 addendum: keep-alive connection-reuse bug found by manual verification, fixed, regression-tested |
 | 1.3 | 2026-07-27 | Sprint C5 complete — status row + notes (embedded MQTT broker, three more amqtt findings, Web UI config gap and fix, cert-rotation carry flagged as overdue) |
 | 1.4 | 2026-07-27 | Sprint C5 addendum: agent-side proactive certificate rotation (XEDGE-443, carried from C4) delivered in PR #10 — no longer carried into C6 |
+| 1.5 | 2026-07-28 | Sprint C6 complete — status row + notes (Asset Management resolving open item Q-3, a real driver/tag deletion validation gap found and fixed, SMTP notifications/reports, aiosmtpd added as a test dependency, an SMTP TLS trust-store gap found and fixed) |

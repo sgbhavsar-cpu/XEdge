@@ -402,6 +402,71 @@
         }
       }
     },
+    "smtp": {
+      "type": "object",
+      "description": "SMTP client (Sprint C6, XEDGE-466; CRD §4.7/FR-SC-002): email notifications on alarm transitions, plus periodic summary reports. Wired directly to the Alarm Engine v2 (Sprint 31) rather than behind a generic notification-channel interface -- SMTP is the only channel this delivery's CRD calls for. Defaults off.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "host": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 587 },
+        "tls_mode": {
+          "type": "string",
+          "enum": ["none", "starttls", "smtps"],
+          "default": "starttls",
+          "description": "\"starttls\" upgrades a plaintext connection (the common port-587 case); \"smtps\" is TLS from the first byte (port 465) -- two different protocols on the wire, not one feature with an on/off switch."
+        },
+        "tls_ca_certs_path": {
+          "type": "string",
+          "description": "CA bundle verifying the server's certificate, for starttls and smtps alike. Omit to use the system trust store (a publicly-trusted mail relay); set for a self-signed or private-CA internal relay."
+        },
+        "username": { "type": "string" },
+        "password": { "type": "string", "x-secret": true },
+        "from_address": { "type": "string" },
+        "connect_timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "default": 10.0 },
+        "alarm_notifications": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "One email per alarm raise or clear (an ACTIVE -> ACTIVE_ACKED ack alone sends nothing -- the recipient already knows). A shelved alarm (xedge.core.alarms.AlarmEngine.shelve) never notifies either, for as long as it's shelved.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "recipients": { "type": "array", "items": { "type": "string" }, "default": [] }
+          }
+        },
+        "scheduled_reports": {
+          "type": "array",
+          "description": "Each entry gets its own independent task/schedule -- one report firing on its interval never blocks or waits on another. A report's alarm summary is a live snapshot of currently-active alarms at send time, not a historical digest of everything that transitioned since the last report.",
+          "items": {
+            "type": "object",
+            "required": ["id"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "enabled": { "type": "boolean", "default": true },
+              "recipients": { "type": "array", "items": { "type": "string" }, "default": [] },
+              "interval_seconds": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "default": 86400,
+                "description": "Default once per day."
+              },
+              "include_tag_ids": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": [],
+                "description": "Fully-qualified tag ids, e.g. 'modbus_tcp_01/temperature_01'."
+              },
+              "include_asset_ids": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": [],
+                "description": "Resolves to every one of that asset's parameters' tag_ref at send time -- not a snapshot taken when the report was configured, so it stays current as an asset's parameters change."
+              }
+            }
+          }
+        }
+      }
+    },
     "fleet": {
       "type": "object",
       "description": "Fleet agent (Sprint 29, XEDGE-210/213; reworked Sprint C4, XEDGE-442, ADR-013 §3): periodic heartbeat to a separate Fleet Manager service, and pull-based config push (this device applies a pending config through the existing hot-reload file-write path, then reports the result on the next heartbeat). Defaults off. Enrollment (one-time, over manager_url) exchanges a single-use join token and a locally-generated CSR for a CA-signed device certificate; heartbeat/config-pull (over device_manager_url) then authenticate with that certificate plus a device token, both persisted locally alongside the never-transmitted private key.",

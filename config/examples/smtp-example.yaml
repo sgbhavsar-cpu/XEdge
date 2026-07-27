@@ -1,0 +1,67 @@
+# SMTP client (Sprint C6, XEDGE-466/467; CRD §4.7): email notifications
+# on alarm transitions, plus periodic summary reports. Wired directly to
+# the Alarm Engine v2 (Sprint 31) -- this delivery's CRD calls for one
+# notification channel, not a generic multi-channel abstraction.
+#
+# alarm_notifications and scheduled_reports aren't editable through the
+# Web UI's schema-driven form yet (see xedge.api.config_ui's
+# _SKIP_SMTP_MANAGED_FIELDS) -- edit them here, or via the Web UI's
+# Advanced (raw YAML) editor.
+schema_version: "0.1"
+
+data_dir: /data
+
+logging:
+  level: INFO
+
+watchdog:
+  enabled: true
+  interval_seconds: 15
+
+drivers: []
+
+alarms:
+  enabled: true
+  rules:
+    - tag_id: modbus_tcp_01/temperature_01
+      high: 80
+      high_high: 95
+
+smtp:
+  enabled: true
+  host: smtp.example.com
+  port: 587
+  tls_mode: starttls # none | starttls | smtps
+  # tls_ca_certs_path: /data/certs/mail-ca.pem  # only for a self-signed/private-CA relay
+  username: xedge-alerts@example.com
+  password: "${SECRET:smtp_password}"
+  from_address: xedge-alerts@example.com
+  alarm_notifications:
+    enabled: true
+    recipients:
+      - ops@example.com
+  scheduled_reports:
+    - id: daily-summary
+      enabled: true
+      recipients:
+        - ops@example.com
+      interval_seconds: 86400 # once per day
+      include_tag_ids:
+        - modbus_tcp_01/temperature_01
+      include_asset_ids:
+        - pump-101
+
+store:
+  ram_max_depth: 10000
+  retention_duration_seconds: 604800 # 7 days
+  purge_interval_seconds: 3600
+
+config_management:
+  hot_reload_enabled: true
+  poll_interval_seconds: 2.0
+  max_versions: 10
+
+api:
+  enabled: true
+  host: 127.0.0.1
+  port: 8080
