@@ -45,6 +45,7 @@ from xedge.drivers.loopback.driver import LoopbackDriver
 from xedge.drivers.modbus.rtu_over_tcp import ModbusRtuOverTcpDriver
 from xedge.drivers.modbus.serial import ModbusRtuSerialDriver
 from xedge.drivers.modbus.tcp import ModbusTcpDriver
+from xedge.drivers.mqtt_subscriber.client import MqttSubscriberDriver
 from xedge.drivers.opcua.client import OpcUaClientDriver
 from xedge.fleet.agent import (
     FleetAgentConfig,
@@ -52,7 +53,9 @@ from xedge.fleet.agent import (
     FleetAgentStatus,
     fleet_heartbeat_loop,
 )
+from xedge.northbound.base import NorthboundConnector
 from xedge.northbound.dispatcher import NorthboundDispatcher
+from xedge.northbound.generic_mqtt import GenericMqttPublisher, GenericMqttPublisherConfig
 from xedge.northbound.mqtt import MqttSparkplugConnector, SparkplugConnectorConfig
 from xedge.northbound.opcua_server import OpcUaServerConfig, OpcUaTagServer
 from xedge.observability.audit_log import AuditLog
@@ -178,6 +181,7 @@ def _build_registry() -> DriverRegistry:
     registry.register("modbus_rtu_serial", ModbusRtuSerialDriver)
     registry.register("opcua_client", OpcUaClientDriver)
     registry.register("bacnet_ip", BacnetIpDriver)
+    registry.register("mqtt_subscriber", MqttSubscriberDriver)
     registry.register("loopback", LoopbackDriver)
     return registry
 
@@ -406,21 +410,44 @@ def _build_fleet_agent_config(store: ConfigStore) -> FleetAgentConfig | None:
     )
 
 
-def _build_northbound_dispatcher(
-    store: ConfigStore,
-    ring_buffers: RingBufferManager,
-    cold_store: SqliteColdStore,
-    supervisor: DriverSupervisor,
-    audit_log: AuditLog,
-) -> NorthboundDispatcher | None:
-    northbound_config = store.get_section("northbound", {})
-    if not northbound_config.get("enabled", True):
-        return None
-    mqtt_config = northbound_config.get("mqtt")
-    if not mqtt_config:
-        return None
-
-    connector = MqttSparkplugConnector(
+def _build_northbound_connector(
+    mqtt_config: dict[str, Any], supervisor: DriverSupervisor, audit_log: AuditLog
+) -> NorthboundConnector:
+    """Sprint C5, XEDGE-451: `publisher_type` selects Sparkplug B (default,
+    unchanged) or the generic JSON publisher (CRD §4.10 "own payload
+    structure") — two connectors behind the same NorthboundConnector
+    interface, not one connector branching internally. Only the Sparkplug
+    connector takes a WriteRouter: NCMD write-back is a Sparkplug-specific
+    command-topic concept with no equivalent here."""
+    publisher_type = mqtt_config.get("publisher_type", "sparkplug_b")
+    if publisher_type == "generic_json":
+        generic_config_kwargs: dict[str, Any] = {
+            "host": mqtt_config["host"],
+            "port": mqtt_config.get("port", 1883),
+            "client_id": mqtt_config.get("client_id", ""),
+            "keepalive_seconds": mqtt_config.get("keepalive_seconds", 60),
+            "connect_timeout_seconds": mqtt_config.get("connect_timeout_seconds", 10),
+            "qos": mqtt_config.get("qos", 1),
+            "retain": mqtt_config.get("generic_json_retain", False),
+            "username": mqtt_config.get("username"),
+            "password": mqtt_config.get("password"),
+            "tls_enabled": mqtt_config.get("tls_enabled", False),
+            "tls_ca_certs_path": mqtt_config.get("tls_ca_certs_path"),
+            "tls_certfile_path": mqtt_config.get("tls_certfile_path"),
+            "tls_keyfile_path": mqtt_config.get("tls_keyfile_path"),
+            "tls_insecure": mqtt_config.get("tls_insecure", False),
+            "topic_template": mqtt_config.get("generic_json_topic_template", "xedge/{tag_id}"),
+            "payload_mode": mqtt_config.get("generic_json_payload_mode", "per_tag"),
+            "include_timestamp": mqtt_config.get("generic_json_include_timestamp", True),
+            "include_quality": mqtt_config.get("generic_json_include_quality", True),
+        }
+        # Omitted rather than passed as None/{} when absent, so
+        # GenericMqttPublisherConfig's own default_factory (the full
+        # standard field set) applies -- not an empty override.
+        if mqtt_config.get("generic_json_field_names"):
+            generic_config_kwargs["field_names"] = mqtt_config["generic_json_field_names"]
+        return GenericMqttPublisher(GenericMqttPublisherConfig(**generic_config_kwargs))
+    return MqttSparkplugConnector(
         SparkplugConnectorConfig(
             host=mqtt_config["host"],
             port=mqtt_config.get("port", 1883),
@@ -442,6 +469,23 @@ def _build_northbound_dispatcher(
         # the same WriteRouter the REST API's write endpoint uses.
         WriteRouter(supervisor, audit_log),
     )
+
+
+def _build_northbound_dispatcher(
+    store: ConfigStore,
+    ring_buffers: RingBufferManager,
+    cold_store: SqliteColdStore,
+    supervisor: DriverSupervisor,
+    audit_log: AuditLog,
+) -> NorthboundDispatcher | None:
+    northbound_config = store.get_section("northbound", {})
+    if not northbound_config.get("enabled", True):
+        return None
+    mqtt_config = northbound_config.get("mqtt")
+    if not mqtt_config:
+        return None
+
+    connector = _build_northbound_connector(mqtt_config, supervisor, audit_log)
     return NorthboundDispatcher(
         connector,
         ring_buffers,

@@ -118,6 +118,12 @@
           "required": ["host"],
           "additionalProperties": false,
           "properties": {
+            "publisher_type": {
+              "type": "string",
+              "enum": ["sparkplug_b", "generic_json"],
+              "default": "sparkplug_b",
+              "description": "Sprint C5, XEDGE-451 (CRD §4.10 'own payload structure'). 'sparkplug_b' (default, unchanged): MqttSparkplugConnector, birth/death/sequence-numbered protobuf. 'generic_json': GenericMqttPublisher, configurable plain-JSON topic/payload -- see the generic_json_* fields below, which that mode alone consumes."
+            },
             "host": { "type": "string", "minLength": 1 },
             "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 1883 },
             "group_id": { "type": "string", "minLength": 1, "default": "xedge" },
@@ -146,6 +152,25 @@
               "type": "boolean",
               "default": false,
               "description": "Disables broker *hostname* verification only (not certificate validity) -- for a broker reachable only by an IP its certificate can't reasonably enumerate in advance."
+            },
+            "generic_json_topic_template": {
+              "type": "string",
+              "default": "xedge/{tag_id}",
+              "description": "publisher_type: generic_json only. {tag_id} is substituted per message in 'per_tag' mode; must not appear in 'batch' mode, where every batch publishes to this one fixed topic."
+            },
+            "generic_json_payload_mode": {
+              "type": "string",
+              "enum": ["per_tag", "batch"],
+              "default": "per_tag",
+              "description": "publisher_type: generic_json only. 'per_tag': one MQTT message per tag. 'batch': one message containing a JSON array of every tag in the batch."
+            },
+            "generic_json_retain": { "type": "boolean", "default": false, "description": "publisher_type: generic_json only." },
+            "generic_json_include_timestamp": { "type": "boolean", "default": true, "description": "publisher_type: generic_json only." },
+            "generic_json_include_quality": { "type": "boolean", "default": true, "description": "publisher_type: generic_json only." },
+            "generic_json_field_names": {
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "description": "publisher_type: generic_json only. Renames output JSON keys, e.g. {\"tag_id\": \"name\", \"value\": \"val\"}. Keys not overridden here keep their default name (tag_id, value, timestamp, quality)."
             }
           }
         }

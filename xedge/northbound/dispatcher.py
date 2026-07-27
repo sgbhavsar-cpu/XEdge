@@ -32,9 +32,10 @@ class NorthboundDispatcher:
 
     `run()` loops forever: reconnect with exponential backoff while
     disconnected — replaying any cold-store backlog (FR-SF-004) immediately
-    after a successful (re)connect, oldest first — then sleep
-    `publish_interval_seconds`, drain the ring buffer, and publish. A failed
-    publish drops back into the reconnect branch on the next iteration.
+    after a successful (re)connect, oldest first — then wait up to
+    `publish_interval_seconds` (or until `trigger_publish()` wakes it early,
+    XEDGE-452), drain the ring buffer, and publish. A failed publish drops
+    back into the reconnect branch on the next iteration.
     """
 
     def __init__(
@@ -51,6 +52,12 @@ class NorthboundDispatcher:
         self._cold_store = cold_store
         self._replay_batch_size = replay_batch_size
         self._connected = False
+        # Sprint C5, XEDGE-452 ("manual re-publish"): lets a caller (the
+        # REST API) wake `run()`'s wait early rather than sit out the rest
+        # of `publish_interval_seconds` -- generic to *any* connector, not
+        # special-cased to the MQTT ones, since the dispatcher itself
+        # already owns the only timer this needs to interrupt.
+        self._publish_trigger = asyncio.Event()
 
     @property
     def connected(self) -> bool:
@@ -61,6 +68,16 @@ class NorthboundDispatcher:
 
     def is_alive(self) -> bool:
         return self._connector.is_alive()
+
+    def trigger_publish(self) -> None:
+        """XEDGE-452: request an immediate publish cycle rather than
+        waiting for the rest of `publish_interval_seconds` to elapse.
+        Safe to call from a request-handling coroutine — just sets an
+        event `run()` is already waiting on with a timeout; does not
+        publish synchronously itself, and does nothing if not currently
+        connected (the next successful reconnect resumes the normal
+        interval-driven cycle, same as any other publish)."""
+        self._publish_trigger.set()
 
     async def run(self) -> None:
         backoff = _INITIAL_BACKOFF_SECONDS
@@ -79,7 +96,13 @@ class NorthboundDispatcher:
                     backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF_SECONDS)
                     continue
 
-            await asyncio.sleep(self._publish_interval_seconds)
+            try:
+                await asyncio.wait_for(
+                    self._publish_trigger.wait(), timeout=self._publish_interval_seconds
+                )
+            except TimeoutError:
+                pass  # the normal case: interval elapsed with no manual trigger
+            self._publish_trigger.clear()
             batch = self._ring_buffers.drain_all()
             if not batch:
                 continue

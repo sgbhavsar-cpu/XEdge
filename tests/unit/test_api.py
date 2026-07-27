@@ -252,6 +252,81 @@ async def test_status_endpoint_reports_northbound_connected_state(
         await supervisor.stop_all()
 
 
+async def test_republish_triggers_the_dispatcher_immediately(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    supervisor, _driver = await _running_supervisor()
+    history = ConfigVersionHistory(tmp_path)
+    connector = FakeConnector()
+    ring_buffers = RingBufferManager()
+    ring_buffers.push(
+        "d1",
+        UnifiedTag(
+            tag_id="d1/t1",
+            timestamp=datetime.now(UTC),
+            value=1,
+            data_type="INT64",
+            quality=Quality.GOOD,
+            source_driver="d1",
+            source_address="0",
+        ),
+    )
+    # A long interval that would fail this test (via timeout) if the
+    # republish endpoint didn't actually wake the dispatcher early.
+    dispatcher = NorthboundDispatcher(connector, ring_buffers, publish_interval_seconds=30.0)
+    task = asyncio.create_task(dispatcher.run())
+    try:
+        for _ in range(200):
+            if dispatcher.connected:
+                break
+            await asyncio.sleep(0.01)
+
+        app = _build_app(supervisor, history, tmp_path, core_schema_path, dispatcher=dispatcher)
+        client = _authenticated_client(app)
+
+        response = client.post("/api/v1/northbound/republish")
+        assert response.status_code == 200
+        assert response.json() == {"queued": True}
+
+        for _ in range(200):
+            if connector.published_batches:
+                break
+            await asyncio.sleep(0.01)
+        assert connector.published_batches
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await supervisor.stop_all()
+
+
+async def test_republish_without_a_dispatcher_configured_is_404(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    supervisor, _driver = await _running_supervisor()
+    history = ConfigVersionHistory(tmp_path)
+    app = _build_app(supervisor, history, tmp_path, core_schema_path)
+    client = _authenticated_client(app)
+
+    response = client.post("/api/v1/northbound/republish")
+
+    assert response.status_code == 404
+    await supervisor.stop_all()
+
+
+async def test_republish_requires_northbound_publish_permission(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    supervisor, _driver = await _running_supervisor()
+    history = ConfigVersionHistory(tmp_path)
+    app = _build_app(supervisor, history, tmp_path, core_schema_path)
+    client = TestClient(app)  # no login
+
+    response = client.post("/api/v1/northbound/republish")
+
+    assert response.status_code == 401
+    await supervisor.stop_all()
+
+
 async def test_drivers_endpoint_lists_status_and_live_metrics(
     tmp_path: Path, core_schema_path: Path
 ) -> None:

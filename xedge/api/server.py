@@ -258,6 +258,22 @@ def create_app(
             "northbound_connected": dispatcher.connected if dispatcher is not None else None,
         }
 
+    @app.post("/api/v1/northbound/republish")
+    def republish_northbound(
+        user: str = Depends(require_permission("northbound:publish")),
+    ) -> dict[str, Any]:
+        """Sprint C5, XEDGE-452 (CRD §4.10 "manual republish"): wakes the
+        dispatcher immediately rather than waiting out the rest of
+        `publish_interval_seconds` — see `NorthboundDispatcher.
+        trigger_publish()`. Does not publish synchronously itself, and
+        `queued` reflects only whether a dispatcher exists to signal, not
+        whether the following publish actually succeeds."""
+        if dispatcher is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Northbound is not configured")
+        dispatcher.trigger_publish()
+        audit_log.append(user, "northbound.republish_triggered")
+        return {"queued": True}
+
     @app.get("/api/v1/drivers")
     def get_drivers(_user: str = Depends(require_permission("tag:read"))) -> list[dict[str, Any]]:
         return [

@@ -177,7 +177,13 @@ async def query_sntp(
     t3 = _from_ntp_timestamp(bytes(data[40:48]))  # Transmit Timestamp
 
     offset = ((t2 - t1) + (t3 - t4)) / 2
-    delay = (t4 - t1) - (t3 - t2)
+    # RFC 4330's delay formula mixes the local clock (t1, t4) with the
+    # server's own reported clock (t2, t3) -- it cannot be negative in
+    # reality, but on a very fast round trip (a loopback/local test server,
+    # sub-millisecond) clock-read granularity noise can push the raw
+    # subtraction fractionally below zero. Clamp rather than propagate a
+    # physically nonsensical negative round-trip time to callers/the UI.
+    delay = max(0.0, (t4 - t1) - (t3 - t2))
     return SntpQueryResult(
         server=server,
         offset_seconds=offset,

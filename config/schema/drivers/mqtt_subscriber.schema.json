@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://xedge.example.com/schema/drivers/mqtt_subscriber.schema.json",
+  "title": "MQTT Subscriber Driver Configuration",
+  "description": "Per-driver-type schema for `type: mqtt_subscriber` entries (FR-DF-004; Sprint C5, XEDGE-450; CRD §4.10). Subscribes to an external MQTT broker and maps incoming messages into tags -- independent of, and unrelated to, the northbound Sparkplug B publisher/NCMD path.",
+  "type": "object",
+  "required": ["config", "tag_groups"],
+  "additionalProperties": false,
+  "properties": {
+    "config": {
+      "type": "object",
+      "required": ["host"],
+      "additionalProperties": false,
+      "properties": {
+        "host": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 1883 },
+        "client_id": { "type": "string", "default": "" },
+        "keepalive_seconds": { "type": "integer", "minimum": 1, "default": 60 },
+        "connect_timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "default": 10 },
+        "username": { "type": "string" },
+        "password": { "type": "string", "x-secret": true },
+        "tls_enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Independent of the fleet agent's own certificate (XEDGE-442) -- a customer's MQTT broker is typically a separate trust domain from xEdge's fleet PKI."
+        },
+        "tls_ca_certs_path": {
+          "type": "string",
+          "description": "CA bundle verifying the broker's certificate. Omit to use the system trust store."
+        },
+        "tls_certfile_path": { "type": "string" },
+        "tls_keyfile_path": { "type": "string" },
+        "tls_insecure": {
+          "type": "boolean",
+          "default": false,
+          "description": "Disables broker *hostname* verification only (not certificate validity)."
+        }
+      }
+    },
+    "tag_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "tags"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "tags": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["id", "topic"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "topic": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "MQTT topic filter; may use +/# wildcards. A wildcard subscription maps every matching concrete topic onto this same tag -- there is no per-topic fan-out into dynamically created tags."
+                },
+                "qos": { "type": "integer", "enum": [0, 1, 2], "default": 0 },
+                "payload_format": {
+                  "type": "string",
+                  "enum": ["raw", "json"],
+                  "default": "raw",
+                  "description": "'raw': decode as UTF-8 text, then auto-coerce to bool/int/float/string. 'json': parse as JSON, optionally narrowed by json_path."
+                },
+                "json_path": {
+                  "type": "string",
+                  "description": "Dot-separated key/index path into a JSON payload, e.g. 'data.value' or 'readings.0.temp'. Only used when payload_format is 'json'; omit to use the whole decoded JSON value."
+                },
+                "scaling": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "scale": { "type": "number", "default": 1.0 },
+                    "offset": { "type": "number", "default": 0.0 }
+                  },
+                  "description": "Applied only to numeric values (int/float); ignored for bool/string payloads."
+                },
+                "engineering_unit": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

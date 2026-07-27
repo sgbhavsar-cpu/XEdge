@@ -14,6 +14,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             "config:read",
             "config:write",
             "driver:restart",
+            "northbound:publish",
             "security:manage",
             "user:manage",
             "audit:read",
@@ -29,6 +30,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             "config:read",
             "config:write",
             "driver:restart",
+            "northbound:publish",
             "diagnostics:run",
             "alarm:manage",
         }
