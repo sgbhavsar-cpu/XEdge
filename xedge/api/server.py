@@ -49,6 +49,7 @@ from xedge.api.permissions import ROLE_PERMISSIONS, has_permission
 from xedge.api.rate_limit import RateLimitMiddleware
 from xedge.api.ui import create_ui_router
 from xedge.core.alarms import AlarmEngine
+from xedge.core.assets import Asset, derive_asset_connection_state, parse_assets
 from xedge.core.config import ConfigValidationError, ConfigValidator, ConfigVersionHistory
 from xedge.core.connectivity import ConnectivityState
 from xedge.core.driver_config import build_driver_config
@@ -325,6 +326,71 @@ def create_app(
                     }
                 )
         return {"tags": tags, "system": system}
+
+    def _current_assets() -> list[Asset]:
+        """Latest saved config version (ConfigVersionHistory), same
+        source `GET /api/v1/config` already reads — not `store.data`
+        directly, since server.py holds no live ConfigStore reference."""
+        versions = version_history.list_versions()
+        if not versions:
+            return []
+        assets_config = version_history.load_version(versions[-1]).get("assets", [])
+        return parse_assets(assets_config)
+
+    def _asset_connection_state(asset: Asset) -> ConnectivityState:
+        driver_connectivity = {
+            instance_id: s.connectivity_state for instance_id, s in supervisor.all_status().items()
+        }
+        return derive_asset_connection_state(asset, driver_connectivity)
+
+    def _asset_summary(asset: Asset) -> dict[str, Any]:
+        return {
+            "id": asset.id,
+            "name": asset.name,
+            "enabled": asset.enabled,
+            "serial_number": asset.serial_number,
+            "asset_type": asset.asset_type,
+            "make": asset.make,
+            "model": asset.model,
+            "firmware_version": asset.firmware_version,
+            "description": asset.description,
+            "gateway_id": asset.gateway_id,
+            "parameter_count": len(asset.parameters),
+            "connection_state": _asset_connection_state(asset).value,
+        }
+
+    @app.get("/api/v1/assets")
+    def list_assets(_user: str = Depends(require_permission("tag:read"))) -> list[dict[str, Any]]:
+        """ADR-010: read-only, derived from the current `assets` config
+        section plus each backing driver's *live* connectivity — nothing
+        here is stored. See config_ui.py for asset create/edit/delete
+        (Web UI form routes, matching every other config-mutation path in
+        this codebase)."""
+        return [_asset_summary(asset) for asset in _current_assets()]
+
+    @app.get("/api/v1/assets/{asset_id}")
+    def get_asset(
+        asset_id: str, _user: str = Depends(require_permission("tag:read"))
+    ) -> dict[str, Any]:
+        assets = {asset.id: asset for asset in _current_assets()}
+        asset = assets.get(asset_id)
+        if asset is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"No asset {asset_id!r}")
+        parameters = []
+        for parameter in asset.parameters:
+            tag = latest_values.get(parameter.tag_ref)
+            parameters.append(
+                {
+                    "tag_ref": parameter.tag_ref,
+                    "alias": parameter.alias,
+                    "unit": parameter.unit,
+                    "store": parameter.store,
+                    "value": tag.value if tag is not None else None,
+                    "quality": tag.quality.value if tag is not None else None,
+                    "timestamp": tag.timestamp.isoformat() if tag is not None else None,
+                }
+            )
+        return {**_asset_summary(asset), "parameters": parameters}
 
     @app.post("/api/v1/drivers/{instance_id}/tags/{tag_name}/write")
     async def write_tag(

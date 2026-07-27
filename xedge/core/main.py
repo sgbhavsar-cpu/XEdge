@@ -23,6 +23,7 @@ from xedge.api.auth import LoginAttemptTracker, SessionManager, UserStore, load_
 from xedge.api.server import create_app
 from xedge.api.tls import load_or_create_server_certificate
 from xedge.core.alarms import ALARM_STREAM_KEY_SUFFIX, AlarmEngine, build_alarm_rules
+from xedge.core.assets import AssetStorageFilter
 from xedge.core.config import ConfigEngine, ConfigStore, ConfigValidator, ConfigVersionHistory
 from xedge.core.connectivity import ConnectivityState
 from xedge.core.driver_config import build_driver_config, conflicting_serial_instance_ids
@@ -639,8 +640,18 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
     webui_dir = paths.webui
     audit_log = AuditLog(webui_dir / "audit.jsonl")
 
+    # ADR-010 §3/XEDGE-462: a per-asset-parameter `store: false` suppresses
+    # that tag from cold-store spill without touching the RAM-tier ring
+    # buffer itself (see AssetStorageFilter's own docstring for why the
+    # spill boundary, not the buffer, is the enforcement point). Subscribed
+    # to the store so a hot-reloaded `assets` section takes effect without
+    # restarting RingBufferManager, which owns the wrapped callback for the
+    # rest of this process's lifetime.
+    asset_storage_filter = AssetStorageFilter(store.get_section("assets", []))
+    store.subscribe(lambda s: asset_storage_filter.refresh(s.get_section("assets", [])))
     ring_buffers = RingBufferManager(
-        max_depth=store_config.get("ram_max_depth", 10_000), on_evict=cold_store.append
+        max_depth=store_config.get("ram_max_depth", 10_000),
+        on_evict=asset_storage_filter.wrap(cold_store.append),
     )
     tag_configs = build_tag_pipeline_configs(store.get_section("drivers", []))
     deadband_filter = DeadbandFilter()

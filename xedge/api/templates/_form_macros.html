@@ -37,7 +37,7 @@
 {% endif %}
 {% endmacro %}
 
-{% macro config_tree(core_sections, drivers, active) %}
+{% macro config_tree(core_sections, drivers, active, assets=[]) %}
 <nav class="xedge-tree">
   <details open>
     <summary>Core Settings</summary>
@@ -74,6 +74,15 @@
       </li>
       {% endfor %}
       <li><a href="/ui/config/drivers/new" class="xedge-tree-add">+ Add driver</a></li>
+    </ul>
+  </details>
+  <details open>
+    <summary>Assets</summary>
+    <ul>
+      {% for a in assets %}
+      <li><a href="/ui/config/assets/{{ a.id }}"{% if active == "assets/" + a.id %} class="active"{% endif %}>{{ a.id }}</a> <span class="xedge-tree-hint">({{ a.parameters|default([])|length }} param{{ "s" if a.parameters|default([])|length != 1 else "" }})</span></li>
+      {% endfor %}
+      <li><a href="/ui/config/assets/new" class="xedge-tree-add">+ Add asset</a></li>
     </ul>
   </details>
   <details>

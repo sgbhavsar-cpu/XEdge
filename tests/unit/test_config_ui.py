@@ -572,3 +572,292 @@ class TestAdvancedYamlEditor:
             "/ui/config/advanced", data={"yaml_text": "schema_version: '0.1'\n  bad: [oops\n"}
         )
         assert "Invalid YAML" in response.text
+
+
+def _seed_driver_with_one_tag(tmp_path: Path) -> None:
+    _seed_config(
+        tmp_path,
+        {
+            "schema_version": "0.1",
+            "drivers": [
+                {
+                    "id": "modbus_01",
+                    "type": "modbus_tcp",
+                    "enabled": True,
+                    "config": {"host": "127.0.0.1"},
+                    "tag_groups": [
+                        {
+                            "id": "g1",
+                            "scan_rate_ms": 1000,
+                            "tags": [
+                                {"id": "temp", "address": 0, "function_code": 3},
+                                {"id": "pressure", "address": 1, "function_code": 3},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+
+class TestAssetCrud:
+    def test_create_asset_then_redirects_to_edit_page(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        response = client.post(
+            "/ui/config/assets/new", data={"id": "pump-101", "name": "Feedwater Pump 101"}
+        )
+        assert response.status_code == 200
+        assert response.url.path == "/ui/config/assets/pump-101"
+        assets = _current_config(tmp_path)["assets"]
+        assert assets == [
+            {"id": "pump-101", "name": "Feedwater Pump 101", "enabled": True, "parameters": []}
+        ]
+
+    def test_duplicate_asset_id_rejected(self, tmp_path: Path, core_schema_path: Path) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        client.post("/ui/config/assets/new", data={"id": "a1", "name": "A1"})
+        response = client.post("/ui/config/assets/new", data={"id": "a1", "name": "Other"})
+        assert "already exists" in response.text
+        assert len(_current_config(tmp_path)["assets"]) == 1
+
+    def test_edit_asset_metadata_and_save(self, tmp_path: Path, core_schema_path: Path) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        client.post("/ui/config/assets/new", data={"id": "a1", "name": "A1"})
+        response = client.post(
+            "/ui/config/assets/a1",
+            data={"name": "A1", "enabled": "on", "make": "Grundfos", "model": "NK 80-250"},
+        )
+        assert response.status_code == 200
+        assert "Saved" in response.text
+        entry = _current_config(tmp_path)["assets"][0]
+        assert entry["make"] == "Grundfos"
+        assert entry["model"] == "NK 80-250"
+
+    def test_unchecking_enabled_persists_as_false(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        client.post("/ui/config/assets/new", data={"id": "a1", "name": "A1"})
+        client.post("/ui/config/assets/a1", data={"name": "A1"})  # no "enabled" -- unchecked
+        assert _current_config(tmp_path)["assets"][0]["enabled"] is False
+
+    def test_delete_asset_removes_it(self, tmp_path: Path, core_schema_path: Path) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        client.post("/ui/config/assets/new", data={"id": "a1", "name": "A1"})
+        response = client.post("/ui/config/assets/a1/delete")
+        assert response.status_code == 200
+        assert response.url.path == "/ui/config"
+        assert _current_config(tmp_path).get("assets", []) == []
+
+    def test_editing_unknown_asset_shows_error(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        response = client.get("/ui/config/assets/no-such-asset")
+        assert "No asset" in response.text
+
+    def test_add_parameter_form_lists_unreferenced_tags_only(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        _seed_driver_with_one_tag(tmp_path)
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        client.post("/ui/config/assets/new", data={"id": "a1", "name": "A1"})
+        client.post(
+            "/ui/config/assets/a1/parameters/new", data={"tag_ref": "modbus_01/temp", "store": "on"}
+        )
+
+        response = client.get("/ui/config/assets/a1/parameters/new")
+
+        assert "modbus_01/pressure" in response.text
+        assert "modbus_01/temp" not in response.text
+
+    def test_add_parameter_persists_alias_unit_and_store(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        _seed_driver_with_one_tag(tmp_path)
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        client.post("/ui/config/assets/new", data={"id": "a1", "name": "A1"})
+
+        response = client.post(
+            "/ui/config/assets/a1/parameters/new",
+            data={
+                "tag_ref": "modbus_01/temp",
+                "alias": "Discharge Temp",
+                "unit": "C",
+                "store": "on",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.url.path == "/ui/config/assets/a1"
+        parameters = _current_config(tmp_path)["assets"][0]["parameters"]
+        assert parameters == [
+            {"tag_ref": "modbus_01/temp", "alias": "Discharge Temp", "unit": "C", "store": True}
+        ]
+
+    def test_add_parameter_unchecking_store_persists_as_false(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        _seed_driver_with_one_tag(tmp_path)
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        client.post("/ui/config/assets/new", data={"id": "a1", "name": "A1"})
+
+        client.post(
+            "/ui/config/assets/a1/parameters/new", data={"tag_ref": "modbus_01/temp"}
+        )  # no "store" -- unchecked
+
+        parameters = _current_config(tmp_path)["assets"][0]["parameters"]
+        assert parameters[0]["store"] is False
+
+    def test_adding_the_same_tag_ref_twice_is_rejected(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        _seed_driver_with_one_tag(tmp_path)
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        client.post("/ui/config/assets/new", data={"id": "a1", "name": "A1"})
+        client.post(
+            "/ui/config/assets/a1/parameters/new", data={"tag_ref": "modbus_01/temp", "store": "on"}
+        )
+
+        response = client.post(
+            "/ui/config/assets/a1/parameters/new", data={"tag_ref": "modbus_01/temp", "store": "on"}
+        )
+
+        assert "already a parameter" in response.text
+        assert len(_current_config(tmp_path)["assets"][0]["parameters"]) == 1
+
+    def test_delete_parameter_by_slash_containing_tag_ref(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        """tag_ref (e.g. 'modbus_01/temp') contains a literal '/', making
+        this the first path parameter in this codebase that isn't a plain
+        single-segment identifier -- proves the {tag_ref:path} route
+        converter actually matches through to a trailing literal segment
+        ('/delete'), not just that the underlying list-filtering logic is
+        correct (already covered without touching routing at all by
+        AssetStorageFilter/parse_assets tests)."""
+        _seed_driver_with_one_tag(tmp_path)
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        client.post("/ui/config/assets/new", data={"id": "a1", "name": "A1"})
+        client.post(
+            "/ui/config/assets/a1/parameters/new", data={"tag_ref": "modbus_01/temp", "store": "on"}
+        )
+        assert len(_current_config(tmp_path)["assets"][0]["parameters"]) == 1
+
+        response = client.post("/ui/config/assets/a1/parameters/modbus_01/temp/delete")
+
+        assert response.status_code == 200
+        assert response.url.path == "/ui/config/assets/a1"
+        assert _current_config(tmp_path)["assets"][0]["parameters"] == []
+
+
+class TestDeletionBlockedByAssetReferences:
+    """XEDGE-461/ADR-010: the referential-integrity check runs on *every*
+    config apply, including a driver/tag-group/tag deletion that would
+    orphan an asset parameter's tag_ref — a real gap found while building
+    this feature (these three delete routes previously ignored
+    _save_full_config's return value entirely, since deleting something
+    could never before fail core-schema validation)."""
+
+    def _seed_asset_referencing_the_only_tag(self, tmp_path: Path) -> None:
+        _seed_config(
+            tmp_path,
+            {
+                "schema_version": "0.1",
+                "drivers": [
+                    {
+                        "id": "modbus_01",
+                        "type": "modbus_tcp",
+                        "enabled": True,
+                        "config": {"host": "127.0.0.1"},
+                        "tag_groups": [
+                            {
+                                "id": "g1",
+                                "scan_rate_ms": 1000,
+                                "tags": [{"id": "temp", "address": 0, "function_code": 3}],
+                            }
+                        ],
+                    }
+                ],
+                "assets": [
+                    {
+                        "id": "a1",
+                        "name": "A1",
+                        "enabled": True,
+                        "parameters": [{"tag_ref": "modbus_01/temp", "store": True}],
+                    }
+                ],
+            },
+        )
+
+    def test_deleting_a_referenced_tag_is_rejected_and_shows_an_error(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        self._seed_asset_referencing_the_only_tag(tmp_path)
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.post("/ui/config/drivers/modbus_01/tag-groups/g1/tags/temp/delete")
+
+        assert response.status_code == 200
+        assert "error" in response.text.lower()
+        # Left genuinely untouched on disk -- not just "an error was shown
+        # while the deletion quietly went through anyway".
+        tags = _current_config(tmp_path)["drivers"][0]["tag_groups"][0]["tags"]
+        assert [t["id"] for t in tags] == ["temp"]
+
+    def test_deleting_a_referenced_tags_group_is_rejected_and_shows_an_error(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        self._seed_asset_referencing_the_only_tag(tmp_path)
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.post("/ui/config/drivers/modbus_01/tag-groups/g1/delete")
+
+        assert response.status_code == 200
+        assert "error" in response.text.lower()
+        groups = _current_config(tmp_path)["drivers"][0]["tag_groups"]
+        assert [g["id"] for g in groups] == ["g1"]
+
+    def test_deleting_a_referenced_tags_driver_is_rejected_and_shows_an_error(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        self._seed_asset_referencing_the_only_tag(tmp_path)
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.post("/ui/config/drivers/modbus_01/delete")
+
+        assert response.status_code == 200
+        assert "error" in response.text.lower()
+        assert [d["id"] for d in _current_config(tmp_path)["drivers"]] == ["modbus_01"]
+
+    def test_deleting_the_asset_itself_still_works(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        """Removing the *referencer* rather than the referenced tag must
+        never be blocked -- there's nothing left for it to conflict with."""
+        self._seed_asset_referencing_the_only_tag(tmp_path)
+        app = _build_app(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.post("/ui/config/assets/a1/delete")
+
+        assert response.status_code == 200
+        assert response.url.path == "/ui/config"
+        assert _current_config(tmp_path).get("assets", []) == []

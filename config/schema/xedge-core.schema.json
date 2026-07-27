@@ -351,6 +351,57 @@
         }
       }
     },
+    "assets": {
+      "type": "array",
+      "description": "Asset Management (Sprint C6, XEDGE-460; ADR-010): a metadata and grouping layer over the existing driver-first model -- an asset's parameters *reference* existing tags (instance_id/tag_id, via parameters[].tag_ref); they never define new ones. Referential integrity (every tag_ref must resolve to a real driver/tag) is checked beyond what this schema alone expresses, on every config apply -- see xedge.core.assets.validate_asset_references. Defaults to an empty list; a deployment with no assets behaves exactly as it did before this section existed.",
+      "items": {
+        "type": "object",
+        "required": ["id", "name"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Presentational only (ADR-010 §4): suppresses this asset from asset-scoped views/reports. Does NOT stop the backing driver instances, which may also back parameters on other assets -- stopping data collection remains a driver-level operation (POST /api/v1/drivers/{id}/disable)."
+          },
+          "serial_number": { "type": "string" },
+          "asset_type": { "type": "string" },
+          "make": { "type": "string" },
+          "model": { "type": "string" },
+          "firmware_version": { "type": "string" },
+          "description": { "type": "string" },
+          "gateway_id": {
+            "type": "string",
+            "description": "Optional, soft reference to a Fleet Manager device id (ADR-010 §4) -- never validated locally against the fleet registry, which is a separate system this device may have no connection to at all (fleet.enabled: false is fully supported)."
+          },
+          "parameters": {
+            "type": "array",
+            "default": [],
+            "items": {
+              "type": "object",
+              "required": ["tag_ref"],
+              "additionalProperties": false,
+              "properties": {
+                "tag_ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "instance_id/tag_id of an existing tag under drivers[] -- a reference, never a new tag definition. Checked for referential integrity on every config apply."
+                },
+                "alias": { "type": "string" },
+                "unit": { "type": "string" },
+                "store": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "ADR-010 §3: false suppresses this tag from cold-store spill (RAM-tier/live visibility is unaffected). If the same tag_ref is also referenced elsewhere (this or another asset) with store: true, that wins."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "fleet": {
       "type": "object",
       "description": "Fleet agent (Sprint 29, XEDGE-210/213; reworked Sprint C4, XEDGE-442, ADR-013 §3): periodic heartbeat to a separate Fleet Manager service, and pull-based config push (this device applies a pending config through the existing hot-reload file-write path, then reports the result on the next heartbeat). Defaults off. Enrollment (one-time, over manager_url) exchanges a single-use join token and a locally-generated CSR for a CA-signed device certificate; heartbeat/config-pull (over device_manager_url) then authenticate with that certificate plus a device token, both persisted locally alongside the never-transmitted private key.",

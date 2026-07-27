@@ -1374,3 +1374,137 @@ class TestPollTagGroupEndpoint:
         response = anonymous_client.post("/api/v1/drivers/x/tag-groups/g/poll")
 
         assert response.status_code == 401
+
+
+class TestAssetsEndpoints:
+    """ADR-010/XEDGE-460..464: read-only, derived views over the `assets`
+    config section — nothing here is stored. Connection-state combination
+    itself is covered exhaustively in tests/unit/test_assets.py against
+    plain ConnectivityState values; FakeDriver has no
+    get_connectivity_state() (matching every real non-Modbus driver type
+    today), so an asset backed by it is UNKNOWN here — that specific
+    fallback is the one connectivity-state behavior worth proving through
+    a real DriverSupervisor rather than a stubbed dict."""
+
+    async def test_list_is_empty_with_no_assets_configured(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        history.save({"schema_version": "0.1", "assets": []})
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.get("/api/v1/assets")
+
+        assert response.status_code == 200
+        assert response.json() == []
+
+    async def test_list_returns_metadata_and_derived_connection_state(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor, _driver = await _running_supervisor()
+        history = ConfigVersionHistory(tmp_path)
+        history.save(
+            {
+                "schema_version": "0.1",
+                "assets": [
+                    {
+                        "id": "pump-101",
+                        "name": "Feedwater Pump 101",
+                        "make": "Grundfos",
+                        "parameters": [{"tag_ref": "d1/counter"}],
+                    }
+                ],
+            }
+        )
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        try:
+            response = client.get("/api/v1/assets")
+            assert response.status_code == 200
+            body = response.json()
+            assert len(body) == 1
+            assert body[0]["id"] == "pump-101"
+            assert body[0]["name"] == "Feedwater Pump 101"
+            assert body[0]["make"] == "Grundfos"
+            assert body[0]["parameter_count"] == 1
+            # FakeDriver implements no get_connectivity_state() -- same as
+            # every real non-Modbus driver type today -- so this asset's
+            # one backing instance is UNKNOWN, not NOT_CONNECTED.
+            assert body[0]["connection_state"] == "unknown"
+        finally:
+            await supervisor.stop_all()
+
+    async def test_detail_404s_for_an_unknown_asset(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        history.save({"schema_version": "0.1", "assets": []})
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.get("/api/v1/assets/no-such-asset")
+
+        assert response.status_code == 404
+
+    async def test_detail_includes_each_parameters_current_value(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor, _driver = await _running_supervisor()
+        history = ConfigVersionHistory(tmp_path)
+        history.save(
+            {
+                "schema_version": "0.1",
+                "assets": [
+                    {
+                        "id": "pump-101",
+                        "name": "Feedwater Pump 101",
+                        "parameters": [
+                            {"tag_ref": "d1/counter", "alias": "Cycle Count", "unit": "cycles"}
+                        ],
+                    }
+                ],
+            }
+        )
+        latest_values = LatestValueStore()
+        latest_values.update(
+            UnifiedTag(
+                tag_id="d1/counter",
+                timestamp=datetime.now(UTC),
+                value=42,
+                data_type="INT64",
+                quality=Quality.GOOD,
+                source_driver="d1",
+                source_address="0",
+            )
+        )
+        app = _build_app(
+            supervisor, history, tmp_path, core_schema_path, latest_values=latest_values
+        )
+        client = _authenticated_client(app)
+        try:
+            response = client.get("/api/v1/assets/pump-101")
+            assert response.status_code == 200
+            body = response.json()
+            assert body["id"] == "pump-101"
+            assert len(body["parameters"]) == 1
+            parameter = body["parameters"][0]
+            assert parameter["tag_ref"] == "d1/counter"
+            assert parameter["alias"] == "Cycle Count"
+            assert parameter["unit"] == "cycles"
+            assert parameter["value"] == 42
+            assert parameter["quality"] == "Good"
+        finally:
+            await supervisor.stop_all()
+
+    async def test_requires_authentication(self, tmp_path: Path, core_schema_path: Path) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        anonymous_client = TestClient(app)
+
+        response = anonymous_client.get("/api/v1/assets")
+
+        assert response.status_code == 401

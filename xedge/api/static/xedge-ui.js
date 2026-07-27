@@ -140,6 +140,31 @@ const xedgeUi = (() => {
     setInterval(() => pollDriverTagsOnce(instanceId), POLL_INTERVAL_MS);
   }
 
+  // Asset Connection State (Sprint C6, XEDGE-463; ADR-010 §4) is derived
+  // from live driver connectivity, never stored — config_ui.py's asset
+  // edit page has no supervisor reference to compute it server-side, so
+  // it's fetched from the read-only /api/v1/assets/{id} endpoint instead,
+  // same division of labor as the fleet status card below.
+  async function pollAssetConnectionStateOnce(assetId) {
+    try {
+      const response = await fetch(`/api/v1/assets/${encodeURIComponent(assetId)}`);
+      if (response.status === 401) {
+        window.location.href = "/ui/login";
+        return;
+      }
+      const data = await response.json();
+      const cell = document.getElementById("asset-connection-state");
+      if (cell) cell.textContent = data.connection_state || "";
+    } catch (err) {
+      // Network hiccups shouldn't spam the console on every poll tick.
+    }
+  }
+
+  function pollAssetConnectionState(assetId) {
+    pollAssetConnectionStateOnce(assetId);
+    setInterval(() => pollAssetConnectionStateOnce(assetId), POLL_INTERVAL_MS);
+  }
+
   // Tails /api/v1/logs into the <pre id="paneId"> element, re-evaluating
   // `getFilters()` (-> {instanceId, source}) on every tick so a page can
   // change its filter (e.g. a <select>) without a page reload; a filter
@@ -328,6 +353,7 @@ const xedgeUi = (() => {
     startLogTail,
     pollFleetStatus,
     pollSntpStatus,
+    pollAssetConnectionState,
     populateSuggestions,
   };
 })();

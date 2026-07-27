@@ -1,0 +1,24 @@
+{% extends "config_layout.html" %}
+{% block title %}xEdge — Add Asset{% endblock %}
+{% block config_content %}
+<div class="xedge-card">
+  <h1>Add asset</h1>
+  {% if error %}<p class="xedge-error">{{ error }}</p>{% endif %}
+  <form method="post" action="/ui/config/assets/new">
+    <div class="xedge-field">
+      <label for="id">Asset ID</label>
+      <input type="text" id="id" name="id" value="{{ id_value }}" required autofocus>
+      <p class="xedge-field-help">A unique identifier for this asset, e.g. "pump-101".</p>
+    </div>
+    <div class="xedge-field">
+      <label for="name">Name</label>
+      <input type="text" id="name" name="name" value="{{ name_value }}" required>
+      <p class="xedge-field-help">Display name, e.g. "Feedwater Pump 101".</p>
+    </div>
+    <div class="xedge-form-actions">
+      <button type="submit">Create</button>
+      <a href="/ui/config" class="xedge-button-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

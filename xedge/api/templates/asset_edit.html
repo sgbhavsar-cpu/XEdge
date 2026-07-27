@@ -1,0 +1,61 @@
+{% extends "config_layout.html" %}
+{% import "_form_macros.html" as macros %}
+{% block title %}xEdge — {{ asset_id }}{% endblock %}
+{% block config_content %}
+<div class="xedge-card">
+  <h1>Asset: {{ asset_id }}</h1>
+  <p><strong>Connection state:</strong> <span id="asset-connection-state">&hellip;</span></p>
+  <form method="post" action="/ui/config/assets/{{ asset_id }}">
+    {% for f in fields %}
+    {{ macros.render_field(f) }}
+    {% endfor %}
+    <div class="xedge-form-actions">
+      <button type="submit">Save &amp; Deploy</button>
+      <a href="/ui/config" class="xedge-button-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<div class="xedge-card">
+  <h1>Parameters</h1>
+  <p class="xedge-hint">
+    Parameters reference existing tags — adding one here never creates a
+    new tag. Manage the underlying driver/tag itself from Drivers in the
+    tree on the left.
+  </p>
+  <table class="xedge-table">
+    <thead><tr><th>Tag ref</th><th>Alias</th><th>Unit</th><th>Stored</th><th></th></tr></thead>
+    <tbody>
+      {% for p in parameters %}
+      <tr>
+        <td>{{ p.tag_ref }}</td>
+        <td>{{ p.alias or "" }}</td>
+        <td>{{ p.unit or "" }}</td>
+        <td>{{ "yes" if p.get("store", True) else "no" }}</td>
+        <td>
+          <form method="post"
+                action="/ui/config/assets/{{ asset_id }}/parameters/{{ p.tag_ref }}/delete"
+                onsubmit="return confirm('Remove parameter {{ p.tag_ref }} from this asset?');">
+            <button type="submit" class="xedge-button-danger">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">No parameters yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <a href="/ui/config/assets/{{ asset_id }}/parameters/new" class="xedge-button-secondary">+ Add parameter</a>
+</div>
+
+<div class="xedge-card">
+  <form method="post" action="/ui/config/assets/{{ asset_id }}/delete"
+        onsubmit="return confirm('Delete asset {{ asset_id }}? This does not affect its underlying drivers/tags.');">
+    <button type="submit" class="xedge-button-danger">Delete this asset</button>
+  </form>
+</div>
+
+<script>
+  xedgeUi.pollAssetConnectionState("{{ asset_id }}");
+</script>
+{% endblock %}
