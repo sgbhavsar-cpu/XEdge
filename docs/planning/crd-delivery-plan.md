@@ -540,6 +540,33 @@ of this sprint's check-in rather than rushed. At the default 90-day
 (2026-12-06) if any device enrolls early in the window — worth
 sequencing before C5 closes, not deferred indefinitely.
 
+**Post-merge addendum — a bug the test suite could not have caught, found
+by manually running the Fleet Manager and a real device process side by
+side.** Every automated heartbeat test uses a 0.05s interval so the suite
+stays fast; the real default is 60s. Running it for real at a realistic
+interval surfaced this immediately: the second heartbeat onward failed
+with "Server disconnected without sending a response," because uvicorn's
+default `timeout_keep_alive` (5s) routinely elapses before the next
+heartbeat reuses the pooled httpx connection, and httpx correctly refuses
+to blind-retry a POST across that race. Fixed by disabling connection
+reuse on the agent's httpx clients (`httpx.Limits(max_keepalive_
+connections=0)`) — a heartbeat is infrequent enough that a fresh TCP+TLS
+handshake every time costs nothing worth optimizing for. A regression test
+reproduces the race deterministically (short server-side keep-alive rather
+than waiting out the real timeout) and was confirmed to fail without the
+fix. Landed on the certificates branch (PR #6, commit `47d7395`) rather
+than this one, since the bug originates in code that branch introduced —
+same reasoning as the Sprint C3 paho-mqtt hang fix above — then merged
+forward into PR #7.
+
+**This is worth generalizing, not filing away as a one-off:** every
+automated test in this delivery has used compressed intervals (heartbeats,
+polling, retries) to keep the suite fast, which is the right call for CI
+time but means none of them can catch a timing-dependent bug that only
+appears at real-world intervals. A deliberate manual run at production-
+realistic timing — not just a fast pytest pass — is worth doing again
+before H1 handover, not assumed covered by the suite being green.
+
 ---
 
 ## 8. Revision history
@@ -548,3 +575,4 @@ sequencing before C5 closes, not deferred indefinitely.
 |---|---|---|
 | 1.0 | 2026-07-26 | Initial Delivery 1 plan from XEDGE-DR-001 |
 | 1.1 | 2026-07-27 | Sprint C3 status row backfilled (was missing from §7's table despite its notes existing); Sprint C4 complete — status row + notes |
+| 1.2 | 2026-07-27 | Sprint C4 addendum: keep-alive connection-reuse bug found by manual verification, fixed, regression-tested |
