@@ -309,6 +309,8 @@ completed stories, carry-over, and a re-forecast against 2026-12-06.
 | 0 | ✅ Complete ([PR #2](https://github.com/sgbhavsar-cpu/XEdge/pull/2)) | XEDGE-400/401/402/403/404/405/406/407/408 | — | On plan |
 | C1 | ✅ Complete ([PR #3](https://github.com/sgbhavsar-cpu/XEdge/pull/3)) | XEDGE-410/411/412/413/414/415 | — | On plan |
 | C2 | ✅ Complete ([PR #4](https://github.com/sgbhavsar-cpu/XEdge/pull/4)) | XEDGE-420/421/422/423/424/425/426 | — | On plan |
+| C3 | ✅ Complete ([PR #5](https://github.com/sgbhavsar-cpu/XEdge/pull/5)) | XEDGE-430/431/432/433/434/435/436/437 | — | On plan |
+| C4 | ✅ Complete ([PR #6](https://github.com/sgbhavsar-cpu/XEdge/pull/6), [PR #7](https://github.com/sgbhavsar-cpu/XEdge/pull/7)) | XEDGE-440/441/442/443/444/445/446/447 | Agent-side proactive cert rotation (see notes) | On plan |
 
 ### Sprint 0 notes (2026-07-27 → 08-02)
 
@@ -473,6 +475,71 @@ hit the identical hang.
 **Carried into C4:** open item Q-4 (RTS timing vs. real hardware) — same
 as this sprint, unresolved.
 
+### Sprint C4 notes (certificates, MQTT TLS, gateway provisioning)
+
+All eight stories delivered, across two PRs ([#6](https://github.com/sgbhavsar-cpu/XEdge/pull/6):
+XEDGE-440/442/443; [#7](https://github.com/sgbhavsar-cpu/XEdge/pull/7):
+XEDGE-441/444/445/446/447).
+
+**The Fleet Manager became two services, not one.** ADR-013 describes
+post-enrollment device calls authenticating via mTLS, but TLS
+client-certificate enforcement (`ssl_cert_reqs=CERT_REQUIRED`) applies to
+the whole listening socket, before any request routing — it can't
+coexist on one port with join-token enrollment or admin/CLI traffic,
+neither of which has a client certificate yet. Confirmed uvicorn has no
+way to hand a route handler the peer certificate that *was* presented
+(grepped the installed package: no `peercert`/`getpeercert` anywhere), so
+per-device identification on the mTLS port still goes through
+`device_token` bearer auth, unchanged from Sprint 29 — defense in depth
+across two independent layers, not one layer doing both jobs. This was a
+real fork with a genuine cost tradeoff (a second port to firewall/compose/
+document vs. weaker enforcement), so it was put to the project owner
+rather than decided silently; the two-port split was the answer.
+
+**A real bug in this project's pinned httpx/httpcore**, not just a
+deprecation warning: `AsyncClient(cert=(...), verify=str(ca_path))`
+connects at the TLS layer but then fails every request with a bare
+`ReadError`. Root-caused with a from-scratch raw `asyncio`+`ssl` repro
+(bypassing uvicorn and httpx entirely) proving the certificates and
+handshake were fine independent of httpx. Fixed by building one
+`ssl.SSLContext` and passing it as `verify=`, per httpx's own suggested
+replacement for the deprecated string form — a shared helper now lives at
+`xedge/security/tls_context.py` and is used by both the fleet agent and
+the MQTT connector (XEDGE-441).
+
+**amqtt (the test-only broker) cannot enforce mandatory client
+certificates.** Reading `amqtt/broker.py` directly: a listener with
+`cafile` configured always sets `ssl.CERT_OPTIONAL`, never
+`CERT_REQUIRED` — it requests a client cert but accepts a connection
+without one. A test asserting "connecting without a cert is rejected"
+against this fixture was removed rather than left passing for the wrong
+reason; the surviving test proves the connector *can* present a client
+cert successfully, which is what it's actually responsible for. A real
+broker enforcing this (Mosquitto's `require_certificate true`, EMQX,
+HiveMQ) would reject at the same TLS layer `manager_device_app`'s
+`ssl_cert_reqs=CERT_REQUIRED` already demonstrates working, in
+`test_fleet_agent.py`.
+
+**The CRD's four gateway connection states aren't fully specified.**
+"Connected/Disconnected/Active/Inactive" (§4.9) is named but the
+boundaries between them aren't — `GatewayConnectionState`'s docstring
+records this project's own interpretation (a time-since-last-heartbeat
+classification, not ADR-011's consecutive-failure hysteresis, which is
+built for a poll model a pull-based heartbeat doesn't have) plainly as an
+assumption, not a customer confirmation. Low cost to be wrong about
+(a four-line enum mapping), flagged rather than silently guessed.
+
+**Carried into C5:** agent-side proactive certificate rotation. The
+rotation *endpoint* (XEDGE-443) works and is tested over real mTLS, but
+nothing on the device side yet decides "my certificate expires soon,
+rotate now" — doing so mid-run means tearing down and rebuilding the
+heartbeat loop's mTLS client to pick up the new certificate, a real
+piece of structural work in `fleet_heartbeat_loop` that was scoped out
+of this sprint's check-in rather than rushed. At the default 90-day
+`--cert-validity-days`, this matters before Delivery 1 handover
+(2026-12-06) if any device enrolls early in the window — worth
+sequencing before C5 closes, not deferred indefinitely.
+
 ---
 
 ## 8. Revision history
@@ -480,3 +547,4 @@ as this sprint, unresolved.
 | Version | Date | Change |
 |---|---|---|
 | 1.0 | 2026-07-26 | Initial Delivery 1 plan from XEDGE-DR-001 |
+| 1.1 | 2026-07-27 | Sprint C3 status row backfilled (was missing from §7's table despite its notes existing); Sprint C4 complete — status row + notes |
