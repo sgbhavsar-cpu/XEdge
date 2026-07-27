@@ -312,7 +312,7 @@ completed stories, carry-over, and a re-forecast against 2026-12-06.
 | C3 | ✅ Complete ([PR #5](https://github.com/sgbhavsar-cpu/XEdge/pull/5)) | XEDGE-430/431/432/433/434/435/436/437 | — | On plan |
 | C4 | ✅ Complete ([PR #6](https://github.com/sgbhavsar-cpu/XEdge/pull/6), [PR #7](https://github.com/sgbhavsar-cpu/XEdge/pull/7)) | XEDGE-440/441/442/443/444/445/446/447 | Agent-side proactive cert rotation (see notes) | On plan |
 | C5 | ✅ Complete ([PR #8](https://github.com/sgbhavsar-cpu/XEdge/pull/8), [PR #9](https://github.com/sgbhavsar-cpu/XEdge/pull/9), [PR #10](https://github.com/sgbhavsar-cpu/XEdge/pull/10)) | XEDGE-450/451/452/453/454/455; XEDGE-443's agent-side rotation (carried from C4, resolved in PR #10 — see addendum) | mqtt_broker ACL editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan |
-| C6 | ✅ Complete ([PR #11](https://github.com/sgbhavsar-cpu/XEdge/pull/11), PR #12) | XEDGE-460/461/462/463/464/465/466/467 | smtp.alarm_notifications/scheduled_reports editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan |
+| C6 | ✅ Complete ([PR #11](https://github.com/sgbhavsar-cpu/XEdge/pull/11), [PR #12](https://github.com/sgbhavsar-cpu/XEdge/pull/12)) | XEDGE-460/461/462/463/464/465/466/467 | smtp.alarm_notifications/scheduled_reports editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan |
 
 ### Sprint 0 notes (2026-07-27 → 08-02)
 
@@ -679,7 +679,7 @@ the new certificate — not just that the file on disk changed.
 ### Sprint C6 notes (Asset Management, SMTP)
 
 All eight stories delivered, across two PRs ([#11](https://github.com/sgbhavsar-cpu/XEdge/pull/11):
-XEDGE-460/461/462/463/464/465; PR #12: XEDGE-466/467).
+XEDGE-460/461/462/463/464/465; [#12](https://github.com/sgbhavsar-cpu/XEdge/pull/12): XEDGE-466/467).
 
 **Open item Q-3 resolved: reference/grouping view, not asset-first.**
 ADR-010 already fixed the *data model* (metadata layer over the driver-
