@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from xedge.fleet.registry import DeviceRecord, DeviceRegistry
+import pytest
+
+from xedge.fleet.registry import DeviceRecord, DeviceRegistry, GatewayConnectionState
 
 
 def test_register_returns_a_token_that_verifies(tmp_path: Path) -> None:
@@ -68,6 +70,10 @@ def test_status_is_offline_after_missed_heartbeats() -> None:
         pending_config_version=0,
         cert_serial_number=None,
         cert_not_after=None,
+        serial_number=None,
+        make=None,
+        protocol=None,
+        hardware_firmware_version=None,
     )
     assert record.status == "offline"
 
@@ -146,6 +152,108 @@ def test_unknown_join_token_is_rejected(tmp_path: Path) -> None:
     registry = DeviceRegistry(tmp_path / "devices.db")
 
     assert registry.consume_join_token("dev1", "not-a-real-token") is False
+
+
+def test_update_metadata_sets_only_the_provided_fields(tmp_path: Path) -> None:
+    registry = DeviceRegistry(tmp_path / "devices.db")
+    registry.register("dev1", "Original Name", None, heartbeat_interval_seconds=60)
+
+    updated = registry.update_metadata(
+        "dev1", {"serial_number": "SN-123", "make": "Acme Gateways"}
+    )
+
+    assert updated is True
+    record = registry.get("dev1")
+    assert record.serial_number == "SN-123"
+    assert record.make == "Acme Gateways"
+    assert record.display_name == "Original Name"  # untouched -- not in `fields`
+    assert record.protocol is None
+
+
+def test_update_metadata_can_clear_a_field_with_explicit_none(tmp_path: Path) -> None:
+    registry = DeviceRegistry(tmp_path / "devices.db")
+    registry.register("dev1", None, None, heartbeat_interval_seconds=60)
+    registry.update_metadata("dev1", {"make": "Acme Gateways"})
+
+    registry.update_metadata("dev1", {"make": None})
+
+    assert registry.get("dev1").make is None
+
+
+def test_update_metadata_for_unknown_device_returns_false(tmp_path: Path) -> None:
+    registry = DeviceRegistry(tmp_path / "devices.db")
+
+    assert registry.update_metadata("no-such-device", {"make": "Acme"}) is False
+
+
+def test_update_metadata_rejects_an_unknown_field(tmp_path: Path) -> None:
+    registry = DeviceRegistry(tmp_path / "devices.db")
+    registry.register("dev1", None, None, heartbeat_interval_seconds=60)
+
+    with pytest.raises(ValueError, match="not_a_real_field"):
+        registry.update_metadata("dev1", {"not_a_real_field": "x"})
+
+
+def test_connection_state_is_inactive_before_any_heartbeat(tmp_path: Path) -> None:
+    registry = DeviceRegistry(tmp_path / "devices.db")
+    registry.register("dev1", None, None, heartbeat_interval_seconds=60)
+
+    assert registry.get("dev1").connection_state == GatewayConnectionState.INACTIVE
+
+
+def test_connection_state_is_active_immediately_after_heartbeat(tmp_path: Path) -> None:
+    registry = DeviceRegistry(tmp_path / "devices.db")
+    registry.register("dev1", None, None, heartbeat_interval_seconds=60)
+    registry.heartbeat("dev1", None, None, None, None)
+
+    assert registry.get("dev1").connection_state == GatewayConnectionState.ACTIVE
+
+
+def test_connection_state_is_connected_when_late_but_within_the_offline_threshold() -> None:
+    record = DeviceRecord(
+        device_id="dev1",
+        display_name=None,
+        registered_at=datetime.now(UTC),
+        agent_version=None,
+        heartbeat_interval_seconds=10,
+        last_seen_at=datetime.now(UTC) - timedelta(seconds=15),
+        driver_count=None,
+        uptime_seconds=None,
+        last_config_apply=None,
+        has_pending_config=False,
+        pending_config_version=0,
+        cert_serial_number=None,
+        cert_not_after=None,
+        serial_number=None,
+        make=None,
+        protocol=None,
+        hardware_firmware_version=None,
+    )
+    assert record.connection_state == GatewayConnectionState.CONNECTED
+    assert record.status == "online"  # status's own threshold (3x) isn't reached yet either
+
+
+def test_connection_state_is_disconnected_past_the_offline_threshold() -> None:
+    record = DeviceRecord(
+        device_id="dev1",
+        display_name=None,
+        registered_at=datetime.now(UTC),
+        agent_version=None,
+        heartbeat_interval_seconds=10,
+        last_seen_at=datetime.now(UTC) - timedelta(seconds=1000),
+        driver_count=None,
+        uptime_seconds=None,
+        last_config_apply=None,
+        has_pending_config=False,
+        pending_config_version=0,
+        cert_serial_number=None,
+        cert_not_after=None,
+        serial_number=None,
+        make=None,
+        protocol=None,
+        hardware_firmware_version=None,
+    )
+    assert record.connection_state == GatewayConnectionState.DISCONNECTED
 
 
 def test_record_certificate_issued_updates_the_device_record(tmp_path: Path) -> None:

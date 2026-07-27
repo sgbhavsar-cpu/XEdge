@@ -1,9 +1,13 @@
 """Fleet Manager join-token/admin REST API (Sprint 29, XEDGE-211/213;
-reworked Sprint C4, XEDGE-442; ADR-013 §3): a separate, standalone service
-from the per-device xEdge process — it never imports
-`xedge.core`/`xedge.drivers`, only `xedge.fleet.registry` and
-`xedge.security`, matching Sprint 32's documented split ("the two share no
-code").
+reworked Sprint C4, XEDGE-442/444/446; ADR-013 §3): a separate, standalone
+service from the per-device xEdge process — it never imports
+`xedge.drivers` or `xedge.core.supervisor` (the actual driver/runtime
+machinery), only `xedge.fleet.registry`, `xedge.security`, and
+`xedge.core.config`'s dependency-free `ConfigValidator` (jsonschema +
+stdlib only, no further xedge-internal imports of its own — confirmed by
+reading that module's own import list), matching Sprint 32's documented
+split ("the two share no code" — read as "no *driver* code," not literally
+zero symbols from anywhere under the `xedge.core` namespace).
 
 This is the *unauthenticated-by-certificate* half of the manager: the port
 an un-enrolled device reaches to enroll, and an operator/CLI reaches for
@@ -37,6 +41,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel
 
 from xedge import __version__
+from xedge.core.config import ConfigValidationError, ConfigValidator
 from xedge.fleet._device_auth import bearer_value
 from xedge.fleet.registry import DeviceRegistry
 from xedge.security.ca import CertificateAuthority, InvalidCsrError
@@ -62,11 +67,26 @@ class _ConfigPushBody(BaseModel):
     config: dict[str, Any]
 
 
+class _UpdateMetadataBody(BaseModel):
+    """All fields optional and unset by default (Sprint C4, XEDGE-444) —
+    `model_dump(exclude_unset=True)` is how the endpoint below tells
+    `DeviceRegistry.update_metadata` "the operator didn't mention this
+    field" apart from "the operator explicitly set this field to null,"
+    which a bare default of `None` on every field couldn't distinguish."""
+
+    display_name: str | None = None
+    serial_number: str | None = None
+    make: str | None = None
+    protocol: str | None = None
+    hardware_firmware_version: str | None = None
+
+
 def _device_summary(record: Any) -> dict[str, Any]:
     return {
         "device_id": record.device_id,
         "display_name": record.display_name,
         "status": record.status,
+        "connection_state": record.connection_state.value,
         "registered_at": record.registered_at.isoformat(),
         "agent_version": record.agent_version,
         "last_seen_at": record.last_seen_at.isoformat() if record.last_seen_at else None,
@@ -77,6 +97,10 @@ def _device_summary(record: Any) -> dict[str, Any]:
         "pending_config_version": record.pending_config_version,
         "cert_serial_number": record.cert_serial_number,
         "cert_not_after": record.cert_not_after.isoformat() if record.cert_not_after else None,
+        "serial_number": record.serial_number,
+        "make": record.make,
+        "protocol": record.protocol,
+        "hardware_firmware_version": record.hardware_firmware_version,
     }
 
 
@@ -86,6 +110,7 @@ def create_fleet_manager_app(
     *,
     admin_token: str,
     cert_validity_days: int,
+    config_validator: ConfigValidator | None = None,
 ) -> FastAPI:
     app = FastAPI(title="xEdge Fleet Manager", version=__version__)
 
@@ -155,6 +180,20 @@ def create_fleet_manager_app(
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"No such device: {device_id!r}")
         return _device_summary(record)
 
+    @app.patch("/api/v1/fleet/devices/{device_id}/metadata")
+    def update_metadata(
+        device_id: str, body: _UpdateMetadataBody, _auth: None = Depends(require_admin)
+    ) -> dict[str, Any]:
+        """XEDGE-444: gateway provisioning metadata (CRD §4.9) an operator
+        knows about the physical device — serial number, make, protocol,
+        firmware version — that xEdge's own software has no way to
+        discover on its own. Only the fields present in the request body
+        are touched; omitted fields keep their current value."""
+        fields = body.model_dump(exclude_unset=True)
+        if not registry.update_metadata(device_id, fields):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"No such device: {device_id!r}")
+        return _device_summary(registry.get(device_id))
+
     @app.post("/api/v1/fleet/devices/{device_id}/config", status_code=status.HTTP_202_ACCEPTED)
     def push_config(
         device_id: str, body: _ConfigPushBody, _auth: None = Depends(require_admin)
@@ -162,7 +201,21 @@ def create_fleet_manager_app(
         """Queues `config` for delivery on the device's next heartbeat
         (XEDGE-213) — not applied synchronously; see ADR-009 for why this
         is a pull, not a push, despite the story title. Returns 202, not
-        200: "accepted for delivery," matching the async reality."""
+        200: "accepted for delivery," matching the async reality.
+
+        XEDGE-446: validated against the core config schema *here*, not
+        only on the device — an operator authoring a config finds out
+        immediately, in this response, rather than only on the device's
+        next heartbeat report (`last_config_apply.success = False`,
+        potentially minutes later). `config_validator` is optional only
+        because not every caller constructing this app (chiefly tests
+        that don't care about this concern) wants to supply one;
+        `xedge.fleet.manager_cli` always does."""
+        if config_validator is not None:
+            try:
+                config_validator.validate(body.config)
+            except ConfigValidationError as exc:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
         try:
             version = registry.queue_config(device_id, body.config)
         except KeyError as exc:

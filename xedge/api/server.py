@@ -595,6 +595,10 @@ def create_app(
             "last_heartbeat_ok": fleet_status.last_heartbeat_ok,
             "last_error": fleet_status.last_error,
             "last_config_apply": fleet_status.last_config_apply,
+            "connection_state": fleet_status.connection_state.value,
+            "cert_not_after": (
+                fleet_status.cert_not_after.isoformat() if fleet_status.cert_not_after else None
+            ),
         }
 
     @app.get("/api/v1/sntp/status")

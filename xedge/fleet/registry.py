@@ -17,6 +17,7 @@ hash of" posture as `xedge.api.auth.UserStore`'s bcrypt hashes.
 
 from __future__ import annotations
 
+import enum
 import hashlib
 import hmac
 import json
@@ -31,6 +32,14 @@ from typing import Any
 # intervals have elapsed with no contact — matches the same "N x interval"
 # staleness heuristic xedge.core.system_tags uses for a driver instance.
 OFFLINE_AFTER_MISSED_HEARTBEATS = 3
+
+# Metadata columns `update_metadata` is allowed to touch (Sprint C4,
+# XEDGE-444) — a fixed whitelist, not whatever keys a caller happens to
+# pass, so a typo in a future call site fails loudly instead of silently
+# no-op-ing or (worse) building a SQL column list from unchecked input.
+_METADATA_COLUMNS = frozenset(
+    {"display_name", "serial_number", "make", "protocol", "hardware_firmware_version"}
+)
 
 _CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS devices (
@@ -47,7 +56,11 @@ CREATE TABLE IF NOT EXISTS devices (
     pending_config_json TEXT,
     pending_config_version INTEGER NOT NULL DEFAULT 0,
     cert_serial_number TEXT,
-    cert_not_after TEXT
+    cert_not_after TEXT,
+    serial_number TEXT,
+    make TEXT,
+    protocol TEXT,
+    hardware_firmware_version TEXT
 )
 """
 
@@ -72,6 +85,64 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+class GatewayConnectionState(enum.Enum):
+    """The CRD's own four-state vocabulary (§4.9), via the shared
+    connectivity concept ADR-011 Part 3 establishes
+    (`xedge.core.connectivity`) — not a literal reuse of
+    `ConnectivityTracker`'s consecutive-failure/recovery hysteresis,
+    which is built for a *poll* model (a driver actively attempts reads
+    and feeds each outcome in). A gateway's heartbeat is *pull*: the
+    manager never attempts anything, it only ever notices time passing
+    since the last contact. So this adapts the same four-state shape to a
+    time-since-last-heartbeat computation instead — see
+    `DeviceRecord.connection_state`.
+
+    INACTIVE: never enrolled/heartbeated at all.
+    ACTIVE: heartbeating within its own configured interval.
+    CONNECTED: heartbeat is late but not yet past the same
+        `OFFLINE_AFTER_MISSED_HEARTBEATS` threshold `status` already uses —
+        "still connected," just not perfectly punctual.
+    DISCONNECTED: past that threshold.
+
+    The CRD names these states but doesn't further define the boundary
+    between "Connected" and "Active," or "Disconnected" and "Inactive" —
+    this mapping is this project's own interpretation, not a customer
+    confirmation; revisit if the customer's actual expectation differs.
+    """
+
+    INACTIVE = "inactive"
+    ACTIVE = "active"
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
+
+
+def classify_connection_state(
+    last_contact_at: datetime | None,
+    heartbeat_interval_seconds: float,
+    *,
+    now: datetime | None = None,
+) -> GatewayConnectionState:
+    """The pure time-since-last-contact computation `DeviceRecord.
+    connection_state` uses — factored out (Sprint C4, XEDGE-447) so the
+    fleet *agent* can classify its own connectivity the same way for the
+    device-local Web UI's fleet status card
+    (`xedge.fleet.agent.FleetAgentStatus.connection_state`), without every
+    caller needing a `DeviceRecord`/registry row to do it. `last_contact_at`
+    is deliberately a bare parameter name, not `last_seen_at` — the
+    manager's "last time I saw this device" and a device's own "last time
+    my heartbeat succeeded" are the same computation over different data,
+    not the same field."""
+    now = now if now is not None else datetime.now(UTC)
+    if last_contact_at is None:
+        return GatewayConnectionState.INACTIVE
+    age = now - last_contact_at
+    if age <= timedelta(seconds=heartbeat_interval_seconds):
+        return GatewayConnectionState.ACTIVE
+    if age <= timedelta(seconds=heartbeat_interval_seconds * OFFLINE_AFTER_MISSED_HEARTBEATS):
+        return GatewayConnectionState.CONNECTED
+    return GatewayConnectionState.DISCONNECTED
+
+
 @dataclass(slots=True)
 class DeviceRecord:
     device_id: str
@@ -87,13 +158,19 @@ class DeviceRecord:
     pending_config_version: int
     cert_serial_number: str | None
     cert_not_after: datetime | None
+    serial_number: str | None
+    make: str | None
+    protocol: str | None
+    hardware_firmware_version: str | None
 
     @property
     def status(self) -> str:
         """`unknown` (never heartbeated), `online`, or `offline` — computed
         from `last_seen_at` rather than stored, since "now" changes on
         every read (same reasoning as xedge.core.supervisor's live-computed
-        `last_read_age_seconds`)."""
+        `last_read_age_seconds`). Kept alongside `connection_state`
+        (XEDGE-445) rather than replaced by it — existing consumers of this
+        3-value field are unaffected by the CRD's 4-value ask."""
         if self.last_seen_at is None:
             return "unknown"
         threshold = timedelta(
@@ -102,6 +179,14 @@ class DeviceRecord:
         if datetime.now(UTC) - self.last_seen_at > threshold:
             return "offline"
         return "online"
+
+    @property
+    def connection_state(self) -> GatewayConnectionState:
+        """XEDGE-445 (ADR-013 §2, "four-state gateway connection model via
+        the XEDGE-420 adapter"; see `GatewayConnectionState`'s docstring
+        for what "adapter" means here). Live-computed, same reasoning as
+        `status` above."""
+        return classify_connection_state(self.last_seen_at, self.heartbeat_interval_seconds)
 
 
 def _row_to_record(row: sqlite3.Row) -> DeviceRecord:
@@ -123,6 +208,10 @@ def _row_to_record(row: sqlite3.Row) -> DeviceRecord:
         cert_not_after=(
             datetime.fromisoformat(row["cert_not_after"]) if row["cert_not_after"] else None
         ),
+        serial_number=row["serial_number"],
+        make=row["make"],
+        protocol=row["protocol"],
+        hardware_firmware_version=row["hardware_firmware_version"],
     )
 
 
@@ -308,6 +397,34 @@ class DeviceRegistry:
             "UPDATE devices SET cert_serial_number = ?, cert_not_after = ? WHERE device_id = ?",
             (str(serial_number), not_after.isoformat(), device_id),
         )
+
+    def update_metadata(self, device_id: str, fields: dict[str, str | None]) -> bool:
+        """Update any subset of a device's descriptive metadata (Sprint C4,
+        XEDGE-444: display name, serial number, make, protocol, hardware
+        firmware version — distinct from `agent_version`, which is the
+        xEdge *software* version and is only ever set by the device itself,
+        via `heartbeat`). `fields` keys must be a subset of
+        `_METADATA_COLUMNS` — the caller (the admin endpoint, via
+        Pydantic's `exclude_unset`) decides which fields were actually
+        provided in a request; this method doesn't guess at that from a
+        bare `None`, since every one of these columns is independently
+        nullable. Returns `False` if no such device exists."""
+        unknown = set(fields) - _METADATA_COLUMNS
+        if unknown:
+            raise ValueError(f"Not a metadata field: {sorted(unknown)}")
+        if not fields:
+            return self.get(device_id) is not None
+        set_clause = ", ".join(f"{column} = ?" for column in fields)
+        # The interpolated column names above are checked against the
+        # hardcoded _METADATA_COLUMNS whitelist just above, never
+        # unchecked input; every value is still bound via execute()'s
+        # parameterized second argument, never interpolated into the SQL.
+        query = f"UPDATE devices SET {set_clause} WHERE device_id = ?"  # nosec B608
+        cursor = self._conn.execute(
+            query,
+            (*fields.values(), device_id),
+        )
+        return cursor.rowcount > 0
 
     def get(self, device_id: str) -> DeviceRecord | None:
         row = self._conn.execute(

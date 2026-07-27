@@ -34,10 +34,12 @@ from typing import Any
 
 import httpx
 import yaml
+from cryptography import x509
 
 from xedge import __version__
 from xedge.core.config import ConfigValidationError, ConfigValidator
 from xedge.core.supervisor import DriverSupervisor
+from xedge.fleet.registry import GatewayConnectionState, classify_connection_state
 from xedge.observability.logging import get_logger
 from xedge.security.csr import generate_key_and_csr
 from xedge.security.tls_context import build_mtls_client_context
@@ -83,10 +85,25 @@ class FleetAgentStatus:
     manager_url: str | None = None
     device_id: str | None = None
     registered: bool = False
+    heartbeat_interval_seconds: float = 60
     last_heartbeat_at: datetime | None = None
     last_heartbeat_ok: bool | None = None
     last_error: str | None = None
     last_config_apply: dict[str, Any] | None = None
+    cert_not_after: datetime | None = None
+
+    @property
+    def connection_state(self) -> GatewayConnectionState:
+        """Sprint C4, XEDGE-447 — the device-local Web UI's fleet status
+        card shows this device's *own* view of its connectivity, using the
+        same four-state vocabulary the manager computes for its view of
+        this same device (`xedge.fleet.registry.DeviceRecord.
+        connection_state`) — same classification function, applied to
+        "when did *my* last heartbeat succeed" instead of "when did the
+        *manager* last hear from this device." The two can disagree
+        briefly (e.g. right after a heartbeat the manager hasn't received
+        yet) without either being wrong."""
+        return classify_connection_state(self.last_heartbeat_at, self.heartbeat_interval_seconds)
 
 
 def _read_text_if_present(path: Path) -> str | None:
@@ -185,12 +202,16 @@ async def fleet_heartbeat_loop(
     status.enabled = True
     status.manager_url = config.manager_url
     status.device_id = config.device_id
+    status.heartbeat_interval_seconds = config.heartbeat_interval_seconds
 
     await _ensure_enrolled(paths, config)
     status.registered = True
     device_token = _read_text_if_present(paths.device_token)
     if device_token is None:
         raise RuntimeError("enrollment just completed but left no device_token")
+    status.cert_not_after = x509.load_pem_x509_certificate(
+        paths.device_cert.read_bytes()
+    ).not_valid_after_utc
 
     # Result of the *previous* heartbeat's pending-config application,
     # reported on the *next* heartbeat (XEDGE-213's "reports result") —

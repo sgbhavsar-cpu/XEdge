@@ -127,7 +127,26 @@
             "connect_timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "default": 10 },
             "qos": { "type": "integer", "enum": [0, 1, 2], "default": 1 },
             "username": { "type": "string" },
-            "password": { "type": "string", "x-secret": true }
+            "password": { "type": "string", "x-secret": true },
+            "tls_enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Sprint C4, XEDGE-441 (CRD §4.10; closes finding F-10 and SR 3.1 of the SL-1 gap analysis): connect to the broker over TLS instead of plaintext. Independent of the fleet agent's own certificate (XEDGE-442) -- a customer's MQTT broker is typically a separate trust domain from xEdge's fleet PKI."
+            },
+            "tls_ca_certs_path": {
+              "type": "string",
+              "description": "CA bundle verifying the broker's certificate. Omit to use the system trust store (a publicly-trusted broker certificate)."
+            },
+            "tls_certfile_path": {
+              "type": "string",
+              "description": "Client certificate for mTLS to the broker, if it requires one. Requires tls_keyfile_path unless this file contains both the certificate and key."
+            },
+            "tls_keyfile_path": { "type": "string" },
+            "tls_insecure": {
+              "type": "boolean",
+              "default": false,
+              "description": "Disables broker *hostname* verification only (not certificate validity) -- for a broker reachable only by an IP its certificate can't reasonably enumerate in advance."
+            }
           }
         }
       }

@@ -432,6 +432,11 @@ def _build_northbound_dispatcher(
             qos=mqtt_config.get("qos", 1),
             username=mqtt_config.get("username"),
             password=mqtt_config.get("password"),
+            tls_enabled=mqtt_config.get("tls_enabled", False),
+            tls_ca_certs_path=mqtt_config.get("tls_ca_certs_path"),
+            tls_certfile_path=mqtt_config.get("tls_certfile_path"),
+            tls_keyfile_path=mqtt_config.get("tls_keyfile_path"),
+            tls_insecure=mqtt_config.get("tls_insecure", False),
         ),
         # Sprint 31, XEDGE-223: routes decoded NCMD write commands through
         # the same WriteRouter the REST API's write endpoint uses.

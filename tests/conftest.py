@@ -11,7 +11,11 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from tests.fixtures.bacnet_device import bacnet_test_device  # noqa: F401 — re-exported fixture
-from tests.fixtures.mqtt_broker import mqtt_broker  # noqa: F401 — re-exported fixture
+from tests.fixtures.mqtt_broker import (  # noqa: F401 — re-exported fixtures
+    mqtt_broker,
+    mqtt_broker_mtls,
+    mqtt_broker_tls,
+)
 from tests.fixtures.opcua_server import opcua_test_server  # noqa: F401 — re-exported fixture
 from xedge.drivers.base import TagUpdate
 

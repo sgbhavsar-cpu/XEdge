@@ -191,6 +191,25 @@ const xedgeUi = (() => {
     return iso ? new Date(iso).toLocaleString() : "never";
   }
 
+  // XEDGE-447: how many days out a certificate must be before the fleet
+  // card starts calling it out — half of the shortest validity period
+  // this project actually issues (device/manager leaf certs default to
+  // 90 days; see xedge.fleet.manager_cli's --cert-validity-days), so an
+  // operator has a comfortable window to notice before expiry actually
+  // matters (rotation itself is not yet automatic on the agent side).
+  const CERT_EXPIRY_WARNING_DAYS = 14;
+
+  function formatCertExpiry(iso) {
+    if (!iso) return "not enrolled";
+    const daysRemaining = (new Date(iso) - new Date()) / (1000 * 60 * 60 * 24);
+    const formatted = new Date(iso).toLocaleDateString();
+    if (daysRemaining < 0) return `${formatted} (expired)`;
+    if (daysRemaining < CERT_EXPIRY_WARNING_DAYS) {
+      return `${formatted} (expires in ${Math.floor(daysRemaining)}d)`;
+    }
+    return formatted;
+  }
+
   async function pollFleetStatusOnce() {
     try {
       const response = await fetch("/api/v1/fleet/status");
@@ -207,6 +226,8 @@ const xedgeUi = (() => {
             ? `no — ${data.last_error}`
             : "not yet";
       }
+      const connectionStateCell = document.getElementById("fleet-connection-state");
+      if (connectionStateCell) connectionStateCell.textContent = data.connection_state || "";
       const managerCell = document.getElementById("fleet-manager-url");
       if (managerCell) managerCell.textContent = data.manager_url || "";
       const heartbeatCell = document.getElementById("fleet-last-heartbeat");
@@ -223,6 +244,8 @@ const xedgeUi = (() => {
           ? `v${apply.version}: ${apply.success ? "applied" : `rejected — ${apply.error}`}`
           : "none";
       }
+      const certExpiryCell = document.getElementById("fleet-cert-expiry");
+      if (certExpiryCell) certExpiryCell.textContent = formatCertExpiry(data.cert_not_after);
     } catch (err) {
       // Network hiccups shouldn't spam the console on every poll tick.
     }

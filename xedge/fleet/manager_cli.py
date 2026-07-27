@@ -1,7 +1,7 @@
 """`xedge-fleet-manager`: standalone entrypoint for the Fleet Manager
-service (Sprint 29, XEDGE-211/215; reworked Sprint C4, XEDGE-440/442/443) —
-a separate process/container from any individual xEdge device, per
-Sprint 32's documented split.
+service (Sprint 29, XEDGE-211/215; reworked Sprint C4,
+XEDGE-440/442/443/446) — a separate process/container from any individual
+xEdge device, per Sprint 32's documented split.
 
 Serves **two ports**, not one (ADR-013 §3/§4):
 
@@ -40,11 +40,13 @@ import ipaddress
 import secrets
 import ssl
 import sys
+from importlib import resources
 from pathlib import Path
 
 import uvicorn
 
 from xedge import __version__
+from xedge.core.config import ConfigValidator
 from xedge.fleet.manager_app import create_fleet_manager_app
 from xedge.fleet.manager_device_app import create_fleet_device_app
 from xedge.fleet.registry import DeviceRegistry
@@ -52,6 +54,21 @@ from xedge.security.ca import load_or_create_ca
 
 _CA_COMMON_NAME = "xedge-fleet-ca"
 _MANAGER_IDENTITY_COMMON_NAME = "xedge-fleet-manager"
+_SCHEMA_FILENAME = "xedge-core.schema.json"
+
+
+def _default_schema_path() -> Path:
+    """Same dual-location resolution as `xedge.core.main._default_schema_path`
+    (duplicated rather than imported: importing `xedge.core.main` itself
+    would pull in the full driver/supervisor composition root this module
+    otherwise avoids — see the module docstring). Packaged copy first
+    (`xedge/schema/...`, via `[tool.hatch.build.targets.wheel.
+    force-include]` — present after a real `pip install`); falls back to
+    the repo-root `config/schema/` location for `pip install -e .`."""
+    packaged = resources.files("xedge") / "schema" / _SCHEMA_FILENAME
+    if packaged.is_file():
+        return Path(str(packaged))
+    return Path(__file__).resolve().parent.parent.parent / "config" / "schema" / _SCHEMA_FILENAME
 
 
 def _load_or_create_token(path: Path) -> str:
@@ -110,6 +127,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "on its self-issued identity certificate alongside 127.0.0.1 (always included for "
         "loopback/local-dev reachability) — required for TLS hostname verification to pass "
         "against anything other than that DNS name",
+    )
+    parser.add_argument(
+        "--schema-path",
+        type=Path,
+        default=None,
+        help="Core config schema for validating a pushed config before queueing it "
+        "(XEDGE-446). Default: auto-detected packaged/repo-root location.",
     )
     parser.add_argument("--version", action="version", version=f"xedge-fleet-manager {__version__}")
     return parser.parse_args(argv)
@@ -172,8 +196,15 @@ def run(argv: list[str] | None = None) -> int:
         san_ip_addresses=(ipaddress.ip_address("127.0.0.1"),),
     )
 
+    schema_path = args.schema_path or _default_schema_path()
+    config_validator = ConfigValidator.from_file(schema_path)
+
     public_app = create_fleet_manager_app(
-        registry, ca, admin_token=admin_token, cert_validity_days=args.cert_validity_days
+        registry,
+        ca,
+        admin_token=admin_token,
+        cert_validity_days=args.cert_validity_days,
+        config_validator=config_validator,
     )
     device_app = create_fleet_device_app(registry, ca, cert_validity_days=args.cert_validity_days)
 
