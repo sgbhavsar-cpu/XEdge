@@ -42,6 +42,7 @@ class TestDataPaths:
         assert paths.config_history == Path("/srv/xedge/config-history")
         assert paths.webui == Path("/srv/xedge/webui")
         assert paths.fleet_device_token == Path("/srv/xedge/fleet/device_token")
+        assert paths.mqtt_broker_password_file == Path("/srv/xedge/mqtt-broker/passwords")
 
     def test_one_setting_relocates_every_persistent_path(self, tmp_path: Path) -> None:
         """The exact regression: overriding only the data root must move the

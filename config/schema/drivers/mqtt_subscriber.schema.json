@@ -45,6 +45,11 @@
         "additionalProperties": false,
         "properties": {
           "id": { "type": "string", "minLength": 1 },
+          "scan_rate_ms": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Accepted but unused: MQTT subscriptions are push-based, not polled, so there is no scan rate to configure. Present only so the Web UI's driver-type-agnostic 'add tag group' flow (which stubs every new group with a default scan_rate_ms, matching every poll-based driver type) doesn't fail validation for this one push-based type."
+          },
           "tags": {
             "type": "array",
             "minItems": 1,

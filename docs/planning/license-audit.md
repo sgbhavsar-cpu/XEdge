@@ -129,11 +129,18 @@ XEDGE-DR-001 D-12). Entries below record the *candidate* and the
      this development environment. Carried forward as part of open item
      Q-6 (HIL pass) rather than invented a number for — stated plainly
      rather than assumed fine.
-   - **TLS/auth/ACL scope** — scoped as XEDGE-454, same sprint, per
-     ADR-012 §3's requirement that this not be optional. Verification
-     recorded here precedes the implementation work in this sprint's
-     commit history — check XEDGE-454's own commit for delivered-vs-
-     planned status if reading this after the fact.
+   - **TLS/auth/ACL scope** — delivered as XEDGE-454, same sprint, per
+     ADR-012 §3's requirement that this not be optional: TLS listener,
+     username/password auth (`FileAuthPlugin`, off by default —
+     `allow_anonymous` must be explicitly set), and publish/subscribe
+     topic ACLs (`TopicAccessControlListPlugin`), all against a real
+     client in `tests/integration/test_mqtt_broker.py`, not mocked. Two
+     more amqtt-specific findings surfaced verifying this (the ACL
+     plugin's publish/subscribe asymmetry, and `Broker.shutdown()`
+     hanging on an unhandshaked connection) — see
+     `xedge/northbound/mqtt_broker.py`'s module docstring and
+     crd-delivery-plan.md's Sprint C5 notes for the full write-up, not
+     duplicated here.
 7. **pycomm3 verification** (ADR-012 P-1) — license and maintenance from
    package metadata. Due sprint C6. **Blocked behind open item Q-7**
    (whether CIP implicit I/O is required), which decides whether a library

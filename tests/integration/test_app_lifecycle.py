@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 MINIMAL_CONFIG = REPO_ROOT / "config" / "examples" / "modbus-minimal.yaml"
 _TEST_API_PORT = 18765
 _TEST_HTTPS_API_PORT = 18766
+_TEST_MQTT_BROKER_PORT = 18767
 
 
 async def test_async_main_starts_and_shuts_down_cleanly(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
@@ -255,6 +256,74 @@ async def test_async_main_survives_rest_api_bind_failure(monkeypatch, tmp_path: 
             "async_main crashed instead of surviving the REST API startup failure "
             f"(exception: {task.exception() if task.done() else None})"
         )
+    finally:
+        shutdown_event.set()
+        exit_code = await asyncio.wait_for(task, timeout=5.0)
+        assert exit_code == 0
+
+
+async def test_async_main_starts_the_embedded_mqtt_broker_when_enabled(monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
+    """XEDGE-453: main.py owns this service's start/stop lifecycle the same
+    way it owns the OPC UA server's. Confirms the actual async_main wiring
+    end-to-end (import, build+start in the startup sequence, stop in the
+    shutdown sequence) -- MqttBrokerService's own behavior (auth, ACLs,
+    TLS) is covered in depth by tests/integration/test_mqtt_broker.py."""
+    import paho.mqtt.client as mqtt
+    from paho.mqtt.enums import CallbackAPIVersion
+
+    shutdown_event = asyncio.Event()
+
+    async def wait_for_test_shutdown() -> None:
+        await shutdown_event.wait()
+
+    monkeypatch.setattr(main_module, "_wait_for_shutdown_signal", wait_for_test_shutdown)
+
+    config_path = tmp_path / "xedge.yaml"
+    config_path.write_text(
+        MINIMAL_CONFIG.read_text(encoding="utf-8")
+        + f"\ndata_dir: {tmp_path}\n"
+        + "\napi:\n  enabled: false\n"
+        + "\nmetrics:\n  enabled: false\n"
+        + "\nmqtt_broker:\n"
+        + "  enabled: true\n"
+        + f"  port: {_TEST_MQTT_BROKER_PORT}\n"
+        + "  allow_anonymous: true\n",
+        encoding="utf-8",
+    )
+
+    task = asyncio.create_task(
+        main_module.async_main(config_path, main_module._DEFAULT_SCHEMA_PATH)
+    )
+    try:
+        connected = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def on_connect(c, userdata, flags, reason_code, properties=None):  # type: ignore[no-untyped-def]
+            loop.call_soon_threadsafe(connected.set)
+
+        client = mqtt.Client(CallbackAPIVersion.VERSION2, reconnect_on_failure=False)
+        client.on_connect = on_connect
+        # Retries a real MQTT connect attempt rather than probing the port
+        # with a bare TCP connect-and-close first: amqtt's Broker.shutdown()
+        # can hang indefinitely if any connection ever reached the listener
+        # without completing a handshake (confirmed directly against
+        # amqtt.broker.Broker -- see xedge.northbound.mqtt_broker's module
+        # docstring), which a bare probe here would trigger for this test's
+        # own later shutdown.
+        for _ in range(100):
+            try:
+                await asyncio.to_thread(client.connect, "127.0.0.1", _TEST_MQTT_BROKER_PORT, 10)
+                break
+            except OSError:
+                await asyncio.sleep(0.05)
+        else:
+            pytest.fail("embedded MQTT broker never became reachable")
+        client.loop_start()
+        try:
+            await asyncio.wait_for(connected.wait(), timeout=3.0)
+        finally:
+            client.loop_stop()
+            client.disconnect()
     finally:
         shutdown_event.set()
         exit_code = await asyncio.wait_for(task, timeout=5.0)

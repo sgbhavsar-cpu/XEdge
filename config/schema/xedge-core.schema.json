@@ -388,6 +388,58 @@
           "description": "Governs only the one-time enrollment call to manager_url, before this device has any knowledge of the fleet CA. Set false to accept a self-signed/unverified Fleet Manager certificate at that step (matches xedge-cli's --insecure posture for local/dev deployments). The device_manager_url connection is always verified against the fleet CA certificate enrollment returned, regardless of this setting."
         }
       }
+    },
+    "mqtt_broker": {
+      "type": "object",
+      "description": "Embedded MQTT broker (Sprint C5, XEDGE-453/454; ADR-012 §3): a listening service other MQTT clients (SCADA, cloud integrations) connect to -- the reverse of northbound.mqtt above, which is an outbound client connecting to an *external* broker. Defaults off. See xedge.northbound.mqtt_broker module docstring for why mTLS is not offered as an access-control option here (amqtt's cafile always sets CERT_OPTIONAL, never CERT_REQUIRED) -- username/password plus topic ACLs is the supported model instead.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "host": {
+          "type": "string",
+          "default": "0.0.0.0",
+          "description": "A broker must accept connections from other devices/clients on the network, unlike the loopback-only REST API default."
+        },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 1883 },
+        "tls_enabled": { "type": "boolean", "default": false },
+        "tls_certfile_path": {
+          "type": "string",
+          "description": "Required when tls_enabled is true."
+        },
+        "tls_keyfile_path": {
+          "type": "string",
+          "description": "Required when tls_enabled is true."
+        },
+        "allow_anonymous": {
+          "type": "boolean",
+          "default": false,
+          "description": "XEDGE-454: off by default. When false, every connecting client must authenticate as one of `users` below."
+        },
+        "users": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": ["username", "password"],
+            "additionalProperties": false,
+            "properties": {
+              "username": { "type": "string", "minLength": 1 },
+              "password": { "type": "string", "x-secret": true }
+            }
+          },
+          "description": "Consulted only when allow_anonymous is false. Hashed (sha512_crypt via passlib) into a generated password file on startup, never persisted in plaintext by xEdge itself -- but this config value is, same as fleet.join_token above."
+        },
+        "publish_acl": {
+          "type": "object",
+          "additionalProperties": { "type": "array", "items": { "type": "string" } },
+          "description": "username -> allowed publish topic patterns (ordinary MQTT +/# wildcards), e.g. {\"sensor01\": [\"telemetry/sensor01/#\"]}. Left empty (default) while subscribe_acl is also empty, no ACL plugin loads at all and any authenticated user may publish anywhere. IMPORTANT (verified against amqtt's own topic_checking plugin source, not documented by amqtt itself): the moment EITHER this or subscribe_acl is non-empty, the ACL plugin loads for both directions -- and unlike publish, subscribe has no 'empty means unrestricted' carve-out. Setting only publish_acl denies every subscribe from every user. If you only want to restrict publishing, list every legitimate subscriber in subscribe_acl too (a [\"#\"] entry grants that user unrestricted subscribe access)."
+        },
+        "subscribe_acl": {
+          "type": "object",
+          "additionalProperties": { "type": "array", "items": { "type": "string" } },
+          "description": "username -> allowed subscribe topic patterns, same wildcard syntax as publish_acl. Left empty while publish_acl is also empty, unrestricted (see publish_acl's description above for the asymmetry once either dict is non-empty: an empty subscribe_acl at that point means zero subscribe access for everyone, not unrestricted)."
+        }
+      }
     }
   }
 }

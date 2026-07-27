@@ -311,6 +311,7 @@ completed stories, carry-over, and a re-forecast against 2026-12-06.
 | C2 | ✅ Complete ([PR #4](https://github.com/sgbhavsar-cpu/XEdge/pull/4)) | XEDGE-420/421/422/423/424/425/426 | — | On plan |
 | C3 | ✅ Complete ([PR #5](https://github.com/sgbhavsar-cpu/XEdge/pull/5)) | XEDGE-430/431/432/433/434/435/436/437 | — | On plan |
 | C4 | ✅ Complete ([PR #6](https://github.com/sgbhavsar-cpu/XEdge/pull/6), [PR #7](https://github.com/sgbhavsar-cpu/XEdge/pull/7)) | XEDGE-440/441/442/443/444/445/446/447 | Agent-side proactive cert rotation (see notes) | On plan |
+| C5 | ✅ Complete ([PR #8](https://github.com/sgbhavsar-cpu/XEdge/pull/8), PR #9 pending) | XEDGE-450/451/452/453/454/455 | Agent-side proactive cert rotation (carried again from C4 — see notes, now overdue); mqtt_broker ACL editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan, cert-rotation urgency flagged |
 
 ### Sprint 0 notes (2026-07-27 → 08-02)
 
@@ -567,6 +568,88 @@ appears at real-world intervals. A deliberate manual run at production-
 realistic timing — not just a fast pytest pass — is worth doing again
 before H1 handover, not assumed covered by the suite being green.
 
+### Sprint C5 notes (MQTT subscriber, generic publisher, embedded broker)
+
+All six stories delivered, across two PRs ([#8](https://github.com/sgbhavsar-cpu/XEdge/pull/8):
+XEDGE-450/451/452; PR #9: XEDGE-453/454/455).
+
+**`amqtt` promoted from test-only to a runtime dependency** (ADR-012 §3,
+prerequisite P-5) for XEDGE-453's embedded broker. License/maintenance/
+ARM-footprint re-verification is recorded in
+[license-audit.md](license-audit.md) §4 item 6, not assumed carried over
+from when it was only a test fixture's dependency.
+
+**Three more real `amqtt` behaviors found by reading its source directly,
+not assumed from its docs** — the same discipline C4's notes applied to
+the `cafile`/`CERT_OPTIONAL` finding:
+
+1. The publish/subscribe ACL plugin is asymmetric. `TopicAccessControlListPlugin`
+   has a backward-compat carve-out for PUBLISH ("no publish_acl configured →
+   assume permitted") that SUBSCRIBE does not — an empty `subscribe_acl`
+   dict, once the plugin loads at all (i.e. either dict is non-empty),
+   means zero subscribe access for everyone, not unrestricted. Confirmed
+   empirically before writing the module docstring or the schema's field
+   descriptions around it, not inferred from reading the source alone.
+2. A rejected authentication attempt gets no CONNACK at all — amqtt just
+   closes the raw connection (`broker.py::_handle_client_session`). A
+   paho-mqtt client surfaces that as `on_disconnect`, never `on_connect`;
+   tests asserting rejection had to be written around that, not around a
+   CONNACK failure reason code.
+3. `Broker.shutdown()` can hang forever if any connection ever reached the
+   listener without completing a handshake — reproduced directly with a
+   throwaway `asyncio.open_connection()`-then-close against a bare broker.
+   That is exactly what a bare TCP health-check/liveness probe against
+   this port would do. Given the broker is a new listening service on the
+   device (ADR-012 §3's own risk register R-09) and a stuck shutdown would
+   block every future restart, this was treated as a real product bug, not
+   just a test-fixture inconvenience: `MqttBrokerService.stop()` now bounds
+   the call with its own 10s `asyncio.wait_for`, with a regression test that
+   deliberately triggers the underlying hang and asserts `stop()` still
+   returns.
+
+**The Web UI's schema-driven form engine (`xedge.api.schema_forms`) has no
+widget for array or dynamic-key-object schema types** — a pre-existing gap
+(`alarms.rules`, an array, already rendered as an unusable plain-text
+fallback before this sprint), not something XEDGE-453 introduced. It
+mattered more here: `mqtt_broker.users`' naive fallback would have rendered
+a Python list-of-dicts — *including plaintext broker passwords* — directly
+into the page source, not just an unusable widget. Resolved by giving
+`users` its own small dedicated list/add/delete page (`/ui/config/mqtt-broker/users`,
+modeled on the existing Web UI accounts page) rather than teaching the
+shared form engine a new general-purpose widget; `publish_acl`/`subscribe_acl`
+(not secrets, just awkward to render generically) stay on the raw-YAML
+"Advanced" editor, same as `alarms.rules` already does, with an explicit
+note on the MQTT Broker settings page pointing there. XEDGE-455 was scoped
+to config *usability* for the credential-exposure case specifically, not to
+building a general keyed-collection editor.
+
+**Adding the first genuinely push-based driver type to the Web UI surfaced
+a driver-type-agnostic assumption in it.** The generic "add tag group" flow
+(`config_ui.py`) stubs every new group with a hardcoded `scan_rate_ms`
+default, correct for every prior driver type (all poll-based) but meaningless
+for `mqtt_subscriber` — every other existing driver schema declares
+`scan_rate_ms`, this was the first one that didn't, and schema validation
+correctly rejected the resulting config. Fixed by accepting (but documenting
+as unused) `scan_rate_ms` in `mqtt_subscriber.schema.json`'s tag-group
+schema, rather than special-casing the generic UI route per driver type —
+found by actually clicking through the add-driver → add-tag-group → add-tag
+flow end-to-end against a live running instance, not just by unit-testing
+the driver module in isolation.
+
+**Carried into C6, now for the second time:** agent-side proactive
+certificate rotation (XEDGE-443's endpoint works; nothing on the device
+side decides to call it yet). C4's notes already flagged this as "worth
+sequencing before C5 closes, not deferred indefinitely" — it was deferred
+again in favor of the broker/UI work this sprint's stories actually
+required. At the default 90-day `--cert-validity-days`, a device enrolled
+in the first weeks of C4 (mid-to-late September) is now past or close to
+half its certificate's validity window with still no rotation path — this
+should not be deferred a third time.
+
+**Also carried:** `mqtt_broker.publish_acl`/`subscribe_acl` Web UI editing
+(intentionally deferred, see above — not a gap discovered late, a scope
+line drawn deliberately this sprint).
+
 ---
 
 ## 8. Revision history
@@ -576,3 +659,4 @@ before H1 handover, not assumed covered by the suite being green.
 | 1.0 | 2026-07-26 | Initial Delivery 1 plan from XEDGE-DR-001 |
 | 1.1 | 2026-07-27 | Sprint C3 status row backfilled (was missing from §7's table despite its notes existing); Sprint C4 complete — status row + notes |
 | 1.2 | 2026-07-27 | Sprint C4 addendum: keep-alive connection-reuse bug found by manual verification, fixed, regression-tested |
+| 1.3 | 2026-07-27 | Sprint C5 complete — status row + notes (embedded MQTT broker, three more amqtt findings, Web UI config gap and fix, cert-rotation carry flagged as overdue) |

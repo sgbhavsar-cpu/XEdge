@@ -65,6 +65,14 @@ dependencies = [
     # was previously only declared under the `test` extra (an existing gap,
     # unrelated to fleet work, found while adding a second real consumer).
     "httpx>=0.27",
+    # Embedded MQTT broker (Sprint C5, XEDGE-453; ADR-012 §3). Explicitly
+    # promoted from test-only, reversing that prior decision in the open —
+    # see docs/planning/license-audit.md §4 item 6 for the license/
+    # maintenance/ARM-footprint re-verification (prerequisite P-5) this
+    # promotion required first. Still also the test-only broker fixture's
+    # dependency (ADR-006) — that role is unaffected, just no longer the
+    # only reason this package is installed.
+    "amqtt>=0.11",
 ]
 
 [project.optional-dependencies]
@@ -90,7 +98,10 @@ test = [
     # imported by xedge itself, never read as reference implementations,
     # not shipped in any edition.
     "pymodbus>=3.6",
-    "amqtt>=0.11",
+    # amqtt itself moved to the main runtime dependencies list above
+    # (Sprint C5, XEDGE-453) -- it's still used as the test-only broker
+    # fixture too (tests/fixtures/mqtt_broker.py), just no longer *only*
+    # that, so it no longer belongs exclusively under this extra.
     # pysparkplug is installed separately with --no-deps (see CI workflow /
     # README): its own pin of paho-mqtt<2 conflicts with our real paho-mqtt
     # 2.x dependency above, but we only use its payload decode classes,
@@ -150,4 +161,11 @@ ignore_missing_imports = true
 # itself stays strictly typed, only the third-party surface is untyped.
 [[tool.mypy.overrides]]
 module = "bacpypes3.*"
+ignore_missing_imports = true
+
+# amqtt (embedded MQTT broker, Sprint C5/XEDGE-453) and passlib (its password
+# hashing dependency, used directly for the broker's password file) ship no
+# py.typed marker either. Same treatment as above.
+[[tool.mypy.overrides]]
+module = ["amqtt.*", "passlib.*"]
 ignore_missing_imports = true

@@ -4,6 +4,19 @@
 {% block config_content %}
 <div class="xedge-card">
   <h1>{{ label }}</h1>
+  {% if section == "mqtt_broker" %}
+  <p class="xedge-hint">
+    Broker user credentials are managed separately —
+    <a href="/ui/config/mqtt-broker/users">MQTT Broker Users</a>.
+    Publish/subscribe topic ACLs aren't editable here yet; use the
+    <a href="/ui/config/advanced">Advanced (raw YAML)</a> editor's
+    <code>mqtt_broker.publish_acl</code> / <code>subscribe_acl</code> —
+    see config/examples/mqtt-broker-example.yaml for the shape, and note
+    that setting either one restricts both directions (an empty
+    subscribe_acl at that point means no subscribe access for anyone, not
+    unrestricted).
+  </p>
+  {% endif %}
   <form method="post" action="/ui/config/core/{{ section }}">
     {% for f in fields %}
     {{ macros.render_field(f) }}

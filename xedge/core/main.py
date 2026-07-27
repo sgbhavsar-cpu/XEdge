@@ -57,6 +57,7 @@ from xedge.northbound.base import NorthboundConnector
 from xedge.northbound.dispatcher import NorthboundDispatcher
 from xedge.northbound.generic_mqtt import GenericMqttPublisher, GenericMqttPublisherConfig
 from xedge.northbound.mqtt import MqttSparkplugConnector, SparkplugConnectorConfig
+from xedge.northbound.mqtt_broker import BrokerUserCredential, MqttBrokerConfig, MqttBrokerService
 from xedge.northbound.opcua_server import OpcUaServerConfig, OpcUaTagServer
 from xedge.observability.audit_log import AuditLog
 from xedge.observability.logging import configure_logging, get_logger
@@ -126,6 +127,10 @@ class DataPaths:
     @property
     def fleet_ca_certificate(self) -> Path:
         return self.fleet / "ca.pem"
+
+    @property
+    def mqtt_broker_password_file(self) -> Path:
+        return self.data_dir / "mqtt-broker" / "passwords"
 
     @classmethod
     def from_config(cls, store: ConfigStore) -> DataPaths:
@@ -383,6 +388,30 @@ def _build_opcua_server(store: ConfigStore) -> OpcUaTagServer | None:
     )
 
 
+def _build_mqtt_broker(store: ConfigStore, password_file_path: Path) -> MqttBrokerService | None:
+    broker_config = store.get_section("mqtt_broker", {})
+    if not broker_config.get("enabled", False):
+        return None
+    users = tuple(
+        BrokerUserCredential(username=u["username"], password=u["password"])
+        for u in broker_config.get("users", [])
+    )
+    return MqttBrokerService(
+        MqttBrokerConfig(
+            host=broker_config.get("host", "0.0.0.0"),  # nosec B104
+            port=broker_config.get("port", 1883),
+            tls_enabled=broker_config.get("tls_enabled", False),
+            tls_certfile_path=broker_config.get("tls_certfile_path"),
+            tls_keyfile_path=broker_config.get("tls_keyfile_path"),
+            allow_anonymous=broker_config.get("allow_anonymous", False),
+            users=users,
+            publish_acl=broker_config.get("publish_acl", {}),
+            subscribe_acl=broker_config.get("subscribe_acl", {}),
+        ),
+        password_file_path,
+    )
+
+
 def _build_fleet_agent_config(store: ConfigStore) -> FleetAgentConfig | None:
     fleet_config = store.get_section("fleet", {})
     if not fleet_config.get("enabled", False):
@@ -594,6 +623,10 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
     if opcua_server is not None:
         await opcua_server.start()
 
+    mqtt_broker = _build_mqtt_broker(store, paths.mqtt_broker_password_file)
+    if mqtt_broker is not None:
+        await mqtt_broker.start()
+
     store_config = store.get_section("store", {})
     cold_store = SqliteColdStore(paths.store)
 
@@ -798,6 +831,8 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
             await dispatcher.stop()
         if opcua_server is not None:
             await opcua_server.stop()
+        if mqtt_broker is not None:
+            await mqtt_broker.stop()
         await supervisor.stop_all()
         cold_store.close()
         logger.info("xedge.stopped")

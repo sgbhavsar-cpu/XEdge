@@ -60,6 +60,7 @@ KNOWN_DRIVER_TYPES = [
     "modbus_rtu_serial",
     "opcua_client",
     "bacnet_ip",
+    "mqtt_subscriber",
     "loopback",
 ]
 
@@ -71,11 +72,26 @@ KNOWN_DRIVER_TYPES = [
 _SKIP_ID = frozenset({"id"})
 _SKIP_ID_AND_TAGS = frozenset({"id", "tags"})
 
+# mqtt_broker's users/publish_acl/subscribe_acl are all keyed collections
+# (a list of credentials; two dicts keyed by arbitrary usernames) that
+# xedge.api.schema_forms has no widget for (it renders scalars and fixed-
+# property objects only) -- the same pre-existing gap alarms.rules (an
+# array) already has, covered there by the raw-YAML "Advanced" editor.
+# `users` gets its own small dedicated page instead (see the
+# mqtt-broker/users routes below) because, unlike alarms.rules, the
+# generic form's plain-text fallback would render this one's *plaintext
+# passwords* directly into the page — not just an unusable widget, a
+# credential-exposure rough edge. publish_acl/subscribe_acl stay on the
+# Advanced editor for now; XEDGE-455 is scoped to config *usability*, not
+# to teaching schema_forms a general keyed-collection widget.
+_SKIP_MQTT_BROKER_MANAGED_FIELDS = frozenset({"users", "publish_acl", "subscribe_acl"})
+
 CORE_SECTIONS = [
     ("logging", "Logging"),
     ("watchdog", "Watchdog"),
     ("northbound", "Northbound (MQTT)"),
     ("opcua_server", "OPC UA Server"),
+    ("mqtt_broker", "MQTT Broker"),
     ("store", "Store & Forward"),
     ("config_management", "Config Management"),
     ("api", "REST API / Web UI"),
@@ -233,6 +249,9 @@ def create_config_ui_router(
 
     # ---- Core sections ----
 
+    def _core_section_skip(section: str) -> frozenset[str]:
+        return _SKIP_MQTT_BROKER_MANAGED_FIELDS if section == "mqtt_broker" else frozenset()
+
     @router.get("/core/{section}", response_class=HTMLResponse)
     def core_section_form(request: Request, section: str) -> Response:
         redirect = require_read(request)
@@ -243,7 +262,9 @@ def create_config_ui_router(
             return render(request, "config_root.html", {"error": f"Unknown section {section!r}"})
         section_schema = core_schema["properties"][section]
         current = _full_config(config_path)
-        fields = build_object_fields(section_schema, current.get(section, {}))
+        fields = build_object_fields(
+            section_schema, current.get(section, {}), skip=_core_section_skip(section)
+        )
         label = dict(CORE_SECTIONS)[section]
         return render(
             request, "config_section.html", {"section": section, "label": label, "fields": fields}
@@ -258,14 +279,20 @@ def create_config_ui_router(
         form_data: dict[str, str] = {k: v for k, v in raw_form.items() if isinstance(v, str)}
         section_schema = core_schema["properties"][section]
         current = _full_config(config_path)
-        new_section = unflatten(form_data, section_schema)
+        skip = _core_section_skip(section)
+        new_section = unflatten(form_data, section_schema, skip=skip)
         # Preserve any secret currently set if the form's password field
         # was left blank (FR-WU-006's "leave blank to keep").
         _merge_preserving_absent_secrets(section_schema, current.get(section, {}), new_section)
-        current[section] = new_section
+        # In place, and only over the schema's own properties minus `skip`
+        # -- mqtt_broker's users/publish_acl/subscribe_acl (see
+        # _SKIP_MQTT_BROKER_MANAGED_FIELDS) never appeared in this form, so
+        # a plain `current[section] = new_section` would silently delete
+        # them on every unrelated save (e.g. just flipping tls_enabled).
+        _replace_editable_fields(current.setdefault(section, {}), section_schema, new_section, skip)
         error = _save_full_config(current, request)
         label = dict(CORE_SECTIONS)[section]
-        fields = build_object_fields(section_schema, new_section)
+        fields = build_object_fields(section_schema, new_section, skip=skip)
         return render(
             request,
             "config_section.html",
@@ -276,6 +303,71 @@ def create_config_ui_router(
                 "error": error,
                 "success": error is None,
             },
+        )
+
+    # ---- MQTT broker users (XEDGE-454/455) ----
+    #
+    # A dedicated list/add/delete page rather than a generic-form field:
+    # see _SKIP_MQTT_BROKER_MANAGED_FIELDS above for why. Reads/writes
+    # mqtt_broker.users directly in the config file, same one write path
+    # (_save_full_config) as every other mutation in this module.
+
+    @router.get("/mqtt-broker/users", response_class=HTMLResponse)
+    def mqtt_broker_users_page(request: Request) -> Response:
+        redirect = require_read(request)
+        if redirect is not None:
+            return redirect
+        broker_config = _full_config(config_path).get("mqtt_broker", {})
+        usernames = [u.get("username") for u in broker_config.get("users", [])]
+        return render(
+            request, "mqtt_broker_users.html", {"usernames": usernames, "add_error": None}
+        )
+
+    @router.post("/mqtt-broker/users/new", response_class=HTMLResponse)
+    def mqtt_broker_users_create(
+        request: Request, username: str = Form(...), password: str = Form(...)
+    ) -> Response:
+        redirect = require_write(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        broker_config = current.setdefault("mqtt_broker", {})
+        users = broker_config.setdefault("users", [])
+        if any(u.get("username") == username for u in users):
+            return render(
+                request,
+                "mqtt_broker_users.html",
+                {
+                    "usernames": [u.get("username") for u in users],
+                    "add_error": f"A broker user named {username!r} already exists",
+                },
+            )
+        users.append({"username": username, "password": password})
+        error = _save_full_config(current, request)
+        if error is not None:
+            users.pop()
+            return render(
+                request,
+                "mqtt_broker_users.html",
+                {"usernames": [u.get("username") for u in users], "add_error": error},
+            )
+        return RedirectResponse(
+            "/ui/config/mqtt-broker/users", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @router.post("/mqtt-broker/users/{username}/delete")
+    def mqtt_broker_users_delete(request: Request, username: str) -> Response:
+        redirect = require_write(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        broker_config = current.setdefault("mqtt_broker", {})
+        broker_config["users"] = [
+            u for u in broker_config.get("users", []) if u.get("username") != username
+        ]
+        _save_full_config(current, request)
+        return RedirectResponse(
+            "/ui/config/mqtt-broker/users", status_code=status.HTTP_303_SEE_OTHER
         )
 
     # ---- Drivers: list / add / edit / delete ----
