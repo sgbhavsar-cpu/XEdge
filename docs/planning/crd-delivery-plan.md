@@ -311,7 +311,7 @@ completed stories, carry-over, and a re-forecast against 2026-12-06.
 | C2 | ✅ Complete ([PR #4](https://github.com/sgbhavsar-cpu/XEdge/pull/4)) | XEDGE-420/421/422/423/424/425/426 | — | On plan |
 | C3 | ✅ Complete ([PR #5](https://github.com/sgbhavsar-cpu/XEdge/pull/5)) | XEDGE-430/431/432/433/434/435/436/437 | — | On plan |
 | C4 | ✅ Complete ([PR #6](https://github.com/sgbhavsar-cpu/XEdge/pull/6), [PR #7](https://github.com/sgbhavsar-cpu/XEdge/pull/7)) | XEDGE-440/441/442/443/444/445/446/447 | Agent-side proactive cert rotation (see notes) | On plan |
-| C5 | ✅ Complete ([PR #8](https://github.com/sgbhavsar-cpu/XEdge/pull/8), PR #9 pending) | XEDGE-450/451/452/453/454/455 | Agent-side proactive cert rotation (carried again from C4 — see notes, now overdue); mqtt_broker ACL editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan, cert-rotation urgency flagged |
+| C5 | ✅ Complete ([PR #8](https://github.com/sgbhavsar-cpu/XEdge/pull/8), [PR #9](https://github.com/sgbhavsar-cpu/XEdge/pull/9)) | XEDGE-450/451/452/453/454/455 | Agent-side proactive cert rotation (carried again from C4 — see notes, now overdue); mqtt_broker ACL editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan, cert-rotation urgency flagged |
 
 ### Sprint 0 notes (2026-07-27 → 08-02)
 
@@ -571,7 +571,7 @@ before H1 handover, not assumed covered by the suite being green.
 ### Sprint C5 notes (MQTT subscriber, generic publisher, embedded broker)
 
 All six stories delivered, across two PRs ([#8](https://github.com/sgbhavsar-cpu/XEdge/pull/8):
-XEDGE-450/451/452; PR #9: XEDGE-453/454/455).
+XEDGE-450/451/452; [#9](https://github.com/sgbhavsar-cpu/XEdge/pull/9): XEDGE-453/454/455).
 
 **`amqtt` promoted from test-only to a runtime dependency** (ADR-012 §3,
 prerequisite P-5) for XEDGE-453's embedded broker. License/maintenance/
