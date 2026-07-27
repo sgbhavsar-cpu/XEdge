@@ -64,7 +64,7 @@ class _FleetManagerFixture:
     exactly as `xedge.fleet.manager_cli.run` does, but keeping server
     handles so the test can shut them down cleanly."""
 
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, *, device_keep_alive_timeout: int = 5) -> None:
         self.public_port = _free_port()
         self.device_port = _free_port()
         self.public_url = f"https://127.0.0.1:{self.public_port}"
@@ -113,6 +113,7 @@ class _FleetManagerFixture:
                 ssl_keyfile=str(self.manager_key_path),
                 ssl_ca_certs=str(self.ca_cert_path),
                 ssl_cert_reqs=ssl.CERT_REQUIRED,
+                timeout_keep_alive=device_keep_alive_timeout,
             )
         )
 
@@ -312,6 +313,74 @@ async def test_agent_reports_a_rejected_config_without_writing_it(
     finally:
         agent_task.cancel()
         await asyncio.gather(agent_task, return_exceptions=True)
+
+
+async def test_heartbeat_survives_the_servers_keep_alive_timeout(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    """Regression test for a bug found by manually running the agent
+    against a real Fleet Manager, not by any existing automated test:
+    uvicorn's default `timeout_keep_alive` is 5s, and
+    `heartbeat_interval_seconds` is commonly >= that (60s by default), so
+    a pooled httpx connection sitting idle between heartbeats would
+    routinely be one the server had *already* closed server-side by the
+    time the next heartbeat tried to reuse it -- surfacing as "Server
+    disconnected without sending a response" on roughly every heartbeat
+    past the first. Every existing test used a 0.05s interval, far
+    shorter than any keep-alive timeout, so none of them could have hit
+    this. Reproduced deterministically here with an aggressively short
+    server-side keep-alive rather than waiting out the real 5s default."""
+    device_keep_alive_timeout = 1
+    heartbeat_interval_seconds = 1.5  # comfortably longer than the above
+    manager = _FleetManagerFixture(tmp_path, device_keep_alive_timeout=device_keep_alive_timeout)
+    await manager.start()
+    try:
+        join_token = await manager.create_join_token("keep-alive-test-device")
+        config_path = tmp_path / "xedge.yaml"
+        config_path.write_text("schema_version: '0.1'\n", encoding="utf-8")
+        validator = ConfigValidator.from_file(core_schema_path)
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=10))
+        fleet_status = FleetAgentStatus()
+        fleet_config = FleetAgentConfig(
+            manager_url=manager.public_url,
+            device_manager_url=manager.device_url,
+            device_id="keep-alive-test-device",
+            join_token=join_token,
+            heartbeat_interval_seconds=heartbeat_interval_seconds,
+            verify_tls=False,
+        )
+        agent_dir = tmp_path / "fleet"
+        paths = FleetAgentPaths(
+            device_token=agent_dir / "device_token",
+            device_cert=agent_dir / "device-cert.pem",
+            device_key=agent_dir / "device-key.pem",
+            ca_certificate=agent_dir / "ca.pem",
+        )
+        agent_task = asyncio.create_task(
+            fleet_heartbeat_loop(
+                fleet_config,
+                paths,
+                supervisor,
+                config_path,
+                validator,
+                datetime.now(UTC),
+                fleet_status,
+            )
+        )
+        try:
+            await _wait_until(lambda: fleet_status.last_heartbeat_ok is True)
+            # Sample across several intervals -- comfortably past the
+            # server's 1s keep-alive timeout each time -- and fail on the
+            # first sign of the disconnect this test exists to catch,
+            # rather than only checking once at the end.
+            for _ in range(4):
+                await asyncio.sleep(heartbeat_interval_seconds + 0.5)
+                assert fleet_status.last_heartbeat_ok is True, fleet_status.last_error
+        finally:
+            agent_task.cancel()
+            await asyncio.gather(agent_task, return_exceptions=True)
+    finally:
+        await manager.stop()
 
 
 async def test_device_port_rejects_a_connection_with_no_client_certificate(

@@ -170,7 +170,15 @@ async def _ensure_enrolled(paths: FleetAgentPaths, config: FleetAgentConfig) -> 
     also have to restart the device's process for the retry to notice."""
     if _already_enrolled(paths):
         return
-    async with httpx.AsyncClient(base_url=config.manager_url, verify=config.verify_tls) as client:
+    # limits=... : same keep-alive race as fleet_heartbeat_loop's client
+    # (see its comment) -- not currently reachable here since a retry only
+    # happens after a failed attempt (nothing pooled to go stale), but kept
+    # consistent so a future change to this loop doesn't silently reopen it.
+    async with httpx.AsyncClient(
+        base_url=config.manager_url,
+        verify=config.verify_tls,
+        limits=httpx.Limits(max_keepalive_connections=0),
+    ) as client:
         while True:
             try:
                 await _enroll(client, paths, config)
@@ -227,7 +235,21 @@ async def fleet_heartbeat_loop(
         paths.device_cert, paths.device_key, paths.ca_certificate
     )
     async with httpx.AsyncClient(
-        base_url=config.device_manager_url, verify=mtls_context
+        base_url=config.device_manager_url,
+        verify=mtls_context,
+        # No connection reuse (Sprint C4, XEDGE-442 -- found by running this
+        # for real, not by any automated test): uvicorn's default
+        # timeout_keep_alive is 5s, and heartbeat_interval_seconds is
+        # commonly >= that (60s by default) -- httpx's pool would try to
+        # reuse a connection the server has *already* closed server-side,
+        # surfacing as "Server disconnected without sending a response" on
+        # roughly every heartbeat past the first. httpx correctly refuses
+        # to silently retry a POST across that race (it can't know whether
+        # the server processed a prior attempt before closing), so this
+        # must be avoided rather than caught. A heartbeat is infrequent
+        # enough that a fresh TCP+TLS handshake every time costs nothing
+        # worth optimizing for.
+        limits=httpx.Limits(max_keepalive_connections=0),
     ) as client:
         while True:
             try:
