@@ -1,15 +1,18 @@
-"""Fleet Manager device registry (Sprint 29, XEDGE-211): one SQLite database
-(WAL mode, same posture as xedge.store.sqlite_store's cold tier) holding
-every registered device's identity, last-known health snapshot, and any
-config push queued for it.
+"""Fleet Manager device registry (Sprint 29, XEDGE-211; extended Sprint C4,
+XEDGE-442/444): one SQLite database (WAL mode, same posture as
+xedge.store.sqlite_store's cold tier) holding every registered device's
+identity, last-known health snapshot, certificate status, and any config
+push queued for it.
 
-Auth model (ADR-009 interim posture, deferring XEDGE-214's mTLS): a device
-registers once with a shared `join_token` configured on the manager, and
-receives back a per-device `device_token` (opaque, `secrets.token_urlsafe`)
-it must present as a bearer token on every subsequent call. Only the
-token's SHA-256 hash is stored, never the token itself — the same
-"don't persist the secret you can instead verify a hash of" posture as
-`xedge.api.auth.UserStore`'s bcrypt hashes.
+Auth model (Sprint C4, XEDGE-442; ADR-013 §3 — supersedes ADR-009's
+manager-wide shared `join_token`): an operator provisions a single-use,
+time-limited join token bound to one `device_id`. The device redeems it
+exactly once, submitting a CSR alongside it, and receives back a
+CA-signed certificate plus a per-device `device_token` (opaque,
+`secrets.token_urlsafe`) it presents as a bearer token on every subsequent
+call. Only hashes are ever persisted — never the join token, never the
+device token — the same "don't persist the secret you can instead verify a
+hash of" posture as `xedge.api.auth.UserStore`'s bcrypt hashes.
 """
 
 from __future__ import annotations
@@ -42,7 +45,25 @@ CREATE TABLE IF NOT EXISTS devices (
     uptime_seconds REAL,
     last_config_apply_json TEXT,
     pending_config_json TEXT,
-    pending_config_version INTEGER NOT NULL DEFAULT 0
+    pending_config_version INTEGER NOT NULL DEFAULT 0,
+    cert_serial_number TEXT,
+    cert_not_after TEXT
+)
+"""
+
+# One row per issued join token (Sprint C4, XEDGE-442; ADR-013 §3):
+# single-use, bound to a specific device_id, time-limited. Kept in its own
+# table rather than a column on `devices` because the device row may not
+# exist yet the first time a token is issued (a device enrolls, it doesn't
+# pre-register), and because a re-provisioned token for the same device
+# needs its own audit trail rather than overwriting the last one.
+_CREATE_JOIN_TOKENS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS join_tokens (
+    token_hash TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT
 )
 """
 
@@ -64,6 +85,8 @@ class DeviceRecord:
     last_config_apply: dict[str, Any] | None
     has_pending_config: bool
     pending_config_version: int
+    cert_serial_number: str | None
+    cert_not_after: datetime | None
 
     @property
     def status(self) -> str:
@@ -96,6 +119,10 @@ def _row_to_record(row: sqlite3.Row) -> DeviceRecord:
         ),
         has_pending_config=row["pending_config_json"] is not None,
         pending_config_version=row["pending_config_version"],
+        cert_serial_number=row["cert_serial_number"],
+        cert_not_after=(
+            datetime.fromisoformat(row["cert_not_after"]) if row["cert_not_after"] else None
+        ),
     )
 
 
@@ -112,6 +139,7 @@ class DeviceRegistry:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute(_CREATE_TABLE_SQL)
+        self._conn.execute(_CREATE_JOIN_TOKENS_TABLE_SQL)
 
     def register(
         self,
@@ -227,6 +255,59 @@ class DeviceRegistry:
             "UPDATE devices SET pending_config_json = NULL WHERE device_id = ?", (device_id,)
         )
         return config, version
+
+    def create_join_token(self, device_id: str, ttl_seconds: float) -> str:
+        """Operator-initiated (Sprint C4, XEDGE-442): provision a one-time
+        enrollment credential for a specific device, ahead of that device
+        ever having contacted the manager. Supersedes the manager-wide
+        shared `join_token` this replaced (ADR-013 §3) — a leaked token
+        here only ever admits the one `device_id` it was minted for, and
+        only until `consume_join_token` first succeeds or it expires."""
+        token = secrets.token_urlsafe(32)
+        now = datetime.now(UTC)
+        expires_at = now + timedelta(seconds=ttl_seconds)
+        self._conn.execute(
+            "INSERT INTO join_tokens (token_hash, device_id, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?)",
+            (_hash_token(token), device_id, now.isoformat(), expires_at.isoformat()),
+        )
+        return token
+
+    def consume_join_token(self, device_id: str, token: str) -> bool:
+        """Redeem a join token for `device_id`, atomically marking it
+        consumed on success. Returns `False` — never raises — for every
+        failure reason (unknown token, wrong device_id, expired, already
+        consumed): none of those should be distinguishable to whoever is
+        presenting the token, or the response itself becomes an oracle for
+        guessing valid device_ids."""
+        row = self._conn.execute(
+            "SELECT device_id, expires_at, consumed_at FROM join_tokens WHERE token_hash = ?",
+            (_hash_token(token),),
+        ).fetchone()
+        if row is None or row["consumed_at"] is not None:
+            return False
+        if not hmac.compare_digest(row["device_id"], device_id):
+            return False
+        if datetime.fromisoformat(row["expires_at"]) < datetime.now(UTC):
+            return False
+        self._conn.execute(
+            "UPDATE join_tokens SET consumed_at = ? WHERE token_hash = ?",
+            (datetime.now(UTC).isoformat(), _hash_token(token)),
+        )
+        return True
+
+    def record_certificate_issued(
+        self, device_id: str, serial_number: int, not_after: datetime
+    ) -> None:
+        """Called after `xedge.security.ca.CertificateAuthority.sign_csr`
+        succeeds, for both initial enrollment (XEDGE-442) and rotation
+        (XEDGE-443) — the registry only ever stores the serial number and
+        expiry it needs to show cert status (XEDGE-447) and decide rotation
+        is due, never the certificate or key material itself."""
+        self._conn.execute(
+            "UPDATE devices SET cert_serial_number = ?, cert_not_after = ? WHERE device_id = ?",
+            (str(serial_number), not_after.isoformat(), device_id),
+        )
 
     def get(self, device_id: str) -> DeviceRecord | None:
         row = self._conn.execute(

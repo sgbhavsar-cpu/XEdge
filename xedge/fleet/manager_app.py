@@ -1,18 +1,30 @@
-"""Fleet Manager REST API (Sprint 29, XEDGE-211/213): a separate,
-standalone service from the per-device xEdge process — it never imports
-`xedge.core`/`xedge.drivers`, only `xedge.fleet.registry`, matching Sprint
-32's documented split ("the two share no code").
+"""Fleet Manager join-token/admin REST API (Sprint 29, XEDGE-211/213;
+reworked Sprint C4, XEDGE-442; ADR-013 §3): a separate, standalone service
+from the per-device xEdge process — it never imports
+`xedge.core`/`xedge.drivers`, only `xedge.fleet.registry` and
+`xedge.security`, matching Sprint 32's documented split ("the two share no
+code").
 
-Auth: two distinct bearer tokens, never the same value.
-  - `join_token`: presented once by a device at `/register` (the manager's
-    own admission-control secret — anyone who has it can enroll a device).
+This is the *unauthenticated-by-certificate* half of the manager: the port
+an un-enrolled device reaches to enroll, and an operator/CLI reaches for
+everything else. It deliberately does not require a client certificate —
+neither exists yet for a device that hasn't enrolled — which is exactly
+why it is a separate app/port from `xedge.fleet.manager_device_app`
+(post-enrollment device calls, served with `ssl_cert_reqs=CERT_REQUIRED`
+against the fleet CA; see `xedge.fleet.manager_cli`).
+
+Auth here: two distinct bearer tokens, never the same value.
+  - Join tokens: single-use, time-limited, bound to one `device_id`
+    (`DeviceRegistry.create_join_token`/`consume_join_token`) — supersedes
+    ADR-009's manager-wide shared secret. An operator provisions one via
+    `POST /join-tokens`; the device redeems it via `POST /enroll`.
   - `admin_token`: presented by an operator/CLI for every other endpoint
-    (list/inspect devices, push a config). Both are plain shared secrets
-    (ADR-009) — no RBAC/multi-operator model yet, mirroring how the
-    per-device Web UI started as a single account before Sprint 14 added
-    RBAC.
-  - A registered device's own `device_token` (returned by `/register`)
-    authenticates its own `/heartbeat` calls only.
+    (create join tokens, list/inspect devices, push a config). A plain
+    shared secret (ADR-009) — no RBAC/multi-operator model yet, mirroring
+    how the per-device Web UI started as a single account before Sprint 14
+    added RBAC.
+  - A registered device's own `device_token` (returned by `/enroll`)
+    authenticates its calls on the *device* port, not this one.
 """
 
 from __future__ import annotations
@@ -20,26 +32,30 @@ from __future__ import annotations
 import hmac
 from typing import Any
 
+from cryptography import x509
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel
 
 from xedge import __version__
+from xedge.fleet._device_auth import bearer_value
 from xedge.fleet.registry import DeviceRegistry
+from xedge.security.ca import CertificateAuthority, InvalidCsrError
+
+_DEFAULT_JOIN_TOKEN_TTL_SECONDS = 3600.0
 
 
-class _RegisterBody(BaseModel):
+class _CreateJoinTokenBody(BaseModel):
     device_id: str
+    ttl_seconds: float = _DEFAULT_JOIN_TOKEN_TTL_SECONDS
+
+
+class _EnrollBody(BaseModel):
+    device_id: str
+    join_token: str
+    csr_pem: str
     display_name: str | None = None
     agent_version: str | None = None
     heartbeat_interval_seconds: float = 60
-    join_token: str
-
-
-class _HeartbeatBody(BaseModel):
-    agent_version: str | None = None
-    driver_count: int | None = None
-    uptime_seconds: float | None = None
-    last_config_apply: dict[str, Any] | None = None
 
 
 class _ConfigPushBody(BaseModel):
@@ -59,51 +75,74 @@ def _device_summary(record: Any) -> dict[str, Any]:
         "last_config_apply": record.last_config_apply,
         "has_pending_config": record.has_pending_config,
         "pending_config_version": record.pending_config_version,
+        "cert_serial_number": record.cert_serial_number,
+        "cert_not_after": record.cert_not_after.isoformat() if record.cert_not_after else None,
     }
 
 
 def create_fleet_manager_app(
-    registry: DeviceRegistry, *, join_token: str, admin_token: str
+    registry: DeviceRegistry,
+    ca: CertificateAuthority,
+    *,
+    admin_token: str,
+    cert_validity_days: int,
 ) -> FastAPI:
     app = FastAPI(title="xEdge Fleet Manager", version=__version__)
 
     def require_admin(authorization: str = Header(default="")) -> None:
-        if not hmac.compare_digest(_bearer_value(authorization), admin_token):
+        if not hmac.compare_digest(bearer_value(authorization), admin_token):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing admin token")
-
-    def require_device_token(device_id: str, authorization: str = Header(default="")) -> None:
-        if not registry.verify_token(device_id, _bearer_value(authorization)):
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing device token")
 
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/api/v1/fleet/register")
-    def register(body: _RegisterBody) -> dict[str, str]:
-        if not hmac.compare_digest(body.join_token, join_token):
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid join token")
-        token = registry.register(
-            body.device_id, body.display_name, body.agent_version, body.heartbeat_interval_seconds
-        )
-        return {"device_token": token}
-
-    @app.post("/api/v1/fleet/devices/{device_id}/heartbeat")
-    def heartbeat(
-        device_id: str, body: _HeartbeatBody, _auth: None = Depends(require_device_token)
+    @app.post("/api/v1/fleet/join-tokens")
+    def create_join_token(
+        body: _CreateJoinTokenBody, _auth: None = Depends(require_admin)
     ) -> dict[str, Any]:
-        registry.heartbeat(
-            device_id,
+        """XEDGE-442: an operator provisions a one-time enrollment
+        credential for a specific device, ahead of that device ever
+        contacting the manager. Replaces the old manager-wide `join_token`
+        this app used to accept directly."""
+        token = registry.create_join_token(body.device_id, body.ttl_seconds)
+        return {"join_token": token, "device_id": body.device_id, "ttl_seconds": body.ttl_seconds}
+
+    @app.post("/api/v1/fleet/enroll")
+    def enroll(body: _EnrollBody) -> dict[str, Any]:
+        """XEDGE-442: redeem a single-use join token and a CSR together —
+        the token proves this caller is allowed to become `device_id`, the
+        CSR supplies the public key that identity's certificate is issued
+        for. The private key backing the CSR never reached this process
+        (ADR-013 §3); only the certificate is handed back."""
+        if not registry.consume_join_token(body.device_id, body.join_token):
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, "Invalid, expired, or used join token"
+            )
+        try:
+            certificate_pem = ca.sign_csr(
+                body.csr_pem.encode("ascii"),
+                common_name=body.device_id,
+                validity_days=cert_validity_days,
+            )
+        except (InvalidCsrError, ValueError) as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid CSR: {exc}") from exc
+
+        device_token = registry.register(
+            body.device_id,
+            body.display_name,
             body.agent_version,
-            body.driver_count,
-            body.uptime_seconds,
-            body.last_config_apply,
+            body.heartbeat_interval_seconds,
         )
-        pending = registry.take_pending_config(device_id)
-        if pending is None:
-            return {"pending_config": None, "pending_config_version": None}
-        config, version = pending
-        return {"pending_config": config, "pending_config_version": version}
+        certificate = x509.load_pem_x509_certificate(certificate_pem)
+        registry.record_certificate_issued(
+            body.device_id, certificate.serial_number, certificate.not_valid_after_utc
+        )
+        return {
+            "device_token": device_token,
+            "certificate_pem": certificate_pem.decode("ascii"),
+            "ca_certificate_pem": ca.certificate_pem.decode("ascii"),
+        }
 
     @app.get("/api/v1/fleet/devices")
     def list_devices(_auth: None = Depends(require_admin)) -> list[dict[str, Any]]:
@@ -142,10 +181,3 @@ def create_fleet_manager_app(
         }
 
     return app
-
-
-def _bearer_value(authorization_header: str) -> str:
-    prefix = "Bearer "
-    if not authorization_header.startswith(prefix):
-        return ""
-    return authorization_header[len(prefix) :]

@@ -66,6 +66,8 @@ def test_status_is_offline_after_missed_heartbeats() -> None:
         last_config_apply=None,
         has_pending_config=False,
         pending_config_version=0,
+        cert_serial_number=None,
+        cert_not_after=None,
     )
     assert record.status == "offline"
 
@@ -113,3 +115,46 @@ def test_list_devices_is_sorted_by_device_id(tmp_path: Path) -> None:
     registry.register("aaa", None, None, heartbeat_interval_seconds=60)
 
     assert [d.device_id for d in registry.list_devices()] == ["aaa", "zzz"]
+
+
+def test_join_token_is_consumable_exactly_once_for_the_right_device(tmp_path: Path) -> None:
+    registry = DeviceRegistry(tmp_path / "devices.db")
+    token = registry.create_join_token("dev1", ttl_seconds=3600)
+
+    assert registry.consume_join_token("dev1", token) is True
+    assert registry.consume_join_token("dev1", token) is False
+
+
+def test_join_token_is_rejected_for_a_different_device_id(tmp_path: Path) -> None:
+    registry = DeviceRegistry(tmp_path / "devices.db")
+    token = registry.create_join_token("dev1", ttl_seconds=3600)
+
+    assert registry.consume_join_token("dev2", token) is False
+    # Not consumed by the failed attempt above -- the right device can
+    # still redeem it.
+    assert registry.consume_join_token("dev1", token) is True
+
+
+def test_join_token_is_rejected_once_expired(tmp_path: Path) -> None:
+    registry = DeviceRegistry(tmp_path / "devices.db")
+    token = registry.create_join_token("dev1", ttl_seconds=-1)
+
+    assert registry.consume_join_token("dev1", token) is False
+
+
+def test_unknown_join_token_is_rejected(tmp_path: Path) -> None:
+    registry = DeviceRegistry(tmp_path / "devices.db")
+
+    assert registry.consume_join_token("dev1", "not-a-real-token") is False
+
+
+def test_record_certificate_issued_updates_the_device_record(tmp_path: Path) -> None:
+    registry = DeviceRegistry(tmp_path / "devices.db")
+    registry.register("dev1", None, None, heartbeat_interval_seconds=60)
+    not_after = datetime.now(UTC) + timedelta(days=90)
+
+    registry.record_certificate_issued("dev1", 12345, not_after)
+
+    record = registry.get("dev1")
+    assert record.cert_serial_number == "12345"
+    assert record.cert_not_after == not_after

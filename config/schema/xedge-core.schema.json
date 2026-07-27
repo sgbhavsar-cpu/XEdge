@@ -309,24 +309,28 @@
     },
     "fleet": {
       "type": "object",
-      "description": "Fleet agent (Sprint 29, XEDGE-210/213 — partial scope, see ADR-009): periodic heartbeat to a separate Fleet Manager service, and pull-based config push (this device applies a pending config through the existing hot-reload file-write path, then reports the result on the next heartbeat). Defaults off. Device-to-manager auth is a shared bearer token issued at registration (ADR-009 interim posture) — mTLS (XEDGE-214) is deferred.",
+      "description": "Fleet agent (Sprint 29, XEDGE-210/213; reworked Sprint C4, XEDGE-442, ADR-013 §3): periodic heartbeat to a separate Fleet Manager service, and pull-based config push (this device applies a pending config through the existing hot-reload file-write path, then reports the result on the next heartbeat). Defaults off. Enrollment (one-time, over manager_url) exchanges a single-use join token and a locally-generated CSR for a CA-signed device certificate; heartbeat/config-pull (over device_manager_url) then authenticate with that certificate plus a device token, both persisted locally alongside the never-transmitted private key.",
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean", "default": false },
         "manager_url": {
           "type": "string",
-          "description": "Base URL of the Fleet Manager service, e.g. https://fleet-manager.local:8090."
+          "description": "Base URL of the Fleet Manager's enrollment/admin port, e.g. https://fleet-manager.local:8090. Used once, for /enroll."
+        },
+        "device_manager_url": {
+          "type": "string",
+          "description": "Base URL of the Fleet Manager's mTLS device port, e.g. https://fleet-manager.local:8091. Used for every heartbeat after enrollment; required when fleet.enabled is true."
         },
         "device_id": {
           "type": "string",
           "minLength": 1,
-          "description": "Stable identity this device registers under; required when fleet.enabled is true."
+          "description": "Stable identity this device enrolls under; required when fleet.enabled is true."
         },
         "display_name": { "type": "string" },
         "join_token": {
           "type": "string",
           "x-secret": true,
-          "description": "Pre-shared token proving this device is allowed to register with the Fleet Manager. Only used once — the manager issues a per-device token in response, persisted locally alongside session_key/server_cert.pem."
+          "description": "Single-use, time-limited token an operator provisioned for this specific device_id (Fleet Manager admin API: POST /api/v1/fleet/join-tokens). Consumed by /enroll; the manager then issues a device certificate and device token, persisted locally alongside the device's own private key."
         },
         "heartbeat_interval_seconds": {
           "type": "number",
@@ -337,7 +341,7 @@
         "verify_tls": {
           "type": "boolean",
           "default": true,
-          "description": "Set false to accept a self-signed Fleet Manager certificate (matches xedge-cli's --insecure posture for local/dev deployments)."
+          "description": "Governs only the one-time enrollment call to manager_url, before this device has any knowledge of the fleet CA. Set false to accept a self-signed/unverified Fleet Manager certificate at that step (matches xedge-cli's --insecure posture for local/dev deployments). The device_manager_url connection is always verified against the fleet CA certificate enrollment returned, regardless of this setting."
         }
       }
     }

@@ -46,7 +46,12 @@ from xedge.drivers.modbus.rtu_over_tcp import ModbusRtuOverTcpDriver
 from xedge.drivers.modbus.serial import ModbusRtuSerialDriver
 from xedge.drivers.modbus.tcp import ModbusTcpDriver
 from xedge.drivers.opcua.client import OpcUaClientDriver
-from xedge.fleet.agent import FleetAgentConfig, FleetAgentStatus, fleet_heartbeat_loop
+from xedge.fleet.agent import (
+    FleetAgentConfig,
+    FleetAgentPaths,
+    FleetAgentStatus,
+    fleet_heartbeat_loop,
+)
 from xedge.northbound.dispatcher import NorthboundDispatcher
 from xedge.northbound.mqtt import MqttSparkplugConnector, SparkplugConnectorConfig
 from xedge.northbound.opcua_server import OpcUaServerConfig, OpcUaTagServer
@@ -106,6 +111,18 @@ class DataPaths:
     @property
     def fleet_device_token(self) -> Path:
         return self.fleet / "device_token"
+
+    @property
+    def fleet_device_cert(self) -> Path:
+        return self.fleet / "device-cert.pem"
+
+    @property
+    def fleet_device_key(self) -> Path:
+        return self.fleet / "device-key.pem"
+
+    @property
+    def fleet_ca_certificate(self) -> Path:
+        return self.fleet / "ca.pem"
 
     @classmethod
     def from_config(cls, store: ConfigStore) -> DataPaths:
@@ -367,13 +384,20 @@ def _build_fleet_agent_config(store: ConfigStore) -> FleetAgentConfig | None:
     if not fleet_config.get("enabled", False):
         return None
     manager_url = fleet_config.get("manager_url")
+    device_manager_url = fleet_config.get("device_manager_url")
     device_id = fleet_config.get("device_id")
     join_token = fleet_config.get("join_token")
-    if not manager_url or not device_id or not join_token:
-        logger.error("fleet.config_incomplete", manager_url=bool(manager_url), device_id=device_id)
+    if not manager_url or not device_manager_url or not device_id or not join_token:
+        logger.error(
+            "fleet.config_incomplete",
+            manager_url=bool(manager_url),
+            device_manager_url=bool(device_manager_url),
+            device_id=device_id,
+        )
         return None
     return FleetAgentConfig(
         manager_url=manager_url,
+        device_manager_url=device_manager_url,
         device_id=device_id,
         join_token=join_token,
         display_name=fleet_config.get("display_name"),
@@ -589,12 +613,17 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
 
     fleet_status = FleetAgentStatus()
     fleet_agent_config = _build_fleet_agent_config(store)
-    fleet_token_path = paths.fleet_device_token
+    fleet_agent_paths = FleetAgentPaths(
+        device_token=paths.fleet_device_token,
+        device_cert=paths.fleet_device_cert,
+        device_key=paths.fleet_device_key,
+        ca_certificate=paths.fleet_ca_certificate,
+    )
     fleet_task = (
         asyncio.create_task(
             fleet_heartbeat_loop(
                 fleet_agent_config,
-                fleet_token_path,
+                fleet_agent_paths,
                 supervisor,
                 config_path,
                 ConfigValidator.from_file(schema_path),
