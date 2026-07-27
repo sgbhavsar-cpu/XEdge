@@ -386,6 +386,12 @@
           "type": "boolean",
           "default": true,
           "description": "Governs only the one-time enrollment call to manager_url, before this device has any knowledge of the fleet CA. Set false to accept a self-signed/unverified Fleet Manager certificate at that step (matches xedge-cli's --insecure posture for local/dev deployments). The device_manager_url connection is always verified against the fleet CA certificate enrollment returned, regardless of this setting."
+        },
+        "cert_rotation_threshold_days": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 30,
+          "description": "ADR-013 §3/XEDGE-443: the agent re-keys once its certificate has fewer than this many days left before expiry, checked once per heartbeat. Default gives a 90-day-validity certificate (the Fleet Manager's own --cert-validity-days default) 60 days of retry margin -- well clear of the Web UI's 14-day 'expires soon' warning, which should not normally fire at all."
         }
       }
     },

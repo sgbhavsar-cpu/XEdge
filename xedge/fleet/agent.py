@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +58,16 @@ class FleetAgentConfig:
     display_name: str | None = None
     heartbeat_interval_seconds: float = 60
     verify_tls: bool = True
+    cert_rotation_threshold_days: float = 30
+    """Carried from Sprint C4 into C5 (ADR-013 §3, XEDGE-443's endpoint had
+    no caller until now): re-key once this many days remain before
+    `device-cert.pem` expires, checked once per heartbeat -- no separate
+    timer, since the heartbeat interval is already far shorter than any
+    sane threshold. Default gives a 90-day-validity device (the manager's
+    own --cert-validity-days default) a full 60 days of retry margin
+    before actual expiry, well clear of the Web UI's own 14-day
+    "expires soon" warning threshold (xedge-ui.js CERT_EXPIRY_WARNING_DAYS)
+    -- under normal operation that warning should never fire at all."""
 
 
 @dataclass(slots=True, frozen=True)
@@ -231,27 +241,41 @@ async def fleet_heartbeat_loop(
     # during enrollment (no CA knowledge exists yet); once enrolled, the
     # real CA is sitting on disk and skipping verification against it would
     # be a pure downgrade with no corresponding benefit.
+    #
+    # A mutable local, not a `with`-bound constant: certificate rotation
+    # (below) writes a new cert/key to the same paths mid-loop, and an
+    # `ssl.SSLContext` can't be told to start trusting a different
+    # cert/key pair after construction — the only way to pick up a
+    # rotated identity is to build a fresh context (and, since it's baked
+    # into the client at construction too, a fresh `AsyncClient`) from it.
     mtls_context = build_mtls_client_context(
         paths.device_cert, paths.device_key, paths.ca_certificate
     )
-    async with httpx.AsyncClient(
-        base_url=config.device_manager_url,
-        verify=mtls_context,
-        # No connection reuse (Sprint C4, XEDGE-442 -- found by running this
-        # for real, not by any automated test): uvicorn's default
-        # timeout_keep_alive is 5s, and heartbeat_interval_seconds is
-        # commonly >= that (60s by default) -- httpx's pool would try to
-        # reuse a connection the server has *already* closed server-side,
-        # surfacing as "Server disconnected without sending a response" on
-        # roughly every heartbeat past the first. httpx correctly refuses
-        # to silently retry a POST across that race (it can't know whether
-        # the server processed a prior attempt before closing), so this
-        # must be avoided rather than caught. A heartbeat is infrequent
-        # enough that a fresh TCP+TLS handshake every time costs nothing
-        # worth optimizing for.
-        limits=httpx.Limits(max_keepalive_connections=0),
-    ) as client:
-        while True:
+    while True:
+        # Rebuilt every iteration rather than once outside the loop: the
+        # only way for a certificate rotation to actually take effect (see
+        # `mtls_context` above). `max_keepalive_connections=0` already
+        # meant no connection was ever reused *within* the old single
+        # long-lived client either, so this costs nothing that wasn't
+        # already being paid per request.
+        async with httpx.AsyncClient(
+            base_url=config.device_manager_url,
+            verify=mtls_context,
+            # No connection reuse (Sprint C4, XEDGE-442 -- found by running
+            # this for real, not by any automated test): uvicorn's default
+            # timeout_keep_alive is 5s, and heartbeat_interval_seconds is
+            # commonly >= that (60s by default) -- httpx's pool would try to
+            # reuse a connection the server has *already* closed server-side,
+            # surfacing as "Server disconnected without sending a response"
+            # on roughly every heartbeat past the first. httpx correctly
+            # refuses to silently retry a POST across that race (it can't
+            # know whether the server processed a prior attempt before
+            # closing), so this must be avoided rather than caught. A
+            # heartbeat is infrequent enough that a fresh TCP+TLS handshake
+            # every time costs nothing worth optimizing for.
+            limits=httpx.Limits(max_keepalive_connections=0),
+        ) as client:
+            heartbeat_ok = False
             try:
                 all_status = supervisor.all_status()
                 response = await client.post(
@@ -269,6 +293,7 @@ async def fleet_heartbeat_loop(
                 status.last_heartbeat_at = datetime.now(UTC)
                 status.last_heartbeat_ok = True
                 status.last_error = None
+                heartbeat_ok = True
 
                 body = response.json()
                 pending_config = body.get("pending_config")
@@ -282,7 +307,73 @@ async def fleet_heartbeat_loop(
                 status.last_error = str(exc)
                 logger.warning("fleet.heartbeat_failed", error=str(exc))
 
-            await asyncio.sleep(config.heartbeat_interval_seconds)
+            # Gated on this iteration's heartbeat having actually reached
+            # the manager: if the connection is down, a rotation attempt
+            # over the same client would just fail the same way and log a
+            # second, redundant warning every cycle for the duration of an
+            # outage. The next heartbeat that *does* succeed re-checks.
+            if (
+                heartbeat_ok
+                and status.cert_not_after is not None
+                and _cert_needs_rotation(status.cert_not_after, config.cert_rotation_threshold_days)
+            ):
+                try:
+                    status.cert_not_after = await _rotate_certificate(
+                        client, paths, config, device_token
+                    )
+                    mtls_context = build_mtls_client_context(
+                        paths.device_cert, paths.device_key, paths.ca_certificate
+                    )
+                    logger.info("fleet.certificate_rotated", cert_not_after=status.cert_not_after)
+                except (httpx.HTTPError, OSError) as exc:
+                    # Left as-is on failure: the *old* cert/key on disk are
+                    # untouched (see _rotate_certificate), still valid, and
+                    # still what `mtls_context` points at -- the next
+                    # heartbeat's rotation check simply tries again.
+                    logger.warning("fleet.cert_rotation_failed", error=str(exc))
+
+        await asyncio.sleep(config.heartbeat_interval_seconds)
+
+
+def _cert_needs_rotation(cert_not_after: datetime, threshold_days: float) -> bool:
+    return (cert_not_after - datetime.now(UTC)) < timedelta(days=threshold_days)
+
+
+async def _rotate_certificate(
+    client: httpx.AsyncClient,
+    paths: FleetAgentPaths,
+    config: FleetAgentConfig,
+    device_token: str,
+) -> datetime:
+    """XEDGE-443/ADR-013 §3: re-key over the *current*, still-valid mTLS
+    session, well before the certificate on disk actually expires (see the
+    caller's rotation check). Deliberately a fresh keypair each time
+    (`generate_key_and_csr`, the same call `_enroll` makes), not a
+    re-signed copy of the existing one — a device that already holds a
+    connection this CA vouches for is exactly as trustworthy as one
+    presenting a fresh join token, so there is no reason to prefer key
+    reuse's smaller blast radius on compromise over a clean rotation.
+
+    Writes key then cert, matching `_enroll`'s own order — if this process
+    is killed between the two writes, the pair on disk is mismatched and
+    `build_mtls_client_context` will fail on the next start with a clear
+    SSL error, not a silent one; low-probability enough (a crash inside
+    two sequential local file writes) not to warrant a two-phase-commit
+    scheme for it."""
+    private_key_pem, csr_pem = generate_key_and_csr(config.device_id)
+    response = await client.post(
+        f"/api/v1/fleet/devices/{config.device_id}/rotate-certificate",
+        headers={"Authorization": f"Bearer {device_token}"},
+        json={"csr_pem": csr_pem.decode("ascii")},
+    )
+    response.raise_for_status()
+    certificate_pem = response.json()["certificate_pem"]
+    _write_text(paths.device_key, private_key_pem.decode("ascii"))
+    _write_text(paths.device_cert, certificate_pem)
+    not_after: datetime = x509.load_pem_x509_certificate(
+        certificate_pem.encode("ascii")
+    ).not_valid_after_utc
+    return not_after
 
 
 def _apply_pending_config(

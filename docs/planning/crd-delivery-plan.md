@@ -311,7 +311,7 @@ completed stories, carry-over, and a re-forecast against 2026-12-06.
 | C2 | ✅ Complete ([PR #4](https://github.com/sgbhavsar-cpu/XEdge/pull/4)) | XEDGE-420/421/422/423/424/425/426 | — | On plan |
 | C3 | ✅ Complete ([PR #5](https://github.com/sgbhavsar-cpu/XEdge/pull/5)) | XEDGE-430/431/432/433/434/435/436/437 | — | On plan |
 | C4 | ✅ Complete ([PR #6](https://github.com/sgbhavsar-cpu/XEdge/pull/6), [PR #7](https://github.com/sgbhavsar-cpu/XEdge/pull/7)) | XEDGE-440/441/442/443/444/445/446/447 | Agent-side proactive cert rotation (see notes) | On plan |
-| C5 | ✅ Complete ([PR #8](https://github.com/sgbhavsar-cpu/XEdge/pull/8), [PR #9](https://github.com/sgbhavsar-cpu/XEdge/pull/9)) | XEDGE-450/451/452/453/454/455 | Agent-side proactive cert rotation (carried again from C4 — see notes, now overdue); mqtt_broker ACL editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan, cert-rotation urgency flagged |
+| C5 | ✅ Complete ([PR #8](https://github.com/sgbhavsar-cpu/XEdge/pull/8), [PR #9](https://github.com/sgbhavsar-cpu/XEdge/pull/9), [PR #10](https://github.com/sgbhavsar-cpu/XEdge/pull/10)) | XEDGE-450/451/452/453/454/455; XEDGE-443's agent-side rotation (carried from C4, resolved in PR #10 — see addendum) | mqtt_broker ACL editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan |
 
 ### Sprint 0 notes (2026-07-27 → 08-02)
 
@@ -650,6 +650,31 @@ should not be deferred a third time.
 (intentionally deferred, see above — not a gap discovered late, a scope
 line drawn deliberately this sprint).
 
+**Addendum — the cert-rotation carry above was resolved immediately
+after, rather than actually carried into C6.** `fleet_heartbeat_loop` now
+checks, once per heartbeat, whether `device-cert.pem` has fewer than
+`fleet.cert_rotation_threshold_days` (default 30) left before expiry, and
+if so calls XEDGE-443's `/rotate-certificate` endpoint itself — a fresh
+keypair each time (`generate_key_and_csr`, the same call enrollment
+makes), not a re-signed copy of the existing key.
+
+The structural cost flagged back in C4 was real: the mTLS `httpx.AsyncClient`
+bakes its `ssl.SSLContext` in at construction, so nothing on a live client
+can be told "trust this new cert/key instead." Fixed by rebuilding the
+client fresh every heartbeat iteration rather than once outside the loop —
+free to do since `max_keepalive_connections=0` (the Sprint C4 keep-alive
+fix) already meant no connection was reused *within* the old long-lived
+client either. Rotation attempts are gated on that same iteration's
+heartbeat having actually succeeded, so an unreachable manager produces
+one warning per cycle, not two.
+
+Verified with a regression test that proves the part a rotation which only
+*appeared* to work would fail: a device enrolled with a deliberately
+1-day-validity certificate (so the rotation threshold is already crossed
+on the first heartbeat, rather than waiting out real time) whose
+heartbeats keep succeeding *after* the rotation, over a client presenting
+the new certificate — not just that the file on disk changed.
+
 ---
 
 ## 8. Revision history
@@ -660,3 +685,4 @@ line drawn deliberately this sprint).
 | 1.1 | 2026-07-27 | Sprint C3 status row backfilled (was missing from §7's table despite its notes existing); Sprint C4 complete — status row + notes |
 | 1.2 | 2026-07-27 | Sprint C4 addendum: keep-alive connection-reuse bug found by manual verification, fixed, regression-tested |
 | 1.3 | 2026-07-27 | Sprint C5 complete — status row + notes (embedded MQTT broker, three more amqtt findings, Web UI config gap and fix, cert-rotation carry flagged as overdue) |
+| 1.4 | 2026-07-27 | Sprint C5 addendum: agent-side proactive certificate rotation (XEDGE-443, carried from C4) delivered in PR #10 — no longer carried into C6 |

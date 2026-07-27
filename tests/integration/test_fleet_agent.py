@@ -23,6 +23,7 @@ from pathlib import Path
 import httpx
 import pytest
 import uvicorn
+from cryptography import x509
 
 from xedge.core.config import ConfigValidator
 from xedge.core.supervisor import DriverRegistry, DriverSupervisor
@@ -64,7 +65,13 @@ class _FleetManagerFixture:
     exactly as `xedge.fleet.manager_cli.run` does, but keeping server
     handles so the test can shut them down cleanly."""
 
-    def __init__(self, tmp_path: Path, *, device_keep_alive_timeout: int = 5) -> None:
+    def __init__(
+        self,
+        tmp_path: Path,
+        *,
+        device_keep_alive_timeout: int = 5,
+        device_cert_validity_days: int = _CERT_VALIDITY_DAYS,
+    ) -> None:
         self.public_port = _free_port()
         self.device_port = _free_port()
         self.public_url = f"https://127.0.0.1:{self.public_port}"
@@ -86,10 +93,13 @@ class _FleetManagerFixture:
         )
 
         public_app = create_fleet_manager_app(
-            self.registry, self.ca, admin_token=_ADMIN_TOKEN, cert_validity_days=_CERT_VALIDITY_DAYS
+            self.registry,
+            self.ca,
+            admin_token=_ADMIN_TOKEN,
+            cert_validity_days=device_cert_validity_days,
         )
         device_app = create_fleet_device_app(
-            self.registry, self.ca, cert_validity_days=_CERT_VALIDITY_DAYS
+            self.registry, self.ca, cert_validity_days=device_cert_validity_days
         )
         self.public_server = uvicorn.Server(
             uvicorn.Config(
@@ -428,3 +438,104 @@ async def test_rotate_certificate_over_a_real_mtls_connection(
 
     assert response.status_code == 200
     assert response.json()["certificate_pem"]
+
+
+async def test_agent_proactively_rotates_a_certificate_nearing_expiry(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    """Carried from Sprint C4 into C5: XEDGE-443's rotate-certificate
+    endpoint had no caller on the device side until now. Uses a
+    deliberately short-validity device certificate so the rotation
+    threshold is already crossed on the very first heartbeat, rather than
+    waiting out real time -- the same "compress the interval, not the
+    mechanism" approach every other timing-dependent test in this file
+    already uses. Proves both halves: that a rotation actually happens
+    (new key/cert on disk, new expiry recorded on the manager), and the
+    structurally harder part the delivery plan's C4 notes flagged as the
+    reason this was deferred -- that heartbeats *keep succeeding
+    afterward*, proving the mTLS client was really rebuilt with the new
+    identity rather than only appearing to rotate."""
+    device_cert_validity_days = 1
+    manager = _FleetManagerFixture(tmp_path, device_cert_validity_days=device_cert_validity_days)
+    await manager.start()
+    try:
+        join_token = await manager.create_join_token("rotation-test-device")
+        config_path = tmp_path / "xedge.yaml"
+        config_path.write_text("schema_version: '0.1'\n", encoding="utf-8")
+        validator = ConfigValidator.from_file(core_schema_path)
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=10))
+        fleet_status = FleetAgentStatus()
+        fleet_config = FleetAgentConfig(
+            manager_url=manager.public_url,
+            device_manager_url=manager.device_url,
+            device_id="rotation-test-device",
+            join_token=join_token,
+            heartbeat_interval_seconds=_HEARTBEAT_INTERVAL_SECONDS,
+            verify_tls=False,
+            # A 1-day-validity certificate is already inside any sane
+            # threshold, so this fires on the first heartbeat.
+            cert_rotation_threshold_days=30,
+        )
+        agent_dir = tmp_path / "fleet"
+        paths = FleetAgentPaths(
+            device_token=agent_dir / "device_token",
+            device_cert=agent_dir / "device-cert.pem",
+            device_key=agent_dir / "device-key.pem",
+            ca_certificate=agent_dir / "ca.pem",
+        )
+        agent_task = asyncio.create_task(
+            fleet_heartbeat_loop(
+                fleet_config,
+                paths,
+                supervisor,
+                config_path,
+                validator,
+                datetime.now(UTC),
+                fleet_status,
+            )
+        )
+        try:
+            await _wait_until(lambda: fleet_status.last_heartbeat_ok is True)
+            original_cert_pem = paths.device_cert.read_text(encoding="utf-8")
+            original_key_pem = paths.device_key.read_text(encoding="utf-8")
+            original_serial = x509.load_pem_x509_certificate(
+                original_cert_pem.encode("ascii")
+            ).serial_number
+
+            await _wait_until(
+                lambda: paths.device_cert.read_text(encoding="utf-8") != original_cert_pem
+            )
+            rotated_at = datetime.now(UTC)
+            assert paths.device_key.read_text(encoding="utf-8") != original_key_pem
+
+            new_cert = x509.load_pem_x509_certificate(paths.device_cert.read_bytes())
+            # Both the original and the rotated certificate are signed with
+            # the same 1-day validity in this test (device_cert_validity_days
+            # governs rotation the same as enrollment), and X.509 validity
+            # fields only have whole-second precision -- either can coincide
+            # with the original's expiry by coincidence. The CA's serial
+            # number is random per signing call (xedge/security/ca.py) and
+            # is what actually proves this is a freshly issued certificate,
+            # not the same one re-read off disk.
+            assert new_cert.serial_number != original_serial
+            assert fleet_status.cert_not_after == new_cert.not_valid_after_utc
+
+            # The part a rotation that merely *appeared* to work would
+            # fail: a heartbeat strictly after the rotation, still
+            # succeeding, over a client presenting the new certificate.
+            await _wait_until(
+                lambda: (
+                    fleet_status.last_heartbeat_at is not None
+                    and fleet_status.last_heartbeat_at > rotated_at
+                    and fleet_status.last_heartbeat_ok is True
+                )
+            )
+
+            record = manager.registry.get("rotation-test-device")
+            assert record is not None
+            assert record.cert_not_after == new_cert.not_valid_after_utc
+        finally:
+            agent_task.cancel()
+            await asyncio.gather(agent_task, return_exceptions=True)
+    finally:
+        await manager.stop()

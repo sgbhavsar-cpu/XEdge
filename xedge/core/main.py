@@ -436,6 +436,7 @@ def _build_fleet_agent_config(store: ConfigStore) -> FleetAgentConfig | None:
         display_name=fleet_config.get("display_name"),
         heartbeat_interval_seconds=fleet_config.get("heartbeat_interval_seconds", 60),
         verify_tls=fleet_config.get("verify_tls", True),
+        cert_rotation_threshold_days=fleet_config.get("cert_rotation_threshold_days", 30),
     )
 
 
