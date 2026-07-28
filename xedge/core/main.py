@@ -50,6 +50,7 @@ from xedge.core.watchdog import watchdog_loop
 from xedge.core.write_router import WriteRouter
 from xedge.drivers.bacnet.client import BacnetIpDriver
 from xedge.drivers.base import TagUpdate, TagValue
+from xedge.drivers.ethernet_ip.client import EtherNetIpDriver
 from xedge.drivers.loopback.driver import LoopbackDriver
 from xedge.drivers.modbus.rtu_over_tcp import ModbusRtuOverTcpDriver
 from xedge.drivers.modbus.serial import ModbusRtuSerialDriver
@@ -195,6 +196,7 @@ def _build_registry() -> DriverRegistry:
     registry.register("modbus_rtu_serial", ModbusRtuSerialDriver)
     registry.register("opcua_client", OpcUaClientDriver)
     registry.register("bacnet_ip", BacnetIpDriver)
+    registry.register("ethernet_ip", EtherNetIpDriver)
     registry.register("mqtt_subscriber", MqttSubscriberDriver)
     registry.register("loopback", LoopbackDriver)
     return registry

@@ -317,6 +317,7 @@ completed stories, carry-over, and a re-forecast against 2026-12-06.
 | C4 | ✅ Complete ([PR #6](https://github.com/sgbhavsar-cpu/XEdge/pull/6), [PR #7](https://github.com/sgbhavsar-cpu/XEdge/pull/7)) | XEDGE-440/441/442/443/444/445/446/447 | Agent-side proactive cert rotation (see notes) | On plan |
 | C5 | ✅ Complete ([PR #8](https://github.com/sgbhavsar-cpu/XEdge/pull/8), [PR #9](https://github.com/sgbhavsar-cpu/XEdge/pull/9), [PR #10](https://github.com/sgbhavsar-cpu/XEdge/pull/10)) | XEDGE-450/451/452/453/454/455; XEDGE-443's agent-side rotation (carried from C4, resolved in PR #10 — see addendum) | mqtt_broker ACL editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan |
 | C6 | ✅ Complete ([PR #11](https://github.com/sgbhavsar-cpu/XEdge/pull/11), [PR #12](https://github.com/sgbhavsar-cpu/XEdge/pull/12)) | XEDGE-460/461/462/463/464/465/466/467 | smtp.alarm_notifications/scheduled_reports editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan |
+| C7 | ✅ Complete (PR #13 to be opened) | XEDGE-470/471/472/473/474/475/476 | Runtime tag discovery / L5X import (scope-cut candidate 4 — commissioning convenience, not required for symbolic-tag read/write; see notes) | On plan |
 
 ### Sprint 0 notes (2026-07-27 → 08-02)
 
@@ -774,6 +775,82 @@ was the one open item, now resolved.
 
 ---
 
+### Sprint C7 notes (EtherNet/IP Scanner)
+
+All seven stories delivered in one PR ([#13](https://github.com/sgbhavsar-cpu/XEdge/pull/13),
+stacked on the prerequisites commit already on this branch) rather than
+C4/C5/C6's multi-PR split — a CIP originator, its connection/read/write
+paths, and its config schema are one coherent unit of work here, not
+several independently-shippable slices.
+
+**No real EtherNet/IP simulator could be found, so this driver breaks the
+real-server-test precedent every other protocol driver in this codebase
+follows — a deliberate, documented departure, not an oversight.**
+`cpppo`'s CIP simulator (`cpppo.server.enip`) was the only fallback ADR-012
+§1 named. It accepts a `pycomm3.LogixDriver` connection successfully, but
+every read/write against it returns `Tag(..., error="Tag doesn't exist")`:
+cpppo implements generic/simple CIP (its own docs describe its `-S` flag as
+a "simple (non-routing) ... device, e.g. MicroLogix"), not the Logix
+symbol-table upload (CIP Symbol Object 0x6B) `pycomm3.LogixDriver` requires
+to resolve a tag name to an address and type. This is an architectural
+mismatch, confirmed against both tools' own behavior, not a configuration
+error — and not something a licensing decision could have avoided, since no
+other maintained, permissively-licensed, Logix-compatible simulator exists
+either. `tests/unit/test_ethernet_ip_client.py` tests `pycomm3.LogixDriver`'s
+own public boundary (`open`/`close`/`read`/`write`) with a fake reproducing
+its real contracts instead — documented in both that file's docstring and
+the driver's own, so the departure from `tests/integration/test_opcua_client_driver.py`
+/`test_bacnet_client_driver.py`'s pattern is visible at both ends, not just
+asserted here.
+
+**`access: read_only`/`write_only` (XEDGE-473's "write with confirmation")
+copies `xedge.drivers.modbus.polling`'s field verbatim** rather than
+inventing a CIP-specific equivalent — a status/feedback tag that must never
+be driven, or a control-only output tag that should never be polled, are
+the same two needs Modbus already solved, and CIP has no protocol-level
+reason to solve them differently.
+
+**Exception handling distinguishes a dead connection from a bad tag more
+finely than Modbus needed to, because `pycomm3` already does half the
+work.** `pycomm3`'s own `read()`/`write()` never raise for a per-tag
+problem (an unknown symbolic name, a type mismatch) — they return a `Tag`
+with `.error` set, confirmed by reading `pycomm3`'s source directly. Only
+`CommError` (a broken connection) is left to propagate out of `run()` for
+the DriverSupervisor to restart with backoff; `DataError`/`ResponseError`/
+`RequestError` are request-level and handled as Bad quality / a failed
+`WriteResult` without tearing the connection down.
+
+**A wrong FR citation was caught before it shipped.** A first draft of the
+driver's docstring cited "FR-SA-009..FR-SA-012" from memory; checking
+HLR.md directly showed FR-SA-011/012 don't exist, FR-SA-009 is the
+cross-driver scan-rate requirement (50ms floor, shared with every other
+driver, not EtherNet/IP-specific), and the actual EtherNet/IP requirement
+is FR-SB-005. Fixed before commit — mentioned here because the schema
+also inherited the wrong assumption (a 1ms `scan_rate_ms` floor copied from
+Modbus's *lowered* one) before this check caught it; the schema keeps
+FR-SA-009's original 50ms floor instead, since nothing has verified
+sub-50ms CIP explicit messaging the way Sprint C1 verified Modbus's floor.
+
+**Live-verified against a running server, not just pytest** (the same bar
+XEDGE-476 sets): started `xedge` against a scratch config, created an
+`ethernet_ip` driver through the Web UI, and confirmed the config form
+(`host`/`port`/`slot`/`connect_timeout_seconds`), the tag-group/tag CRUD
+pages (including the new `access` dropdown and `scaling.*` fields), and
+the CSV export/import widget all rendered and round-tripped correctly into
+valid, schema-passing YAML — with **zero new UI code**, exactly as
+XEDGE-476's estimate assumed (the generic schema-driven form engine and
+the generic tag-CRUD/CSV routes are already driver-type-agnostic). Pointing
+the driver at a real but unreachable address also showed the
+`DriverSupervisor`'s restart-with-backoff (NFR-R-006) firing for real —
+`driver.failed` log lines with `consecutive_failures` climbing 1 through 6
+against a widening backoff — confirming XEDGE-475's supervisor integration
+live, not just by code inspection.
+
+**Customer input needed:** none — Q-7 (the one open item) was resolved
+before this sprint started (see the addendum above and XEDGE-DR-001).
+
+---
+
 ## 8. Revision history
 
 | Version | Date | Change |
@@ -784,3 +861,4 @@ was the one open item, now resolved.
 | 1.3 | 2026-07-27 | Sprint C5 complete — status row + notes (embedded MQTT broker, three more amqtt findings, Web UI config gap and fix, cert-rotation carry flagged as overdue) |
 | 1.4 | 2026-07-27 | Sprint C5 addendum: agent-side proactive certificate rotation (XEDGE-443, carried from C4) delivered in PR #10 — no longer carried into C6 |
 | 1.5 | 2026-07-28 | Sprint C6 complete — status row + notes (Asset Management resolving open item Q-3, a real driver/tag deletion validation gap found and fixed, SMTP notifications/reports, aiosmtpd added as a test dependency, an SMTP TLS trust-store gap found and fixed) |
+| 1.6 | 2026-07-28 | Sprint C7 complete — status row + notes (EtherNet/IP scanner via `pycomm3`; cpppo/pycomm3 incompatibility found, documented, mocked-boundary test strategy adopted instead; live Web UI verification confirming zero new UI code needed) |

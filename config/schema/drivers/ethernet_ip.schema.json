@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://xedge.example.com/schema/drivers/ethernet_ip.schema.json",
+  "title": "EtherNet/IP Driver Configuration",
+  "description": "Per-driver-type schema for `type: ethernet_ip` entries (FR-DF-004; Sprint C7, XEDGE-471/473/474/475; CRD §4.5). CIP originator for ControlLogix/CompactLogix via `pycomm3` (ADR-012 §1) -- explicit (acyclic) messaging only, polled at `scan_rate_ms`. No mainstream Python CIP library implements Class 1 implicit I/O; XEDGE-DR-001 Q-7 accepted scan-interval polling as satisfying the CRD's 'cyclic exchange' requirement (ADR-012 §1) -- this is *not* true implicit I/O, and must not be presented as such anywhere this schema's fields surface in the Web UI.",
+  "type": "object",
+  "required": ["config", "tag_groups"],
+  "additionalProperties": false,
+  "properties": {
+    "config": {
+      "type": "object",
+      "required": ["host"],
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Controller IP address or hostname, e.g. '192.168.1.50'."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 44818,
+          "description": "TCP port for CIP explicit messaging. 44818 is the EtherNet/IP standard; almost never anything else."
+        },
+        "slot": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Backplane slot number of the CPU module -- 0 for most CompactLogix (single-slot); the actual chassis slot (commonly 0-16) for a ControlLogix rack."
+        },
+        "connect_timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "default": 5.0 }
+      }
+    },
+    "tag_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "scan_rate_ms", "tags"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "scan_rate_ms": {
+            "type": "integer",
+            "minimum": 50,
+            "maximum": 86400000,
+            "description": "FR-SA-009 / XEDGE-474: 50ms minimum, 24h maximum -- this group's tags are read via an explicit-messaging request repeated at this interval, polled, not CIP Class 1 implicit I/O (no mainstream Python CIP library implements that; see this schema's own top-level description). Unlike Modbus's block-batched reads, this floor has not been lowered for CIP explicit messaging's per-request session/encapsulation overhead -- it is a schema limit, not a verified achievable rate."
+          },
+          "deadband": {
+            "type": "object",
+            "description": "FR-DP-006: change-of-value suppression, applied by the pipeline after this driver emits a raw TagUpdate -- not enforced by this driver itself. Applies to every numeric tag in this group.",
+            "required": ["type", "value"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "type": "string", "enum": ["absolute", "percentage"] },
+              "value": { "type": "number", "minimum": 0 }
+            }
+          },
+          "tags": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["id", "tag_name"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "tag_name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The controller's own symbolic tag name, e.g. 'MyTag', 'Program:MainProgram.MyTag', an array element 'MyArray[3]', or a UDT member 'MyUdt.Member'."
+                },
+                "access": {
+                  "type": "string",
+                  "enum": ["read_write", "read_only", "write_only"],
+                  "default": "read_write",
+                  "description": "XEDGE-473: 'read_only' rejects a write-back attempt against this tag (e.g. a status/feedback tag that must never be driven); 'write_only' excludes it from the group's scan_rate_ms poll (e.g. a control-only output tag), matching xedge.drivers.modbus.polling's identical field."
+                },
+                "scaling": {
+                  "type": "object",
+                  "description": "FR-DP-003: engineering_value = raw * scale + offset. Ignored for a non-numeric tag value (e.g. BOOL, STRING).",
+                  "additionalProperties": false,
+                  "properties": {
+                    "scale": { "type": "number", "default": 1.0 },
+                    "offset": { "type": "number", "default": 0.0 }
+                  }
+                },
+                "engineering_unit": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
