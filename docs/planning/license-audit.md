@@ -52,7 +52,7 @@ gate is passed):
 | lib60870-C | **black-box oracle only** (ADR-006) | GPL-2.0 (OSS ed.) / Commercial | ⚠ GPL — do not link into commercial edition | IEC 104 stack is built in-house from the purchased IEC 60870-5-104 spec |
 | OpenDNP3 / pydnp3 | **archived — do not use** | Apache-2.0 (dead upstream) | N/A | Upstream unmaintained; in-house lean-build master planned (ADR-006 gate) or commercial Rust `dnp3` crate fallback |
 | bacpypes3 | BACnet IP/MSTP | MIT | ✅ Clear | Selected over BAC0 per ADR-006 update (both MIT; bacpypes3 is the actively maintained async-native option) |
-| pycomm3 | EtherNet/IP | MIT | ✅ Clear | |
+| pycomm3 | EtherNet/IP | MIT | ✅ Clear — re-verified 2026-07-28, see §3.1 | **Not actively maintained** (upstream's own notice — see §3.1); explicit messaging only, no CIP Class 1 implicit I/O (ADR-012 §1, XEDGE-DR-001 Q-7 resolved: accepted for Sprint C7) |
 | libiec61850 | IEC 61850 MMS | GPL-3.0 (OSS ed.) / Commercial (MZ Automation) | ⚠ Commercial license required for commercial edition | Budget approved (ADR-006 §6); procure before Sprint 27 |
 | gurux-dlms-python | DLMS/COSEM — decision deferred to Phase 4 | GPL-2.0 / Commercial | ⚠ GPL — do not link into commercial edition without the commercial license | Build-vs-buy decision point at Phase 4 close (ADR-006) |
 | RAUC | OTA (OS-level, not linked into xedge process) | LGPL-2.1 | ✅ Clear — used as an external OS tool, not a Python dependency | |
@@ -72,7 +72,7 @@ XEDGE-DR-001 D-12). Entries below record the *candidate* and the
 | Library | Proposed use | License (claimed) | Verification status | Notes |
 |---|---|---|---|---|
 | amqtt | **Promotion from test-only to runtime** — embedded MQTT broker (ADR-012 §3) | MIT | ✅ Verified 2026-07-27 (prerequisite P-5, done in Sprint C5 rather than C4 as originally scheduled — recorded here rather than silently reassigned) | See §4 item 6 for the full P-5 write-up: license (own + full transitive closure), maintenance, and ARM-build finding |
-| pycomm3 | EtherNet/IP CIP originator (ADR-012 §1) | MIT | ⏳ Verify in sprint C6 (prerequisite P-1) | **Explicit messaging only — does not implement CIP Class 1 implicit (cyclic) I/O.** See ADR-012 §1 and open item Q-7 before committing to sprint C7 |
+| pycomm3 | EtherNet/IP CIP originator (ADR-012 §1) | MIT | ✅ Verified 2026-07-28 (prerequisite P-1, due Sprint C6, done at the C6/C7 boundary once Q-7 below cleared it to matter). See §4 item 7 for the full write-up: license, zero-dependency footprint, and the "no longer actively developed" maintenance finding | **Explicit messaging only — does not implement CIP Class 1 implicit (cyclic) I/O.** ADR-012 §1/XEDGE-DR-001 Q-7 **resolved 2026-07-28**: explicit messaging at a scan interval accepted, Sprint C7 proceeds at its existing estimate |
 | cpppo | EtherNet/IP fallback | ⚠ Unverified — understood to be copyleft with a commercial option | ⏳ Verify before considering | Not currently cleared for the commercial edition. Do not adopt without a license purchase decision |
 | pysnmp (lineage) | SNMP manager + agent + notification originator/receiver (ADR-012 §2) | ⚠ Unverified | ⏳ Verify in sprint C7 (prerequisites P-3, P-4) | Project changed stewardship and PyPI naming is fragmented across forks — verify the exact package identity, license and maintenance status, **and confirm it supports the agent role**, not just manager |
 | psycopg (or equivalent) | Fleet Manager Postgres driver (ADR-013 §5) | LGPL-3.0 (psycopg2) / Apache-2.0 (psycopg3) | ⏳ Verify at Delivery 2 planning | Central server only — never shipped on a gateway. Prefer psycopg3 for the permissive license |
@@ -141,10 +141,41 @@ XEDGE-DR-001 D-12). Entries below record the *candidate* and the
      `xedge/northbound/mqtt_broker.py`'s module docstring and
      crd-delivery-plan.md's Sprint C5 notes for the full write-up, not
      duplicated here.
-7. **pycomm3 verification** (ADR-012 P-1) — license and maintenance from
-   package metadata. Due sprint C6. **Blocked behind open item Q-7**
-   (whether CIP implicit I/O is required), which decides whether a library
-   is sufficient at all.
+7. **pycomm3 verification** (ADR-012 P-1) — ✅ **resolved 2026-07-28**
+   (due Sprint C6; genuinely blocked behind Q-7 until that same date, not
+   simply late — see XEDGE-DR-001 Q-7 and ADR-012 §1 for the resolution).
+   - **License** — `pycomm3==1.2.16`: MIT, confirmed from installed
+     package metadata (`pip show` and `importlib.metadata`'s
+     `Classifier: License :: OSI Approved :: MIT License`), not assumed
+     from this document's prior entry. **Zero runtime dependencies** —
+     `Requires-Dist` lists only `pytest` under a `tests` extra — so there
+     is no transitive closure to verify at all, unlike amqtt's.
+   - **Maintenance — a real finding, not a clean bill of health.**
+     1.2.16 (confirmed the latest release, uploaded 2025-12-22 per PyPI)
+     is recent, but the project's own PyPI listing carries an explicit,
+     prominent notice: **"⚠️ NOTE: pycomm3 is no longer actively
+     developed."** Quoted verbatim, not paraphrased — verified by
+     fetching the PyPI project page directly, not inferred from the
+     release cadence alone. This does not reverse ADR-012 D-13's buy
+     decision (the only licensed alternative, `cpppo`, carries a
+     copyleft/commercial-license risk this document already flags as
+     worse), but it is a real, ongoing risk for a customer deployment
+     expected to outlive this delivery: no upstream fix is coming if
+     Rockwell firmware changes break something this library depends on.
+     Stated plainly here rather than left for whoever hits the eventual
+     break to discover contextless.
+   - **Trove classifiers list Python 3.6–3.10, not 3.11/3.12** (this
+     project's own floor) — checked empirically rather than treated as a
+     hard stop: it imports and runs cleanly on the Python 3.12
+     environment this delivery develops against. Consistent with the
+     "no longer actively developed" finding above (classifiers were
+     never updated, not evidence of an actual incompatibility) rather
+     than a second, separate problem.
+   - **CIP scope** — confirms ADR-012 §1's own finding: explicit
+     (acyclic) messaging only, no Class 1 implicit (cyclic) I/O. XEDGE-
+     DR-001 Q-7 resolved 2026-07-28 (explicit messaging at a scan
+     interval accepted), so this is no longer a blocking unknown, just
+     the confirmed shape of what Sprint C7 integrates.
 8. **SNMP library verification** (ADR-012 P-3, P-4) — package identity,
    license, maintenance, and **agent-role support**. Due sprint C7.
    Fallback if none clears: v1/v2c in-house, v3 escalated to the customer

@@ -78,6 +78,12 @@ would make it unusable in the commercial edition without a purchase.
 > **This must be resolved before Sprint C7 planning.** It is carried as
 > open item Q-7 in XEDGE-DR-001 §4 and as risk R-CRD-05 in the delivery
 > plan. Sprint C7's estimate assumes option 1.
+>
+> **✅ Resolved 2026-07-28: option 1.** Explicit messaging at a scan
+> interval, `pycomm3`'s own strength — Sprint C7 proceeds as the
+> library-integration estimate above, not a multi-sprint protocol build.
+> The driver and its docs must say "polled explicit messaging," not
+> imply Class 1 implicit I/O it does not provide.
 
 ### 2. SNMP Client + Agent — integrate a library
 
@@ -172,7 +178,7 @@ None of these are optional, and each blocks its sprint:
 | # | Prerequisite | Blocks | Owner action |
 |---|---|---|---|
 | P-1 | Verify `pycomm3` license and maintenance from package metadata; record in `license-audit.md` | C7 | Sprint C6 |
-| P-2 | Resolve the implicit-I/O question (§1 warning box) with the customer | C7 | Before C7 planning |
+| P-2 | ~~Resolve the implicit-I/O question (§1 warning box) with the customer~~ ✅ **Resolved 2026-07-28** — option 1 (explicit messaging at a scan interval) accepted; see §1's warning box and XEDGE-DR-001 Q-7 | C7 | Before C7 planning |
 | P-3 | Verify the SNMP library's license, package identity and maintenance; record in `license-audit.md` | C8 | Sprint C7 |
 | P-4 | Confirm the SNMP library supports the **agent** role, not just manager | C8 | Sprint C7 |
 | P-5 | Re-verify `amqtt` license, maintenance, and ARM footprint; define broker TLS/auth/ACL scope | C5 | Sprint C4 |

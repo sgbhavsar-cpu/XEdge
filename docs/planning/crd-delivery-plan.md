@@ -193,7 +193,11 @@ layer). The data model survives either answer; only XEDGE-465 changes.
 > CIP library implements Class 1 implicit I/O (ADR-012 §1). If true
 > implicit I/O is required, this becomes a multi-sprint protocol build and
 > the delivery date is at risk. **Resolve open item Q-7 before this sprint
-> starts.** Risk R-02.
+> starts.** Risk R-02/R-CRD-05.
+>
+> **✅ Resolved 2026-07-28: explicit messaging at a scan interval
+> accepted.** This sprint proceeds at the estimate below, as a `pycomm3`
+> library integration — see ADR-012 §1 and XEDGE-DR-001 Q-7.
 
 | Story | Est. | Description |
 |---|---:|---|
@@ -291,9 +295,9 @@ Programme-level risks are in
 | **R-CRD-02** | No hardware for the HIL pass; field interop unverified at handover | H1 | Q-6, chased by Oct 25. If unavailable, state it explicitly in the handover package |
 | **R-CRD-03** | Batching (XEDGE-411) changes the read path all Modbus tests depend on | C1 | Property-based tests over address layouts; oracle comparison against `pymodbus` |
 | **R-CRD-04** | Bus manager becomes a single point of failure per port | C3 | Hard per-transaction timeout. Note this is physically true of RS-485 regardless |
-| **R-CRD-05** | **EtherNet/IP implicit I/O unavailable in any Python CIP library** | C7 | Q-7 before C7 planning. Highest-impact estimate risk in the delivery |
+| **R-CRD-05** | ~~EtherNet/IP implicit I/O unavailable in any Python CIP library~~ | C7 | **✅ Resolved 2026-07-28** — Q-7 answered (explicit messaging at a scan interval accepted). C7 proceeds at its existing estimate |
 | **R-CRD-06** | SNMP library may not support the agent role, or may fail license verification | C8 | ADR-012 P-3/P-4 verified during C7, one sprint ahead |
-| **R-CRD-07** | Customer expects an asset-first UI | C6 | Q-3. ADR-010's escape hatch: data model survives, ~1 sprint of UI |
+| **R-CRD-07** | ~~Customer expects an asset-first UI~~ | C6 | **✅ Resolved 2026-07-28** — Q-3 answered (reference/grouping view accepted). ADR-010's escape hatch remains available if ever revisited |
 | **R-CRD-08** | Customer expects a fleet dashboard at handover | H1 | ADR-013 §2. Correct the expectation **now** |
 | **R-CRD-09** | Embedded broker footprint exceeds the 1 GB ARM target | C5 | Verified in C4 as ADR-012 prerequisite P-5, one sprint ahead |
 

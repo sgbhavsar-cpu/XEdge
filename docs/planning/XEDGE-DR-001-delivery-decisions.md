@@ -146,11 +146,11 @@ answered unfavourably late. All are carried as risks in
 |---|---|---|---|
 | **Q-1** | The exclusion list referenced as "protocols in the image" (D-09) | Could remove entire sprints from scope — or confirm all eight areas, which is what we are building to | Before Sprint C7 (first net-new protocol driver) |
 | ~~**Q-2**~~ | ~~Acceptance of the 1–10 ms poll floor and of per-transport floors, particularly that RS-485 cannot reach 1 ms (D-10)~~ | **✅ RESOLVED 2026-07-26 — customer accepted.** Schema floor lowered 50 ms → 1 ms in Sprint C1 (XEDGE-413). The serial driver now computes the achievable floor from baud rate, framing and planned block sizes, and warns at `configure()` naming the rate that would actually work | — |
-| **Q-3** | Whether "Asset" must be the primary configuration entity or may be a metadata layer (D-11) | UI rework in Sprint C6; the data model itself survives either way | Before Sprint C6 |
+| ~~**Q-3**~~ | ~~Whether "Asset" must be the primary configuration entity or may be a metadata layer (D-11)~~ | **✅ RESOLVED 2026-07-28 — reference/grouping view accepted.** ADR-010's data model (metadata layer) was never in question; this settled the *UI's* presentation. Delivered in Sprint C6 (XEDGE-465, PR #11): an asset's parameters are picked from a list of existing tags, not an asset-first flow that also creates drivers/tags. ADR-010's escape hatch (asset-first UI over the same data model) remains reachable later if ever revisited | — |
 | **Q-4** | Target gateway hardware (D-21) | RS-485 RTS timing, armv7 necessity, OTA mechanism, and the HIL plan all depend on it | Before Sprint C3 |
 | **Q-5** | Acceptance that OTA updates the application container, not the host OS/kernel (D-25) | Would force RAUC into scope, which needs hardware we do not have | Before Delivery 2 planning |
 | **Q-6** | Availability of representative field devices for the pre-handover HIL pass (D-20) | Field interop stays unverified at handover | 4 weeks before the handover block |
-| **Q-7** | **EtherNet/IP "cyclic exchange": is explicit messaging at a scan interval acceptable, or is true CIP Class 1 implicit I/O required?** No mainstream Python CIP library implements implicit I/O — see ADR-012 §1 | Decides whether Sprint C7 is a library integration or a multi-sprint protocol build. This is the single largest estimate risk in the delivery | **Before Sprint C7 planning** |
+| ~~**Q-7**~~ | ~~**EtherNet/IP "cyclic exchange": is explicit messaging at a scan interval acceptable, or is true CIP Class 1 implicit I/O required?** No mainstream Python CIP library implements implicit I/O — see ADR-012 §1~~ | **✅ RESOLVED 2026-07-28 — explicit messaging at a scan interval accepted** (ADR-012 §1 option 1, its own recommended default: "the cheapest correct answer and most likely what they mean," matching how most commercial OT gateways actually implement "cyclic" polling). Sprint C7 proceeds as a `pycomm3` library integration at its existing estimate, not a multi-sprint protocol build. Documented plainly in the driver/docs as polled explicit messaging, never implied to be true Class 1 implicit I/O | — |
 
 ---
 
@@ -159,3 +159,4 @@ answered unfavourably late. All are carried as risks in
 | Version | Date | Change |
 |---|---|---|
 | 1.0 | 2026-07-26 | Initial record — 32 decisions from the delivery planning session |
+| 1.1 | 2026-07-28 | Q-3 marked resolved (reference/grouping asset UI, delivered Sprint C6); Q-7 marked resolved (EtherNet/IP explicit messaging at a scan interval accepted, unblocking Sprint C7 at its existing estimate) |
