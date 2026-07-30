@@ -299,9 +299,7 @@ class SnmpClientDriver(BaseDriver):
 
         if error_indication:
             self._metrics.error_count += 1
-            return WriteResult(
-                success=False, tag_id=tag_id, error_message=str(error_indication)
-            )
+            return WriteResult(success=False, tag_id=tag_id, error_message=str(error_indication))
         if error_status:
             self._metrics.error_count += 1
             return WriteResult(

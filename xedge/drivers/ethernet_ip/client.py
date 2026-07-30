@@ -272,9 +272,7 @@ class EtherNetIpDriver(BaseDriver):
                 for tag, result in zip(tags, results, strict=True)
             ]
             bad_count = sum(1 for update in updates if update.quality == Quality.BAD)
-            span.set_attribute(
-                "quality", Quality.BAD.value if bad_count else Quality.GOOD.value
-            )
+            span.set_attribute("quality", Quality.BAD.value if bad_count else Quality.GOOD.value)
             span.set_attribute("tag.bad_count", bad_count)
             return updates
 

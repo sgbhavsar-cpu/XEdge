@@ -158,9 +158,7 @@ def test_update_metadata_sets_only_the_provided_fields(tmp_path: Path) -> None:
     registry = DeviceRegistry(tmp_path / "devices.db")
     registry.register("dev1", "Original Name", None, heartbeat_interval_seconds=60)
 
-    updated = registry.update_metadata(
-        "dev1", {"serial_number": "SN-123", "make": "Acme Gateways"}
-    )
+    updated = registry.update_metadata("dev1", {"serial_number": "SN-123", "make": "Acme Gateways"})
 
     assert updated is True
     record = registry.get("dev1")
