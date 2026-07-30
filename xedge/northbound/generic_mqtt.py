@@ -136,9 +136,7 @@ class GenericMqttPublisher(NorthboundConnector):
         client.on_connect = _on_connect
         self._client = client
 
-        await loop.run_in_executor(
-            None, client.connect, cfg.host, cfg.port, cfg.keepalive_seconds
-        )
+        await loop.run_in_executor(None, client.connect, cfg.host, cfg.port, cfg.keepalive_seconds)
         client.loop_start()
         try:
             await asyncio.wait_for(connected_event.wait(), timeout=cfg.connect_timeout_seconds)
