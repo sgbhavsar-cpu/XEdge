@@ -318,7 +318,7 @@ completed stories, carry-over, and a re-forecast against 2026-12-06.
 | C5 | ✅ Complete ([PR #8](https://github.com/sgbhavsar-cpu/XEdge/pull/8), [PR #9](https://github.com/sgbhavsar-cpu/XEdge/pull/9), [PR #10](https://github.com/sgbhavsar-cpu/XEdge/pull/10)) | XEDGE-450/451/452/453/454/455; XEDGE-443's agent-side rotation (carried from C4, resolved in PR #10 — see addendum) | mqtt_broker ACL editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan |
 | C6 | ✅ Complete ([PR #11](https://github.com/sgbhavsar-cpu/XEdge/pull/11), [PR #12](https://github.com/sgbhavsar-cpu/XEdge/pull/12)) | XEDGE-460/461/462/463/464/465/466/467 | smtp.alarm_notifications/scheduled_reports editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan |
 | C7 | ✅ Complete ([PR #13](https://github.com/sgbhavsar-cpu/XEdge/pull/13)) | XEDGE-470/471/472/473/474/475/476 | Runtime tag discovery / L5X import (scope-cut candidate 4 — commissioning convenience, not required for symbolic-tag read/write; see notes) | On plan |
-| C8 | ✅ Complete ([PR #14](https://github.com/sgbhavsar-cpu/XEdge/pull/14), PR #15 to be opened) | XEDGE-480/481/482/483/484/487 | MIB upload/parse/browse (XEDGE-485, scope-cut candidate 2 — invoked, not just standing; see notes) | On plan |
+| C8 | ✅ Complete ([PR #14](https://github.com/sgbhavsar-cpu/XEdge/pull/14), [PR #15](https://github.com/sgbhavsar-cpu/XEdge/pull/15)) | XEDGE-480/481/482/483/484/487 | MIB upload/parse/browse (XEDGE-485, scope-cut candidate 2 — invoked, not just standing; see notes) | On plan |
 
 ### Sprint 0 notes (2026-07-27 → 08-02)
 
