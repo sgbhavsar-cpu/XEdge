@@ -52,9 +52,7 @@ class TestIsShelved:
         assert _is_shelved(status, datetime.now(UTC)) is True
 
     def test_after_shelve_window_is_not_shelved(self) -> None:
-        status = AlarmStatus(
-            tag_id="d1/t1", shelved_until=datetime.now(UTC) - timedelta(seconds=1)
-        )
+        status = AlarmStatus(tag_id="d1/t1", shelved_until=datetime.now(UTC) - timedelta(seconds=1))
         assert _is_shelved(status, datetime.now(UTC)) is False
 
 
