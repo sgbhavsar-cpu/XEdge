@@ -58,7 +58,9 @@ class _RecordingReceiver:
         ntfrcv.NotificationReceiver(self.engine, self._callback)
         self.engine.open_dispatcher()
 
-    def _callback(self, snmp_engine, state_reference, context_engine_id, context_name, var_binds, cb_ctx):  # noqa: ANN001, E501
+    def _callback(
+        self, snmp_engine, state_reference, context_engine_id, context_name, var_binds, cb_ctx
+    ):  # noqa: ANN001, E501
         self.received.append({str(name): value.prettyPrint() for name, value in var_binds})
 
     def close(self) -> None:
@@ -141,9 +143,7 @@ async def test_inform_records_failure_for_unreachable_destination() -> None:
     # in principle, not just in this implementation.
     config = SnmpNotifyConfig(
         enabled=True,
-        destinations=(
-            SnmpTrapDestination(host="127.0.0.1", port=1, notify_type="inform"),
-        ),
+        destinations=(SnmpTrapDestination(host="127.0.0.1", port=1, notify_type="inform"),),
     )
     status = SnmpNotifyStatus()
     alarm_status = _alarm_status("temp1", AlarmState.ACTIVE)

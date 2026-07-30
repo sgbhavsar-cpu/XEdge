@@ -134,9 +134,7 @@ async def test_driver_table_reflects_a_running_instance(
     snmp_test_agent_service: tuple[SnmpAgentService, DriverSupervisor, AlarmEngine, int],
 ) -> None:
     service, supervisor, _alarms, port = snmp_test_agent_service
-    supervisor.start(
-        _running_loopback_config("loop1")
-    )
+    supervisor.start(_running_loopback_config("loop1"))
     await asyncio.sleep(0.1)
     service._sync_once()  # force a sync rather than waiting up to _SYNC_INTERVAL_SECONDS
 
@@ -159,9 +157,7 @@ async def test_stopped_instance_row_persists_with_updated_state(
     # _remove_driver_row's underlying mechanism works regardless, in
     # case that ever changes.
     service, supervisor, _alarms, port = snmp_test_agent_service
-    supervisor.start(
-        _running_loopback_config("loop1")
-    )
+    supervisor.start(_running_loopback_config("loop1"))
     await asyncio.sleep(0.1)
     service._sync_once()
 
@@ -186,9 +182,7 @@ async def test_remove_driver_row_mechanism_works(
     # RowStatus "destroy" mechanism itself is correct independent of
     # whether anything in this codebase currently triggers it.
     service, supervisor, _alarms, port = snmp_test_agent_service
-    supervisor.start(
-        _running_loopback_config("loop1")
-    )
+    supervisor.start(_running_loopback_config("loop1"))
     await asyncio.sleep(0.1)
     service._sync_once()
 
