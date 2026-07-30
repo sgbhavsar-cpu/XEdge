@@ -153,9 +153,7 @@ class MqttSubscriberDriver(BaseDriver):
                     client.subscribe(mapping.topic, qos=mapping.qos)
             loop.call_soon_threadsafe(connected_event.set)
 
-        def _on_message(
-            _client: mqtt.Client, _userdata: object, message: mqtt.MQTTMessage
-        ) -> None:
+        def _on_message(_client: mqtt.Client, _userdata: object, message: mqtt.MQTTMessage) -> None:
             loop.call_soon_threadsafe(
                 self._received_queue.put_nowait, (message.topic, message.payload)
             )
