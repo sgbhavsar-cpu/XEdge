@@ -71,9 +71,7 @@ async def test_large_batch_stays_one_request_per_cycle(fake_server: FakeModbusSe
     run_task = asyncio.create_task(driver.run(queue))
     try:
         for _ in range(_BATCH_CYCLES):
-            batch = [
-                await asyncio.wait_for(queue.get(), timeout=2.0) for _ in range(_BATCH_SIZE)
-            ]
+            batch = [await asyncio.wait_for(queue.get(), timeout=2.0) for _ in range(_BATCH_SIZE)]
             assert len(batch) == _BATCH_SIZE
             assert all(update.quality == Quality.GOOD for update in batch)
     finally:
@@ -153,8 +151,7 @@ async def test_scan_rate_holds_steady_under_concurrent_multi_instance_load() -> 
     )
 
     deltas_ms = [
-        (later - earlier) * 1000
-        for earlier, later in zip(timestamps, timestamps[1:], strict=False)
+        (later - earlier) * 1000 for earlier, later in zip(timestamps, timestamps[1:], strict=False)
     ]
     mean_delta = sum(deltas_ms) / len(deltas_ms)
     assert 30.0 <= mean_delta <= 80.0, (

@@ -270,9 +270,7 @@ async def test_non_transport_pycommerror_marks_group_bad_without_propagating(
     fake_logix: FakeLogixDriver,
 ) -> None:
     fake_logix.read_result = RequestError("malformed tag request")
-    config = _driver_config(
-        [{"id": "t1", "tag_name": "Tag1"}, {"id": "t2", "tag_name": "Tag2"}]
-    )
+    config = _driver_config([{"id": "t1", "tag_name": "Tag1"}, {"id": "t2", "tag_name": "Tag2"}])
     driver = EtherNetIpDriver()
 
     updates = await _run_one_cycle(driver, config)

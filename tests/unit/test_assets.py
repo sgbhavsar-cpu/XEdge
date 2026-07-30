@@ -110,9 +110,7 @@ class TestAllTagRefs:
 
 
 class TestValidateAssetReferences:
-    _drivers = [
-        {"id": "modbus_tcp_01", "tag_groups": [{"id": "g1", "tags": [{"id": "temp"}]}]}
-    ]
+    _drivers = [{"id": "modbus_tcp_01", "tag_groups": [{"id": "g1", "tags": [{"id": "temp"}]}]}]
 
     def test_no_errors_when_every_tag_ref_resolves(self) -> None:
         config = {

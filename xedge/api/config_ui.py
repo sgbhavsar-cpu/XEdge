@@ -1002,14 +1002,10 @@ def create_config_ui_router(
         redirect = require_read(request)
         if redirect is not None:
             return redirect
-        return render(
-            request, "asset_new.html", {"error": None, "id_value": "", "name_value": ""}
-        )
+        return render(request, "asset_new.html", {"error": None, "id_value": "", "name_value": ""})
 
     @router.post("/assets/new", response_class=HTMLResponse)
-    def asset_new_submit(
-        request: Request, id: str = Form(...), name: str = Form(...)
-    ) -> Response:
+    def asset_new_submit(request: Request, id: str = Form(...), name: str = Form(...)) -> Response:
         redirect = require_write(request)
         if redirect is not None:
             return redirect
