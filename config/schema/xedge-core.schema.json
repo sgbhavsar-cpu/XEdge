@@ -562,6 +562,26 @@
           "description": "username -> allowed subscribe topic patterns, same wildcard syntax as publish_acl. Left empty while publish_acl is also empty, unrestricted (see publish_acl's description above for the asymmetry once either dict is non-empty: an empty subscribe_acl at that point means zero subscribe access for everyone, not unrestricted)."
         }
       }
+    },
+    "snmp_agent": {
+      "type": "object",
+      "description": "SNMP agent (Sprint C8, XEDGE-482; ADR-012 §2): xEdge itself pollable by the customer's NMS -- the reverse of a snmp_client driver instance, which polls an external device. Defaults off. Exposes standard MIB-II plus a live driver-status table and alarm-state counts under a placeholder OID subtree -- see xedge.northbound.snmp_agent's module docstring for why (no IANA-registered Private Enterprise Number exists for xEdge yet; XEDGE-DR-001 Q-8).",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "host": {
+          "type": "string",
+          "default": "0.0.0.0",
+          "description": "An agent must accept polls from the customer's NMS on the network, unlike the loopback-only REST API default."
+        },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 161 },
+        "community": {
+          "type": "string",
+          "default": "public",
+          "x-secret": true,
+          "description": "SNMPv1/v2c community string this agent accepts. Read-only: this agent never accepts SNMP SET from the network (XEDGE-DR-001 Q-9) -- the community only gates GET/GETNEXT/GETBULK."
+        }
+      }
     }
   }
 }

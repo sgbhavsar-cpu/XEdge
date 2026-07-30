@@ -70,6 +70,7 @@ from xedge.northbound.generic_mqtt import GenericMqttPublisher, GenericMqttPubli
 from xedge.northbound.mqtt import MqttSparkplugConnector, SparkplugConnectorConfig
 from xedge.northbound.mqtt_broker import BrokerUserCredential, MqttBrokerConfig, MqttBrokerService
 from xedge.northbound.opcua_server import OpcUaServerConfig, OpcUaTagServer
+from xedge.northbound.snmp_agent import SnmpAgentConfig, SnmpAgentService
 from xedge.observability.audit_log import AuditLog
 from xedge.observability.logging import configure_logging, get_logger
 from xedge.observability.otel_metrics import configure_metrics
@@ -422,6 +423,24 @@ def _build_mqtt_broker(store: ConfigStore, password_file_path: Path) -> MqttBrok
             subscribe_acl=broker_config.get("subscribe_acl", {}),
         ),
         password_file_path,
+    )
+
+
+def _build_snmp_agent(
+    store: ConfigStore, supervisor: DriverSupervisor, alarm_engine: AlarmEngine | None
+) -> SnmpAgentService | None:
+    agent_config = store.get_section("snmp_agent", {})
+    if not agent_config.get("enabled", False):
+        return None
+    return SnmpAgentService(
+        SnmpAgentConfig(
+            enabled=True,
+            host=agent_config.get("host", "0.0.0.0"),  # nosec B104
+            port=agent_config.get("port", 161),
+            community=agent_config.get("community", "public"),
+        ),
+        supervisor,
+        alarm_engine,
     )
 
 
@@ -790,6 +809,10 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
                 )
             )
 
+    snmp_agent = _build_snmp_agent(store, supervisor, alarm_engine)
+    if snmp_agent is not None:
+        await snmp_agent.start()
+
     metrics_config = store.get_section("metrics", {})
     if metrics_config.get("enabled", True):
         configure_metrics(supervisor, dispatcher, ring_buffers, __version__)
@@ -891,6 +914,8 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
             await opcua_server.stop()
         if mqtt_broker is not None:
             await mqtt_broker.stop()
+        if snmp_agent is not None:
+            await snmp_agent.stop()
         await supervisor.stop_all()
         cold_store.close()
         logger.info("xedge.stopped")

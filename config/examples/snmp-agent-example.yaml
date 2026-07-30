@@ -1,0 +1,45 @@
+# SNMP Agent (Sprint C8, XEDGE-482; ADR-012 §2): xEdge itself pollable by
+# the customer's NMS -- the reverse of, and unrelated to, an snmp_client
+# driver instance (see snmp-client-example.yaml), which polls an *external*
+# device.
+#
+# Read-only from the network's perspective: this agent never accepts SNMP
+# SET, regardless of community string. Exposes standard MIB-II (sysDescr,
+# sysUpTime, ...) plus a live driver-status table and alarm-state counts
+# under a placeholder OID subtree (1.3.6.1.4.1.999999) -- xEdge has no
+# IANA-registered Private Enterprise Number yet (XEDGE-DR-001 Q-8). See
+# xedge.northbound.snmp_agent's module docstring before relying on this in
+# production: swap the placeholder for a real assigned PEN first.
+schema_version: "0.1"
+
+data_dir: /data
+
+logging:
+  level: INFO
+
+watchdog:
+  enabled: true
+  interval_seconds: 15
+
+drivers: []
+
+snmp_agent:
+  enabled: true
+  host: 0.0.0.0
+  port: 161
+  community: "${SECRET:snmp_agent_community}"
+
+store:
+  ram_max_depth: 10000
+  retention_duration_seconds: 604800 # 7 days
+  purge_interval_seconds: 3600
+
+config_management:
+  hot_reload_enabled: true
+  poll_interval_seconds: 2.0
+  max_versions: 10
+
+api:
+  enabled: true
+  host: 127.0.0.1
+  port: 8080

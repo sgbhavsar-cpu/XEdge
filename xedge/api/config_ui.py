@@ -108,6 +108,7 @@ CORE_SECTIONS = [
     ("opcua_server", "OPC UA Server"),
     ("mqtt_broker", "MQTT Broker"),
     ("smtp", "SMTP"),
+    ("snmp_agent", "SNMP Agent"),
     ("store", "Store & Forward"),
     ("config_management", "Config Management"),
     ("api", "REST API / Web UI"),
