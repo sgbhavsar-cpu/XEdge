@@ -582,6 +582,53 @@
           "description": "SNMPv1/v2c community string this agent accepts. Read-only: this agent never accepts SNMP SET from the network (XEDGE-DR-001 Q-9) -- the community only gates GET/GETNEXT/GETBULK."
         }
       }
+    },
+    "snmp_notify": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "SNMP TRAP/INFORM originator (Sprint C8, XEDGE-483), wired to the Alarm Engine: one notification per alarm raise or clear, same ack/shelve suppression rules as smtp.alarm_notifications (an ACTIVE -> ACTIVE_ACKED ack alone sends nothing; a shelved alarm never notifies while shelved). See xedge.core.snmp_notify's module docstring for the placeholder-PEN OIDs this sends under, and for why notify_type: trap can only ever report 'sent', never 'delivered' (RFC 1905 fire-and-forget UDP, no acknowledgement) -- use notify_type: inform wherever delivery confirmation actually matters.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "destinations": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": ["host", "version"],
+            "additionalProperties": false,
+            "properties": {
+              "host": { "type": "string", "minLength": 1 },
+              "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 162 },
+              "version": { "type": "string", "enum": ["v1", "v2c", "v3"] },
+              "community": {
+                "type": "string",
+                "x-secret": true,
+                "description": "Required for version v1/v2c."
+              },
+              "v3_username": { "type": "string", "description": "Required for version v3." },
+              "v3_auth_protocol": {
+                "type": "string",
+                "enum": ["none", "md5", "sha", "sha224", "sha256", "sha384", "sha512"],
+                "default": "none"
+              },
+              "v3_auth_password": { "type": "string", "x-secret": true },
+              "v3_priv_protocol": {
+                "type": "string",
+                "enum": ["none", "des", "3des", "aes128", "aes192", "aes256"],
+                "default": "none",
+                "description": "Requires v3_auth_protocol != 'none', same RFC 3414 rule as the snmp_client driver's identical field."
+              },
+              "v3_priv_password": { "type": "string", "x-secret": true },
+              "notify_type": {
+                "type": "string",
+                "enum": ["trap", "inform"],
+                "default": "trap",
+                "description": "trap: fire-and-forget, no delivery confirmation possible even in principle. inform: the sender waits for a real acknowledgement, so a send failure here means an unreachable/non-responding destination, not just 'we transmitted a packet'."
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

@@ -25,6 +25,17 @@
     — see config/examples/smtp-example.yaml for the shape.
   </p>
   {% endif %}
+  {% if section == "snmp_notify" %}
+  <p class="xedge-hint">
+    Trap/inform destinations aren't editable here yet; use the
+    <a href="/ui/config/advanced">Advanced (raw YAML)</a> editor's
+    <code>snmp_notify.destinations</code> — see
+    config/examples/snmp-notify-example.yaml for the shape. Remember that
+    <code>notify_type: trap</code> can only ever confirm the notification
+    was sent, never that it was received — use <code>inform</code> where
+    delivery confirmation matters.
+  </p>
+  {% endif %}
   <form method="post" action="/ui/config/core/{{ section }}">
     {% for f in fields %}
     {{ macros.render_field(f) }}

@@ -115,7 +115,7 @@ ACCESS_READ_WRITE = "read_write"
 ACCESS_READ_ONLY = "read_only"
 ACCESS_WRITE_ONLY = "write_only"
 
-_AUTH_PROTOCOLS: dict[str, Any] = {
+AUTH_PROTOCOLS: dict[str, Any] = {
     "none": usmNoAuthProtocol,
     "md5": usmHMACMD5AuthProtocol,
     "sha": usmHMACSHAAuthProtocol,
@@ -124,7 +124,7 @@ _AUTH_PROTOCOLS: dict[str, Any] = {
     "sha384": usmHMAC256SHA384AuthProtocol,
     "sha512": usmHMAC384SHA512AuthProtocol,
 }
-_PRIV_PROTOCOLS: dict[str, Any] = {
+PRIV_PROTOCOLS: dict[str, Any] = {
     "none": usmNoPrivProtocol,
     "des": usmDESPrivProtocol,
     "3des": usm3DESEDEPrivProtocol,
@@ -187,8 +187,8 @@ def _build_auth_data(cfg: dict[str, Any]) -> CommunityData | UsmUserData:
         cfg["v3_username"],
         authKey=cfg.get("v3_auth_password") or None,
         privKey=cfg.get("v3_priv_password") or None,
-        authProtocol=_AUTH_PROTOCOLS[auth_protocol_name],
-        privProtocol=_PRIV_PROTOCOLS[priv_protocol_name],
+        authProtocol=AUTH_PROTOCOLS[auth_protocol_name],
+        privProtocol=PRIV_PROTOCOLS[priv_protocol_name],
     )
 
 

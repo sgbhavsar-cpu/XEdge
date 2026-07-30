@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://xedge.example.com/schema/drivers/snmp_trap_receiver.schema.json",
+  "title": "SNMP TRAP/INFORM Receiver Driver Configuration",
+  "description": "Per-driver-type schema for `type: snmp_trap_receiver` entries (FR-SB-006; Sprint C8, XEDGE-484; CRD §4.6). Listens for inbound TRAP/INFORM notifications and maps each one's varbind OIDs to tags -- event-driven, not polled, the same shape as xedge.drivers.mqtt_subscriber (push-based southbound data, confirmed against pysnmp's own real notification-receiver mechanism before writing this, not assumed). tag_groups.scan_rate_ms does not apply here (there is nothing to poll) and is intentionally absent from this schema.",
+  "type": "object",
+  "required": ["config", "tag_groups"],
+  "additionalProperties": false,
+  "properties": {
+    "config": {
+      "type": "object",
+      "required": ["host", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "type": "string",
+          "default": "0.0.0.0",
+          "description": "This instance's own bind address -- it is listening for inbound notifications, not connecting out to a device, unlike every other driver's `host` field."
+        },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 162 },
+        "version": {
+          "type": "string",
+          "enum": ["v1", "v2c", "v3"],
+          "description": "Which security model this instance accepts inbound notifications under. Unlike the snmp_client manager driver, this is the *receiving* side's own accepted credentials, checked against whatever the sending device presents."
+        },
+        "community": {
+          "type": "string",
+          "x-secret": true,
+          "description": "Required for version v1/v2c: the community string an inbound TRAP/INFORM must carry to be accepted."
+        },
+        "v3_username": { "type": "string", "description": "Required for version v3 (USM securityName)." },
+        "v3_auth_protocol": {
+          "type": "string",
+          "enum": ["none", "md5", "sha", "sha224", "sha256", "sha384", "sha512"],
+          "default": "none"
+        },
+        "v3_auth_password": { "type": "string", "x-secret": true },
+        "v3_priv_protocol": {
+          "type": "string",
+          "enum": ["none", "des", "3des", "aes128", "aes192", "aes256"],
+          "default": "none",
+          "description": "Requires v3_auth_protocol != 'none', same RFC 3414 rule as the snmp_client manager driver's identical field."
+        },
+        "v3_priv_password": { "type": "string", "x-secret": true }
+      }
+    },
+    "tag_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "tags"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "tags": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["id", "trap_oid"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "trap_oid": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(\\.[0-9]+)+$",
+                  "description": "Numeric dotted OID of the varbind this tag reads from an inbound notification's payload, e.g. a vendor-specific OID from the sending device's own MIB. A notification is typically several varbinds at once (see xedge.core.snmp_notify's own sysUpTime.0/snmpTrapOID.0 example) -- each configured tag independently picks out the one varbind whose OID matches, from whichever notification arrives; varbinds with no matching tag are logged and dropped, not an error."
+                },
+                "scaling": {
+                  "type": "object",
+                  "description": "FR-DP-003: engineering_value = raw * scale + offset. Ignored for a non-numeric varbind value.",
+                  "additionalProperties": false,
+                  "properties": {
+                    "scale": { "type": "number", "default": 1.0 },
+                    "offset": { "type": "number", "default": 0.0 }
+                  }
+                },
+                "engineering_unit": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

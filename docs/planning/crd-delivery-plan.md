@@ -296,7 +296,7 @@ Programme-level risks are in
 | **R-CRD-03** | Batching (XEDGE-411) changes the read path all Modbus tests depend on | C1 | Property-based tests over address layouts; oracle comparison against `pymodbus` |
 | **R-CRD-04** | Bus manager becomes a single point of failure per port | C3 | Hard per-transaction timeout. Note this is physically true of RS-485 regardless |
 | **R-CRD-05** | ~~EtherNet/IP implicit I/O unavailable in any Python CIP library~~ | C7 | **✅ Resolved 2026-07-28** — Q-7 answered (explicit messaging at a scan interval accepted). C7 proceeds at its existing estimate |
-| **R-CRD-06** | SNMP library may not support the agent role, or may fail license verification | C8 | ADR-012 P-3/P-4 verified during C7, one sprint ahead |
+| **R-CRD-06** | ~~SNMP library may not support the agent role, or may fail license verification~~ | C8 | **✅ Resolved 2026-07-30** — `pysnmp` cleared on both counts (license-audit.md §4 item 8); verified at the C7/C8 boundary rather than one sprint ahead as planned, but before it blocked anything |
 | **R-CRD-07** | ~~Customer expects an asset-first UI~~ | C6 | **✅ Resolved 2026-07-28** — Q-3 answered (reference/grouping view accepted). ADR-010's escape hatch remains available if ever revisited |
 | **R-CRD-08** | Customer expects a fleet dashboard at handover | H1 | ADR-013 §2. Correct the expectation **now** |
 | **R-CRD-09** | Embedded broker footprint exceeds the 1 GB ARM target | C5 | Verified in C4 as ADR-012 prerequisite P-5, one sprint ahead |
@@ -318,6 +318,7 @@ completed stories, carry-over, and a re-forecast against 2026-12-06.
 | C5 | ✅ Complete ([PR #8](https://github.com/sgbhavsar-cpu/XEdge/pull/8), [PR #9](https://github.com/sgbhavsar-cpu/XEdge/pull/9), [PR #10](https://github.com/sgbhavsar-cpu/XEdge/pull/10)) | XEDGE-450/451/452/453/454/455; XEDGE-443's agent-side rotation (carried from C4, resolved in PR #10 — see addendum) | mqtt_broker ACL editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan |
 | C6 | ✅ Complete ([PR #11](https://github.com/sgbhavsar-cpu/XEdge/pull/11), [PR #12](https://github.com/sgbhavsar-cpu/XEdge/pull/12)) | XEDGE-460/461/462/463/464/465/466/467 | smtp.alarm_notifications/scheduled_reports editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan |
 | C7 | ✅ Complete ([PR #13](https://github.com/sgbhavsar-cpu/XEdge/pull/13)) | XEDGE-470/471/472/473/474/475/476 | Runtime tag discovery / L5X import (scope-cut candidate 4 — commissioning convenience, not required for symbolic-tag read/write; see notes) | On plan |
+| C8 | ✅ Complete ([PR #14](https://github.com/sgbhavsar-cpu/XEdge/pull/14), PR #15 to be opened) | XEDGE-480/481/482/483/484/487 | MIB upload/parse/browse (XEDGE-485, scope-cut candidate 2 — invoked, not just standing; see notes) | On plan |
 
 ### Sprint 0 notes (2026-07-27 → 08-02)
 
@@ -851,6 +852,109 @@ before this sprint started (see the addendum above and XEDGE-DR-001).
 
 ---
 
+### Sprint C8 notes (SNMP)
+
+Two PRs, not one — [#14](https://github.com/sgbhavsar-cpu/XEdge/pull/14)
+(the manager driver, XEDGE-480/481/487) and a second stacked on it
+(the agent and both TRAP/INFORM directions, XEDGE-482/483/484). SNMP
+turned out to be the largest single-sprint scope of the whole delivery so
+far — four genuinely different roles (outbound manager, inbound-pollable
+agent, outbound notification originator, inbound notification receiver)
+sharing one protocol and one security model, not one feature with four
+call sites.
+
+**ADR-012 P-3/P-4 resolved cleanly, no fallback needed.** `pysnmp`'s own
+PyPI naming fragmentation (the risk ADR-012 §2 specifically flagged) has
+already resolved itself: `pysnmp-lextudio`, the transitional fork name, is
+now itself deprecated in favor of plain `pysnmp`, which LeXtudio Inc. "took
+control of." Agent-role support was confirmed from the library's own
+example tree (a dedicated `agent/` directory, not a manager library with
+agent claimed in prose) rather than taken on faith. Full write-up:
+`license-audit.md` §4 item 8.
+
+**Three new open items surfaced and resolved before planning, not
+discovered mid-build** (XEDGE-DR-001 Q-8/Q-9/Q-10) — xEdge's lack of an
+IANA-registered Private Enterprise Number, how much the agent should
+expose, and whether the trap receiver needs a specific vendor MIB in mind.
+All three resolved in one round: placeholder OID now (swap the constant
+later), system + driver summary — upgraded mid-implementation to a full
+live per-driver table once the fixed-counts-vs-table tradeoff was actually
+understood, not decided in the abstract — and generic/configurable
+mapping with no vendor assumed.
+
+**A real correctness bug in the manager driver, caught by a test failure
+before merge, not by review**: GETBULK means "the N next values after
+each OID," not "the value at each OID" — an initial design used it to
+"batch plain GET reads faster," which would have silently returned wrong
+data for every `use_bulk` group of exact-address tags. Fixed by applying
+GETBULK only to `get_next`-operation tags, the one case where that
+semantics is actually correct. Documented in the driver's own docstring
+so the mistake doesn't get remade.
+
+**Two more real, verified bugs, both in the agent, both caught by running
+it for real rather than by static reasoning:**
+- RowStatus (RFC 2579) is its own state machine — `createAndGo` is only a
+  valid transition from `notExists`, not from the `active` state a row
+  settles into right after creation. Resending it on every sync tick for
+  an already-existing row raised `InconsistentValueError`. Fixed: a new
+  row is created once; an existing one only has its other columns
+  updated afterwards.
+- A `MibScalarInstance`'s real name is `oid + instId`, not `oid` alone
+  (confirmed by reading `MibTree.__init__`) — querying the bare "type"
+  OID instead of the ".0" instance address produces a `noAccess` error
+  that has nothing to do with VACM, despite looking exactly like one.
+  Cost real time to trace before landing on the actual cause.
+
+**A real, confirmed property of `DriverSupervisor`, not assumed:**
+`stop()` — and hot_reload's own "removed from config" path, which just
+calls `stop()` — marks an instance `STOPPED` but never removes it from
+`all_status()`. There is today no code path that ever makes an
+`instance_id` disappear during a running process. The agent's driver-table
+row-removal code is real and tested (`_remove_driver_row` exercised
+directly), but exercises a mechanism nothing in this codebase currently
+triggers — stated plainly rather than left for whoever eventually
+wonders why a removed driver's row never seems to disappear.
+
+**TRAP cannot confirm delivery, in principle, not as a gap in this
+module** — confirmed against a real unreachable destination: `send_notification`
+for `notify_type: trap` reports success the instant the local UDP send
+completes, regardless of whether anything is listening (RFC 1905's
+fire-and-forget design, no acknowledgement PDU exists for TRAP). Only
+`notify_type: inform`'s confirmed round trip can ever detect an
+unreachable destination. Both this and the GETBULK finding above are
+documented directly in `xedge.core.snmp_notify`'s module docstring, not
+just here.
+
+**Every new capability this sprint has a real-server-backed test — no
+mocking, unlike EtherNet/IP's departure in Sprint C7.** The manager driver
+against a real local `pysnmp` agent; the agent queried by a real
+`pysnmp` manager call, including a genuine SET/write round trip verified
+against the agent's own instance state; the trap receiver fed by a real
+`send_notification` call (both TRAP and INFORM); the trap originator
+received by a real `ntfrcv.NotificationReceiver`. `pysnmp` ships a real,
+usable agent-side API, which `pycomm3`'s CIP counterpart (`cpppo`) turned
+out not to for Logix symbol resolution — the difference is the library,
+not a change in this project's own testing standards.
+
+**MIB upload/parse/browse (XEDGE-485, and the MIB-browser slice of
+XEDGE-486) is descoped for this delivery** — invoking scope-cut candidate
+2 from §5 above, not a new decision: that list already named "MIB browse
+UI (accept uploaded MIBs without a browser)" as an acceptable ~6d cut
+before this sprint started. `pysmi` (the MIB compiler `pysnmp` itself
+would need for this) was never installed or verified against this
+project's own dependency-audit bar as a result — it remains a candidate,
+not a cleared dependency, if this is picked up later. Every other Web UI
+piece XEDGE-486 named (SNMP client/agent config forms, trap-related core
+sections) is delivered and live-verified: the schema-driven form engine
+renders the `version`/USM-protocol enum dropdowns and masks every secret
+field correctly with zero new UI code, the same result Sprint C7 found
+for EtherNet/IP.
+
+**Customer input needed:** none outstanding — Q-8/Q-9/Q-10 above were the
+open items, all resolved before implementation.
+
+---
+
 ## 8. Revision history
 
 | Version | Date | Change |
@@ -862,3 +966,4 @@ before this sprint started (see the addendum above and XEDGE-DR-001).
 | 1.4 | 2026-07-27 | Sprint C5 addendum: agent-side proactive certificate rotation (XEDGE-443, carried from C4) delivered in PR #10 — no longer carried into C6 |
 | 1.5 | 2026-07-28 | Sprint C6 complete — status row + notes (Asset Management resolving open item Q-3, a real driver/tag deletion validation gap found and fixed, SMTP notifications/reports, aiosmtpd added as a test dependency, an SMTP TLS trust-store gap found and fixed) |
 | 1.6 | 2026-07-28 | Sprint C7 complete — status row + notes (EtherNet/IP scanner via `pycomm3`; cpppo/pycomm3 incompatibility found, documented, mocked-boundary test strategy adopted instead; live Web UI verification confirming zero new UI code needed) |
+| 1.7 | 2026-07-30 | Sprint C8 complete — status row + notes (SNMP manager/agent/TRAP-INFORM originator+receiver via `pysnmp`; a real GETBULK semantics bug and two real agent bugs found and fixed; TRAP's fire-and-forget delivery confirmed and documented; MIB upload/parse/browse descoped per the pre-existing scope-cut candidate list) |

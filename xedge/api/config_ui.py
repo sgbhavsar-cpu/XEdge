@@ -64,6 +64,7 @@ KNOWN_DRIVER_TYPES = [
     "ethernet_ip",
     "mqtt_subscriber",
     "snmp_client",
+    "snmp_trap_receiver",
     "loopback",
 ]
 
@@ -101,6 +102,13 @@ _SKIP_MQTT_BROKER_MANAGED_FIELDS = frozenset({"users", "publish_acl", "subscribe
 # dedicated page, with a note on the SMTP settings page pointing there.
 _SKIP_SMTP_MANAGED_FIELDS = frozenset({"alarm_notifications", "scheduled_reports"})
 
+# snmp_notify.destinations is an array of objects, the same schema_forms
+# gap as smtp.scheduled_reports above -- stays on the Advanced editor for
+# the same reason (XEDGE-486 was scoped to the SNMP client/agent config
+# screens, not to teaching schema_forms a general array widget a fourth
+# time).
+_SKIP_SNMP_NOTIFY_MANAGED_FIELDS = frozenset({"destinations"})
+
 CORE_SECTIONS = [
     ("logging", "Logging"),
     ("watchdog", "Watchdog"),
@@ -109,6 +117,7 @@ CORE_SECTIONS = [
     ("mqtt_broker", "MQTT Broker"),
     ("smtp", "SMTP"),
     ("snmp_agent", "SNMP Agent"),
+    ("snmp_notify", "SNMP TRAP/INFORM"),
     ("store", "Store & Forward"),
     ("config_management", "Config Management"),
     ("api", "REST API / Web UI"),
@@ -281,6 +290,8 @@ def create_config_ui_router(
             return _SKIP_MQTT_BROKER_MANAGED_FIELDS
         if section == "smtp":
             return _SKIP_SMTP_MANAGED_FIELDS
+        if section == "snmp_notify":
+            return _SKIP_SNMP_NOTIFY_MANAGED_FIELDS
         return frozenset()
 
     @router.get("/core/{section}", response_class=HTMLResponse)

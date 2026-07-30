@@ -43,6 +43,11 @@ from xedge.core.smtp import (
     build_smtp_config,
     scheduled_report_loop,
 )
+from xedge.core.snmp_notify import (
+    SnmpNotifyStatus,
+    build_snmp_notify_config,
+    snmp_alarm_notification_loop,
+)
 from xedge.core.sntp import SntpConfig, SntpSyncStatus, sntp_sync_loop
 from xedge.core.supervisor import DriverRegistry, DriverSupervisor
 from xedge.core.system_tags import SYSTEM_TAG_NAMES, system_tag_id, system_tag_publish_loop
@@ -58,6 +63,7 @@ from xedge.drivers.modbus.tcp import ModbusTcpDriver
 from xedge.drivers.mqtt_subscriber.client import MqttSubscriberDriver
 from xedge.drivers.opcua.client import OpcUaClientDriver
 from xedge.drivers.snmp.client import SnmpClientDriver
+from xedge.drivers.snmp.receiver import SnmpTrapReceiverDriver
 from xedge.fleet.agent import (
     FleetAgentConfig,
     FleetAgentPaths,
@@ -201,6 +207,7 @@ def _build_registry() -> DriverRegistry:
     registry.register("ethernet_ip", EtherNetIpDriver)
     registry.register("mqtt_subscriber", MqttSubscriberDriver)
     registry.register("snmp_client", SnmpClientDriver)
+    registry.register("snmp_trap_receiver", SnmpTrapReceiverDriver)
     registry.register("loopback", LoopbackDriver)
     return registry
 
@@ -809,6 +816,18 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
                 )
             )
 
+    snmp_notify_config_section = store.get_section("snmp_notify", {})
+    snmp_notify_config = build_snmp_notify_config(snmp_notify_config_section)
+    snmp_notify_status = SnmpNotifyStatus(enabled=snmp_notify_config.enabled)
+    snmp_notify_task: asyncio.Task[None] | None = None
+    # Same reasoning as the SMTP alarm-notification task above: notifying
+    # about alarms that don't exist (alarms.enabled: false) would be a
+    # no-op loop forever, not a useful degraded mode.
+    if snmp_notify_config.enabled and alarm_engine is not None:
+        snmp_notify_task = asyncio.create_task(
+            snmp_alarm_notification_loop(alarm_engine, snmp_notify_config, snmp_notify_status)
+        )
+
     snmp_agent = _build_snmp_agent(store, supervisor, alarm_engine)
     if snmp_agent is not None:
         await snmp_agent.start()
@@ -904,6 +923,9 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
         for smtp_task in smtp_tasks:
             smtp_task.cancel()
             tasks_to_await.append(smtp_task)
+        if snmp_notify_task is not None:
+            snmp_notify_task.cancel()
+            tasks_to_await.append(snmp_notify_task)
         if api_server is not None and api_task is not None:
             api_server.should_exit = True
             tasks_to_await.append(api_task)
