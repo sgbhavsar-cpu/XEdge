@@ -261,7 +261,7 @@ not discovered later:
 | **M-C4** | MQTT complete: subscriber, publisher templating, broker | 2026-10-11 |
 | **M-C5** | Assets and SMTP notifications delivered | 2026-10-25 |
 | **M-C6** | All eight CRD areas implemented | 2026-11-22 |
-| **M-C7** | **CRD-001 handover** — HIL passed, documented, compliance matrix signed | **2026-12-06** |
+| **M-C7** | ~~CRD-001 handover — HIL passed, documented, compliance matrix signed~~ **Met 2026-07-30, with the HIL clause fulfilled via R-CRD-02's own fallback rather than literally**: handover documented, compliance matrix revised and signed-ready; HIL was not performed (no hardware available) — stated explicitly per D-20, not silently substituted for a pass | **2026-12-06** |
 
 ---
 
@@ -292,13 +292,13 @@ Programme-level risks are in
 | ID | Risk | Sprint | Mitigation |
 |---|---|---|---|
 | **R-CRD-01** | The "protocols in the image" exclusion list is still unknown; all eight areas planned as in scope | all | Q-1. Re-cut immediately if it arrives |
-| **R-CRD-02** | No hardware for the HIL pass; field interop unverified at handover | H1 | Q-6, chased by Oct 25. If unavailable, state it explicitly in the handover package |
+| **R-CRD-02** | ~~No hardware for the HIL pass; field interop unverified at handover~~ | H1 | **✅ Closed via its own pre-agreed fallback, 2026-07-30** — Q-6: no hardware materialized by handover; stated explicitly in [XEDGE-CRD-001-handover.md](XEDGE-CRD-001-handover.md) §2–4 rather than assumed fine or silently omitted. Field interop genuinely remains unverified — this closes the *risk-handling process*, not the underlying gap |
 | **R-CRD-03** | Batching (XEDGE-411) changes the read path all Modbus tests depend on | C1 | Property-based tests over address layouts; oracle comparison against `pymodbus` |
 | **R-CRD-04** | Bus manager becomes a single point of failure per port | C3 | Hard per-transaction timeout. Note this is physically true of RS-485 regardless |
 | **R-CRD-05** | ~~EtherNet/IP implicit I/O unavailable in any Python CIP library~~ | C7 | **✅ Resolved 2026-07-28** — Q-7 answered (explicit messaging at a scan interval accepted). C7 proceeds at its existing estimate |
 | **R-CRD-06** | ~~SNMP library may not support the agent role, or may fail license verification~~ | C8 | **✅ Resolved 2026-07-30** — `pysnmp` cleared on both counts (license-audit.md §4 item 8); verified at the C7/C8 boundary rather than one sprint ahead as planned, but before it blocked anything |
 | **R-CRD-07** | ~~Customer expects an asset-first UI~~ | C6 | **✅ Resolved 2026-07-28** — Q-3 answered (reference/grouping view accepted). ADR-010's escape hatch remains available if ever revisited |
-| **R-CRD-08** | Customer expects a fleet dashboard at handover | H1 | ADR-013 §2. Correct the expectation **now** |
+| **R-CRD-08** | ~~Customer expects a fleet dashboard at handover~~ | H1 | **✅ Resolved 2026-07-30** — stated as the first explicit handover statement in [XEDGE-CRD-001-handover.md](XEDGE-CRD-001-handover.md) §2: single-tenant, API-only, no dashboard (ADR-013 §2) |
 | **R-CRD-09** | Embedded broker footprint exceeds the 1 GB ARM target | C5 | Verified in C4 as ADR-012 prerequisite P-5, one sprint ahead |
 
 ---
@@ -319,6 +319,7 @@ completed stories, carry-over, and a re-forecast against 2026-12-06.
 | C6 | ✅ Complete ([PR #11](https://github.com/sgbhavsar-cpu/XEdge/pull/11), [PR #12](https://github.com/sgbhavsar-cpu/XEdge/pull/12)) | XEDGE-460/461/462/463/464/465/466/467 | smtp.alarm_notifications/scheduled_reports editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan |
 | C7 | ✅ Complete ([PR #13](https://github.com/sgbhavsar-cpu/XEdge/pull/13)) | XEDGE-470/471/472/473/474/475/476 | Runtime tag discovery / L5X import (scope-cut candidate 4 — commissioning convenience, not required for symbolic-tag read/write; see notes) | On plan |
 | C8 | ✅ Complete ([PR #14](https://github.com/sgbhavsar-cpu/XEdge/pull/14), [PR #15](https://github.com/sgbhavsar-cpu/XEdge/pull/15)) | XEDGE-480/481/482/483/484/487 | MIB upload/parse/browse (XEDGE-485, scope-cut candidate 2 — invoked, not just standing; see notes) | On plan |
+| H1 | ✅ Complete ([PR #16](https://github.com/sgbhavsar-cpu/XEdge/pull/16)) | XEDGE-490/492/493/494 | XEDGE-491 (HIL pass) — no hardware available; closed via R-CRD-02's own pre-agreed fallback, not performed (see notes and the handover package) | **M-C7 met, with the HIL caveat stated explicitly rather than silently absorbed** |
 
 ### Sprint 0 notes (2026-07-27 → 08-02)
 
@@ -953,6 +954,97 @@ for EtherNet/IP.
 **Customer input needed:** none outstanding — Q-8/Q-9/Q-10 above were the
 open items, all resolved before implementation.
 
+### Sprint H1 notes (Integration, HIL, handover)
+
+All five stories delivered — XEDGE-490/492/493/494 as built, XEDGE-491
+closed via its own pre-agreed fallback rather than performed (see below)
+— in [PR #16](https://github.com/sgbhavsar-cpu/XEdge/pull/16).
+
+**XEDGE-491 (HIL pass): not performed, by design, not by shortfall.**
+This environment had no physical field hardware — no Modbus PLC, no
+ControlLogix/CompactLogix, no BACnet/OPC UA/SNMP equipment — at any point
+across the entire delivery, matching what R-CRD-02 anticipated from the
+start. Rather than delay handover chasing hardware access that R-CRD-02's
+own mitigation already treated as a real possibility, the pre-agreed
+fallback was invoked directly: state it explicitly in the handover
+package. See
+[XEDGE-CRD-001-handover.md](XEDGE-CRD-001-handover.md) §2/§3/§4 for
+exactly what was and wasn't verified as a result, protocol by protocol.
+
+**XEDGE-490's cross-protocol integration test found a real, previously
+undemonstrated consequence of a Sprint C6 design decision, not a new
+bug.** `compute_asset_connection_state`'s handling of a *mixed*
+Connected+Unknown input was already unit-tested in the abstract
+(`test_mixed_connected_and_unknown_is_degraded`) — but no prior sprint
+had a reason to build an Asset spanning both a connectivity-aware
+protocol (Modbus, SNMP) and a connectivity-unaware one (BACnet, OPC UA,
+EtherNet/IP) at the same time. Sprint H1's test does exactly that, against
+a real multi-protocol `DriverSupervisor`, and confirms: such an asset
+shows Degraded, never Connected, until every backing protocol implements
+`get_connectivity_state()` — today, only two of five do. This was
+deliberately **not** changed — `compute_asset_connection_state`'s
+existing behavior is shipped, customer-facing (C6), and already has a
+named test asserting the current behavior on purpose — so this was
+recorded as a known limitation (handover package §3) rather than
+"fixed," which would have been an unrequested behavior change to
+already-approved code on the strength of one new test's opinion about
+what it should do instead.
+
+**A second, smaller pre-existing bug was found and fixed while manually
+verifying the customer documentation (XEDGE-493), unrelated to any H1
+story's own scope:** `alarms.rules` — present since the alarm engine's
+own original config section, predating even C5/C6's mqtt_broker/smtp
+skip-list additions — was never added to `config_ui.py`'s
+`_core_section_skip` dispatch, so its Web UI page rendered a plain
+`<input type="text">` for an array-of-objects field: not just unusable,
+actively data-corrupting if submitted (the raw string would overwrite
+the real `rules` list on save). Fixed by adding
+`_SKIP_ALARMS_MANAGED_FIELDS = frozenset({"rules"})` and the matching
+Advanced-editor hint block, exactly mirroring the existing
+mqtt_broker/smtp/snmp_notify precedent — confirmed by hand against a
+running instance (the field disappeared, the hint appeared) before
+writing an automated regression test for it.
+
+**Performance validation (XEDGE-492) covered what could be measured in
+this environment and stated plainly what couldn't.** Batched-throughput
+and scan-rate-accuracy-under-load are both real, passing, timing-based
+tests against real `ModbusTcpDriver` instances and real `FakeModbusServer`
+fixtures (`tests/integration/test_performance_validation.py`) — not
+simulated numbers. The embedded broker's RAM footprint against the
+ADR-007 1GB ARM target was **not** measured, for the same underlying
+reason as the HIL gap: no ARM hardware or emulated target was available.
+This was already recorded honestly in `license-audit.md` §4 item 6 back
+in Sprint C5 ("not currently measured... carried forward as part of open
+item Q-6") — Sprint H1 confirmed this is the *same* Q-6 the HIL pass
+uses, applied the same resolution (state it, don't block), and did not
+re-litigate it as a fresh decision.
+
+**Customer documentation (XEDGE-493) was written against a running
+instance, not from memory of the schema.** Every CLI flag, REST endpoint,
+request/response shape, and Web UI route named in
+`docs/guide/onboarding-walkthrough.md` was read from a live instance's
+own OpenAPI schema and exercised with real requests — including the
+discovery that `/api/v1/auth/setup` takes only a `password` field (the
+admin username is fixed, not customer-configurable), which was not
+obvious from the schema field name alone.
+
+**The pre-delivery gap analysis
+(`docs/requirements/XEDGE-CRD-001-gateway-compliance-report.md`) was
+revised in place rather than left stale or duplicated.** It was an
+accurate snapshot of 2026-07-09, before eight sprints of work — by
+handover it asserted things like "No SNMP support anywhere" and "No
+Asset entity exists in the data model at all" that had been untrue since
+Sprints C6/C8. Every row was re-verified against the current codebase
+(not assumed from the delivery plan's own sprint notes) and revised to
+v2.0, with the original wording kept struck through inline so the delta
+is visible rather than silently overwritten. One correction made during
+that re-verification: the original open question about protocols
+"excluded... in the image" (Q-1/R-CRD-01) was previously going to be
+characterized as resolved; it is not — the image was never received
+across the entire delivery, and this is now stated as a still-open item
+in both the compliance report and the handover package rather than
+quietly upgraded to "resolved" at the finish line.
+
 ---
 
 ## 8. Revision history
@@ -967,3 +1059,4 @@ open items, all resolved before implementation.
 | 1.5 | 2026-07-28 | Sprint C6 complete — status row + notes (Asset Management resolving open item Q-3, a real driver/tag deletion validation gap found and fixed, SMTP notifications/reports, aiosmtpd added as a test dependency, an SMTP TLS trust-store gap found and fixed) |
 | 1.6 | 2026-07-28 | Sprint C7 complete — status row + notes (EtherNet/IP scanner via `pycomm3`; cpppo/pycomm3 incompatibility found, documented, mocked-boundary test strategy adopted instead; live Web UI verification confirming zero new UI code needed) |
 | 1.7 | 2026-07-30 | Sprint C8 complete — status row + notes (SNMP manager/agent/TRAP-INFORM originator+receiver via `pysnmp`; a real GETBULK semantics bug and two real agent bugs found and fixed; TRAP's fire-and-forget delivery confirmed and documented; MIB upload/parse/browse descoped per the pre-existing scope-cut candidate list) |
+| 1.8 | 2026-07-30 | **Delivery 1 complete.** Sprint H1 status row + notes (cross-protocol integration test across all five protocols with an asset spanning them, confirming a real Degraded-not-Connected consequence of existing C6 behavior rather than a new bug; performance validation with the ARM-footprint gap explicitly tied to the same Q-6 as the HIL pass; customer documentation verified against a running instance; a real pre-existing `alarms.rules` Web UI bug found and fixed); R-CRD-02/R-CRD-08 closed; the pre-delivery gap analysis revised to v2.0 as the handover compliance matrix, correcting one over-claimed resolution (Q-1 remains genuinely open); new [XEDGE-CRD-001-handover.md](XEDGE-CRD-001-handover.md) package published |
