@@ -22,6 +22,7 @@ from tests.fixtures.smtp_server import (  # noqa: F401 — re-exported fixtures
     smtp_server_requiring_auth,
     smtp_server_starttls,
 )
+from tests.fixtures.snmp_agent import snmp_test_agent  # noqa: F401 — re-exported fixture
 from xedge.drivers.base import TagUpdate
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

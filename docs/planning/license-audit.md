@@ -264,7 +264,11 @@ XEDGE-DR-001 D-12). Entries below record the *candidate* and the
      the time of this check — worth naming plainly rather than glossing
      over, though not a red flag on its own for a MIB-compiler utility
      library, which has far less surface area to need fixing than a full
-     protocol stack.
+     protocol stack. Installing it pulls in one new transitive
+     dependency, `lark` (its ASN.1/SMI grammar parser) — MIT, confirmed
+     via `pip show lark` after installing, zero further transitive
+     dependencies of its own (`requests`, its only other declared
+     dependency, is already in this project's tree via `asyncua`).
 
 ## 5. Provenance record template (per in-house driver)
 

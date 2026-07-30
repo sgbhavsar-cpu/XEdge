@@ -79,6 +79,13 @@ dependencies = [
     # verification this integration required first (prerequisite P-1),
     # including its "no longer actively developed" PyPI notice.
     "pycomm3>=1.2",
+    # SNMP manager runtime (Sprint C8, XEDGE-481; ADR-012 §2): BSD-2-Clause,
+    # one dependency of its own (pyasn1, also BSD-2-Clause) — see
+    # docs/planning/license-audit.md §4 item 8 for the license/maintenance/
+    # agent-role verification this integration required first
+    # (prerequisites P-3/P-4), including the PyPI naming-fragmentation
+    # finding (pysnmp-lextudio is deprecated in favor of plain pysnmp).
+    "pysnmp>=7.1",
 ]
 
 [project.optional-dependencies]
@@ -181,4 +188,10 @@ ignore_missing_imports = true
 # py.typed marker either. Same treatment as above.
 [[tool.mypy.overrides]]
 module = ["amqtt.*", "passlib.*"]
+ignore_missing_imports = true
+
+# pysnmp (SNMP manager, Sprint C8/XEDGE-481) ships no py.typed marker either
+# (confirmed: no py.typed file in the installed package). Same treatment.
+[[tool.mypy.overrides]]
+module = "pysnmp.*"
 ignore_missing_imports = true

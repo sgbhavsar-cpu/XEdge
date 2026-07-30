@@ -63,6 +63,7 @@ KNOWN_DRIVER_TYPES = [
     "bacnet_ip",
     "ethernet_ip",
     "mqtt_subscriber",
+    "snmp_client",
     "loopback",
 ]
 

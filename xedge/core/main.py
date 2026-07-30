@@ -57,6 +57,7 @@ from xedge.drivers.modbus.serial import ModbusRtuSerialDriver
 from xedge.drivers.modbus.tcp import ModbusTcpDriver
 from xedge.drivers.mqtt_subscriber.client import MqttSubscriberDriver
 from xedge.drivers.opcua.client import OpcUaClientDriver
+from xedge.drivers.snmp.client import SnmpClientDriver
 from xedge.fleet.agent import (
     FleetAgentConfig,
     FleetAgentPaths,
@@ -198,6 +199,7 @@ def _build_registry() -> DriverRegistry:
     registry.register("bacnet_ip", BacnetIpDriver)
     registry.register("ethernet_ip", EtherNetIpDriver)
     registry.register("mqtt_subscriber", MqttSubscriberDriver)
+    registry.register("snmp_client", SnmpClientDriver)
     registry.register("loopback", LoopbackDriver)
     return registry
 
