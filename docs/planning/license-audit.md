@@ -74,7 +74,9 @@ XEDGE-DR-001 D-12). Entries below record the *candidate* and the
 | amqtt | **Promotion from test-only to runtime** — embedded MQTT broker (ADR-012 §3) | MIT | ✅ Verified 2026-07-27 (prerequisite P-5, done in Sprint C5 rather than C4 as originally scheduled — recorded here rather than silently reassigned) | See §4 item 6 for the full P-5 write-up: license (own + full transitive closure), maintenance, and ARM-build finding |
 | pycomm3 | EtherNet/IP CIP originator (ADR-012 §1) | MIT | ✅ Verified 2026-07-28 (prerequisite P-1, due Sprint C6, done at the C6/C7 boundary once Q-7 below cleared it to matter). See §4 item 7 for the full write-up: license, zero-dependency footprint, and the "no longer actively developed" maintenance finding | **Explicit messaging only — does not implement CIP Class 1 implicit (cyclic) I/O.** ADR-012 §1/XEDGE-DR-001 Q-7 **resolved 2026-07-28**: explicit messaging at a scan interval accepted, Sprint C7 proceeds at its existing estimate |
 | cpppo | EtherNet/IP fallback | ⚠ Unverified — understood to be copyleft with a commercial option | ⏳ Verify before considering | Not currently cleared for the commercial edition. Do not adopt without a license purchase decision |
-| pysnmp (lineage) | SNMP manager + agent + notification originator/receiver (ADR-012 §2) | ⚠ Unverified | ⏳ Verify in sprint C7 (prerequisites P-3, P-4) | Project changed stewardship and PyPI naming is fragmented across forks — verify the exact package identity, license and maintenance status, **and confirm it supports the agent role**, not just manager |
+| pysnmp | SNMP manager + agent + notification originator/receiver (ADR-012 §2) | BSD-2-Clause | ✅ Verified 2026-07-30 (prerequisites P-3, P-4, due Sprint C7, done at the C7/C8 boundary — same pattern as pycomm3's P-1). See §4 item 8 for the full write-up | Stewardship changed (Ilya Etingof → LeXtudio Inc.) but the PyPI naming fragmentation ADR-012 flagged has since resolved to one canonical package — see §4 item 8 |
+| pyasn1 | pysnmp's BER encoding dependency | BSD-2-Clause | ✅ Verified 2026-07-30, see §4 item 8 | Actively maintained (0.6.4, released 2026-07-09) under a different small maintainer team than pysnmp/pysmi's LeXtudio lineage |
+| pysmi | MIB upload/parse (XEDGE-485, ADR-012 §2) | BSD-2-Clause | ✅ Verified 2026-07-30, see §4 item 8 | Same LeXtudio lineage as pysnmp |
 | psycopg (or equivalent) | Fleet Manager Postgres driver (ADR-013 §5) | LGPL-3.0 (psycopg2) / Apache-2.0 (psycopg3) | ⏳ Verify at Delivery 2 planning | Central server only — never shipped on a gateway. Prefer psycopg3 for the permissive license |
 | React, Vite, TypeScript + transitive npm tree | Fleet Manager SPA dashboard (ADR-013 §6) | MIT (direct deps) | ⏳ Full tree audit required at Delivery 2 | **Central server only — not shipped on a gateway.** The device UI keeps ADR-007's no-npm posture. An npm SBOM and CI dependency audit are in scope for that sprint (risk R-11) |
 
@@ -176,10 +178,93 @@ XEDGE-DR-001 D-12). Entries below record the *candidate* and the
      DR-001 Q-7 resolved 2026-07-28 (explicit messaging at a scan
      interval accepted), so this is no longer a blocking unknown, just
      the confirmed shape of what Sprint C7 integrates.
-8. **SNMP library verification** (ADR-012 P-3, P-4) — package identity,
-   license, maintenance, and **agent-role support**. Due sprint C7.
-   Fallback if none clears: v1/v2c in-house, v3 escalated to the customer
-   as a scope question.
+8. **SNMP library verification** (ADR-012 P-3, P-4) — ✅ **resolved
+   2026-07-30** (due Sprint C7; done at the C7/C8 boundary, same pattern
+   as item 7's P-1 — recorded rather than silently reassigned). **Both
+   prerequisites cleared: no fallback to v1/v2c in-house is needed, and
+   v3 does not need to be escalated to the customer as a scope cut.**
+   - **Package identity — the fragmentation ADR-012 flagged has resolved
+     itself.** The stewardship handoff (Ilya Etingof → LeXtudio Inc.,
+     2022) briefly produced two live PyPI names, `pysnmp` (old, orphaned)
+     and `pysnmp-lextudio` (the fork). That period is over: fetching
+     `pysnmp-lextudio`'s own PyPI page today returns its current
+     description verbatim — **"A deprecated package. Please use 'pysnmp'
+     instead... LeXtudio Inc. has taken control of PySNMP PyPI packages,
+     so please use pysnmp package instead."** LeXtudio now publishes
+     under the plain `pysnmp` name (confirmed via `lextudio/pysnmp` on
+     GitHub, not assumed from the PyPI blurb alone). There is one
+     canonical package to depend on, not a fork to choose between.
+   - **License** — `pysnmp==7.1.27` (latest, released 2026-05-16):
+     BSD-2-Clause, confirmed both from PyPI metadata and the repo's own
+     `pyproject.toml` (`license = "BSD-2-Clause"`), not the PyPI page's
+     prose alone. Sole runtime dependency `pyasn1>=0.6.3`; the installed/
+     current `pyasn1==0.6.4` (released 2026-07-09) is also BSD-2-Clause,
+     under a distinct small maintainer team (Christian Heimes, Simon
+     Pichugin — not LeXtudio), confirmed via its own PyPI page. No
+     transitive dependency beyond that one.
+   - **Maintenance — clean, unlike pycomm3's finding.** `lextudio/pysnmp`
+     is not archived and was pushed as recently as 2026-05-19; PyPI's own
+     classifier reads **"Development Status :: 5 - Production/Stable"**
+     (quoted verbatim), and `pyproject.toml` declares Python 3.10–3.14
+     support — this project's 3.12 floor sits comfortably inside that
+     range, not at its edge the way pycomm3's stale 3.6–3.10 classifiers
+     did. No deprecation notice of any kind on the package itself (only
+     on the now-retired `pysnmp-lextudio` transitional name, above).
+   - **Agent-role support (P-4) — confirmed from real example code, not
+     marketing copy.** "Supports the agent role" is exactly the kind of
+     claim a library's own description could overstate (SNMPv3's RFCs
+     call every SNMP-speaking node an "entity" whether manager or agent,
+     so generic language proves nothing on its own). Checked instead
+     against `lextudio/pysnmp`'s own example tree
+     (`examples/v3arch/asyncio/`), which carries a dedicated `agent/`
+     directory alongside `manager/` and `proxy/` — not a single shared
+     module with an agent flag bolted on:
+     - `agent/cmdrsp/` (command *responder*, i.e. the agent side that
+       answers GET/GETNEXT/GETBULK/SET): `implementing-scalar-mib-
+       objects.py`, `implementing-snmp-table.py`,
+       `detailed-vacm-configuration.py` (View-based Access Control),
+       `multiple-usm-users.py`, `custom-mib-controller.py`,
+       `listen-on-ipv4-and-ipv6-interfaces.py` — a genuinely-featured
+       agent, covers XEDGE-482.
+     - `agent/ntforg/` (notification originator) and
+       `manager/ntfrcv/` (notification receiver) cover both TRAP/INFORM
+       directions (XEDGE-483/484): `v1-trap.py`, `v2c-trap.py`,
+       `v2c-inform.py`, `v3-trap.py`, `send-inform-to-multiple-
+       managers.py`.
+     - `manager/cmdgen/` (command generator, the classic manager role,
+       XEDGE-481) has dedicated GETBULK examples
+       (`getbulk-fetch-scalar-and-table-variables.py`,
+       `getbulk-multiple-oids-to-eom.py`), GETNEXT, v1 GET, v2c SET, and
+       — the specific thing ADR-012 §2 called "the deciding factor" —
+       **SNMPv3 USM auth *and* privacy together**:
+       `usm-sha-aes128.py` demonstrates SHA authentication with AES-128
+       privacy in one example, not auth-only.
+     - A second, higher-level API (`examples/hlapi/v3arch/asyncio/`) also
+       ships separate `agent/` and `manager/` trees, so there is a choice
+       of ergonomics for whichever role's implementation needs it.
+   - **SNMPv3 privacy (AES/DES) needs no new crypto dependency.** Reading
+     `pysnmp/proto/secmod/rfc3414/priv/des.py` and
+     `pysnmp/proto/secmod/rfc3826/priv/aes.py` directly shows both import
+     `cryptography.hazmat...` (inside a `try/except ImportError`, so it's
+     a soft dependency at the code level) — the exact same `cryptography`
+     package already in this project's own runtime dependencies since
+     Sprint 13 (TLS/PKI). `pysnmp`'s own `pyproject.toml` pins
+     `cryptography>=44.0.1` under its `dev` extra (a misleading name —
+     that group actually gates several optional runtime features, privacy
+     included, not just dev tooling); our own floor (`>=42.0`) needs
+     bumping to match when SNMPv3 privacy is implemented, not a new
+     dependency added.
+   - **MIB upload/parse/browse (XEDGE-485) needs one new dependency,
+     `pysmi`.** Same LeXtudio lineage as `pysnmp` (`pysmi==2.0.0`,
+     released 2026-04-26; BSD-2-Clause, confirmed from PyPI metadata and
+     `lextudio/pysmi`'s GitHub license detection independently) —
+     "Production/Stable," not archived. Its GitHub repo's last push
+     matches its release date exactly (2026-04-26), about three months
+     stale relative to `pysnmp`'s own most recent push (2026-05-19) at
+     the time of this check — worth naming plainly rather than glossing
+     over, though not a red flag on its own for a MIB-compiler utility
+     library, which has far less surface area to need fixing than a full
+     protocol stack.
 
 ## 5. Provenance record template (per in-house driver)
 

@@ -114,6 +114,16 @@ fallback is v1/v2c in-house (straightforward — ASN.1 BER over UDP, no
 crypto) with v3 escalated to the customer as a scope question. In-house v3
 is not recommended at any price on this schedule.
 
+> **✅ Resolved 2026-07-30: `pysnmp` (BSD-2-Clause) cleared on both counts.**
+> The stewardship handoff (Ilya Etingof → LeXtudio Inc.) has already
+> consolidated onto one canonical PyPI name — `pysnmp-lextudio` is itself
+> now deprecated in favor of plain `pysnmp` — and the agent role is real,
+> confirmed against the library's own example code (a dedicated
+> `examples/v3arch/asyncio/agent/` tree, not a manager-only library with
+> agent claimed in prose), including SNMPv3 USM auth+privacy together. No
+> fallback needed; see `license-audit.md` §4 item 8 for the full
+> verification record.
+
 ### 3. MQTT Broker — promote `amqtt` from test-only to runtime
 
 `amqtt` is already in the dependency tree, already MIT per
@@ -177,10 +187,10 @@ None of these are optional, and each blocks its sprint:
 
 | # | Prerequisite | Blocks | Owner action |
 |---|---|---|---|
-| P-1 | Verify `pycomm3` license and maintenance from package metadata; record in `license-audit.md` | C7 | Sprint C6 |
+| P-1 | ~~Verify `pycomm3` license and maintenance from package metadata; record in `license-audit.md`~~ ✅ **Resolved 2026-07-28** — MIT, "no longer actively developed" noted as a real risk, not a blocker; see `license-audit.md` §4 item 7 | C7 | Sprint C6 |
 | P-2 | ~~Resolve the implicit-I/O question (§1 warning box) with the customer~~ ✅ **Resolved 2026-07-28** — option 1 (explicit messaging at a scan interval) accepted; see §1's warning box and XEDGE-DR-001 Q-7 | C7 | Before C7 planning |
-| P-3 | Verify the SNMP library's license, package identity and maintenance; record in `license-audit.md` | C8 | Sprint C7 |
-| P-4 | Confirm the SNMP library supports the **agent** role, not just manager | C8 | Sprint C7 |
+| P-3 | ~~Verify the SNMP library's license, package identity and maintenance; record in `license-audit.md`~~ ✅ **Resolved 2026-07-30** — `pysnmp` BSD-2-Clause, PyPI naming fragmentation has since consolidated; see `license-audit.md` §4 item 8 | C8 | Sprint C7 |
+| P-4 | ~~Confirm the SNMP library supports the **agent** role, not just manager~~ ✅ **Resolved 2026-07-30** — confirmed from `pysnmp`'s own example code, not prose; see §2's resolution note and `license-audit.md` §4 item 8 | C8 | Sprint C7 |
 | P-5 | Re-verify `amqtt` license, maintenance, and ARM footprint; define broker TLS/auth/ACL scope | C5 | Sprint C4 |
 
 ## References
