@@ -153,9 +153,7 @@ class TestAlarmNotificationLoop:
             from_address="xedge@example.com",
             tls_mode="none",
         )
-        notification_config = AlarmNotificationConfig(
-            enabled=True, recipients=("ops@example.com",)
-        )
+        notification_config = AlarmNotificationConfig(enabled=True, recipients=("ops@example.com",))
         status = SmtpStatus()
         task = asyncio.create_task(
             alarm_notification_loop(
@@ -191,9 +189,7 @@ class TestAlarmNotificationLoop:
             from_address="xedge@example.com",
             tls_mode="none",
         )
-        notification_config = AlarmNotificationConfig(
-            enabled=True, recipients=("ops@example.com",)
-        )
+        notification_config = AlarmNotificationConfig(enabled=True, recipients=("ops@example.com",))
         status = SmtpStatus()
         task = asyncio.create_task(
             alarm_notification_loop(
