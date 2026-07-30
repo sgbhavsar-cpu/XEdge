@@ -93,9 +93,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # nosec B104 — a fleet manager must be reachable from every enrolled
     # device's network, unlike the per-device loopback-only REST API.
     parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")  # nosec B104
-    parser.add_argument(
-        "--port", type=int, default=8090, help="Join-token/enrollment/admin port"
-    )
+    parser.add_argument("--port", type=int, default=8090, help="Join-token/enrollment/admin port")
     parser.add_argument(
         "--device-port",
         type=int,
