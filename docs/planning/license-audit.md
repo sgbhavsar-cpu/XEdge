@@ -270,6 +270,37 @@ XEDGE-DR-001 D-12). Entries below record the *candidate* and the
      dependencies of its own (`requests`, its only other declared
      dependency, is already in this project's tree via `asyncua`).
 
+9. **`click` CVE (PYSEC-2026-2132) — tracked, not fixed; fix is blocked
+   upstream, not skipped.** Found by `pip-audit` during Sprint H1's
+   Delivery 1 closeout (the first time `pip-audit` was run against this
+   project — a gap in the quality-gate practice through Sprints 0–H1,
+   not specific to this finding). A command-injection vulnerability in
+   `click.edit()`, fixed upstream in `click==8.3.3`.
+   - **Not reachable from this codebase.** `click` is not a direct
+     dependency (absent from `pyproject.toml`) — it arrives transitively
+     via `amqtt`'s `typer` dependency (amqtt's own CLI tooling) and via
+     `uvicorn`. Nothing in `xedge/` imports `click` or `typer`, and
+     `amqtt` is used here exclusively as a library (the embedded broker,
+     item 6) — its `typer`-based CLI entry points are never invoked.
+     There is no execution path in this product that reaches
+     `click.edit()`.
+   - **Attempted fix, found genuinely blocked, not just inconvenient.**
+     Floor-pinning `click>=8.3.3` directly fails dependency resolution:
+     `amqtt==0.11.3` *and* the latest `amqtt==0.11.4` both pin
+     `typer==0.15.4` exactly (not a range), and `typer==0.15.4` requires
+     `click<8.2,>=8.0.0` — confirmed from both packages' own installed/
+     downloaded metadata, not assumed from changelog prose. No released
+     `amqtt` version relaxes this. Forcing an override would install a
+     `click` version against `typer`'s own declared incompatibility,
+     risking a real breakage in `typer`'s code for zero benefit, since
+     the vulnerable function is unreachable either way — rejected as a
+     worse trade than the CVE itself.
+   - **Actual resolution path**: upstream. Either `amqtt` relaxes its
+     exact `typer` pin, or `typer` itself is bumped by an `amqtt`
+     release, unblocking a compatible `click`. Re-check on the next
+     `amqtt` version bump (already tracked whenever item 6 is revisited)
+     rather than opening a separate recurring task.
+
 ## 5. Provenance record template (per in-house driver)
 
 Copy this block into each in-house driver's module docstring or an adjacent
