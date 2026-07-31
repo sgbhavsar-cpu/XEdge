@@ -339,8 +339,9 @@ class TestTagGroupAndTagCrud:
             "/ui/config/drivers/d1/tag-groups/g1/tags/t1",
             data={"function_code": "read_holding_registers", "address": "0"},
         )
-        # modbus_tcp tag_groups.scan_rate_ms minimum is 50
-        response = client.post("/ui/config/drivers/d1/tag-groups/g1", data={"scan_rate_ms": "10"})
+        # modbus_tcp tag_groups.scan_rate_ms minimum is 1 since XEDGE-413
+        # lowered it from 50 (open item Q-2), so 0 is the rejected value.
+        response = client.post("/ui/config/drivers/d1/tag-groups/g1", data={"scan_rate_ms": "0"})
         assert "error" in response.text.lower()
 
     def test_add_and_edit_tag_with_enum_and_scaling(

@@ -51,6 +51,24 @@ class ExceptionCode(IntEnum):
 _BIT_FUNCTION_CODES = (FunctionCode.READ_COILS, FunctionCode.READ_DISCRETE_INPUTS)
 _REGISTER_FUNCTION_CODES = (FunctionCode.READ_HOLDING_REGISTERS, FunctionCode.READ_INPUT_REGISTERS)
 
+# Maximum quantity per read request, per Modbus Application Protocol V1.1b3
+# §6.1-6.4. Both derive from the 253-byte PDU ceiling: 2000 bits is 250 bytes
+# of packed coils, 125 registers is 250 bytes of register data, each leaving
+# room for the function code and byte-count fields.
+#
+# Only enforced from Sprint C1 (XEDGE-411) onward in any meaningful sense —
+# every read issued before block batching asked for exactly one value, so the
+# single 2000 ceiling that used to apply to both was never reachable and its
+# incorrectness for register functions never surfaced.
+MAX_READ_BITS = 2000
+MAX_READ_REGISTERS = 125
+
+
+def max_read_quantity(function_code: FunctionCode) -> int:
+    """Protocol ceiling on a single read request's quantity for this function
+    code."""
+    return MAX_READ_BITS if is_bit_function(function_code) else MAX_READ_REGISTERS
+
 
 class ModbusFramingError(Exception):
     """Raised when a received frame is malformed (bad protocol ID, truncated, etc.)."""
@@ -120,8 +138,16 @@ def frame_remainder_length(mbap_header: bytes) -> int:
 def encode_read_request(function_code: FunctionCode, address: int, quantity: int) -> bytes:
     if not 0 <= address <= 0xFFFF:
         raise ValueError(f"address out of range: {address}")
-    if not 1 <= quantity <= 2000:
-        raise ValueError(f"quantity out of range: {quantity}")
+    limit = max_read_quantity(function_code)
+    if not 1 <= quantity <= limit:
+        raise ValueError(
+            f"quantity out of range for FC{function_code:#04x}: {quantity} (max {limit})"
+        )
+    if address + quantity - 1 > 0xFFFF:
+        raise ValueError(
+            f"read of {quantity} from address {address} runs past the end of the "
+            f"16-bit address space"
+        )
     return struct.pack(">BHH", function_code, address, quantity)
 
 

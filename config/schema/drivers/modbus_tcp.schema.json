@@ -4,43 +4,105 @@
   "title": "Modbus TCP Driver Configuration",
   "description": "Per-driver-type schema for `type: modbus_tcp` entries (FR-DF-004, FR-SA-002, FR-SA-004, FR-SA-009).",
   "type": "object",
-  "required": ["config", "tag_groups"],
+  "required": [
+    "config",
+    "tag_groups"
+  ],
   "additionalProperties": false,
   "properties": {
     "config": {
       "type": "object",
-      "required": ["host"],
+      "required": [
+        "host"
+      ],
       "additionalProperties": false,
       "properties": {
-        "host": { "type": "string", "minLength": 1 },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 502 },
-        "unit_id": { "type": "integer", "minimum": 0, "maximum": 255, "default": 1 },
-        "connect_timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "default": 5 },
-        "read_timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "default": 3 }
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 502
+        },
+        "unit_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "default": 1
+        },
+        "connect_timeout_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 5
+        },
+        "read_timeout_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 3
+        },
+        "retry_count": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "XEDGE-414: retries per failed read request, beyond the first attempt."
+        },
+        "retry_on_exception": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether to retry when the device returns a Modbus exception. Default false: ILLEGAL_DATA_ADDRESS answers the same way every time. Enable for devices that return SLAVE_DEVICE_BUSY under load."
+        },
+        "retry_backoff_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.05,
+          "description": "Delay between retry attempts."
+        }
       }
     },
     "tag_groups": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "scan_rate_ms", "tags"],
+        "required": [
+          "id",
+          "scan_rate_ms",
+          "tags"
+        ],
         "additionalProperties": false,
         "properties": {
-          "id": { "type": "string", "minLength": 1 },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
           "scan_rate_ms": {
             "type": "integer",
-            "minimum": 50,
+            "minimum": 1,
             "maximum": 86400000,
-            "description": "FR-SA-009: 50ms minimum, 24h maximum."
+            "description": "FR-SA-009 / XEDGE-413: 1ms minimum, 24h maximum. The 1ms floor is a schema limit, not a promise \u2014 the achievable rate depends on transport, block count and device response time. See the driver's own notes."
           },
           "deadband": {
             "type": "object",
             "description": "FR-DP-006: applies to every numeric tag in this group.",
-            "required": ["type", "value"],
+            "required": [
+              "type",
+              "value"
+            ],
             "additionalProperties": false,
             "properties": {
-              "type": { "type": "string", "enum": ["absolute", "percentage"] },
-              "value": { "type": "number", "minimum": 0 }
+              "type": {
+                "type": "string",
+                "enum": [
+                  "absolute",
+                  "percentage"
+                ]
+              },
+              "value": {
+                "type": "number",
+                "minimum": 0
+              }
             }
           },
           "tags": {
@@ -48,10 +110,17 @@
             "minItems": 1,
             "items": {
               "type": "object",
-              "required": ["id", "function_code", "address"],
+              "required": [
+                "id",
+                "function_code",
+                "address"
+              ],
               "additionalProperties": false,
               "properties": {
-                "id": { "type": "string", "minLength": 1 },
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
                 "function_code": {
                   "type": "string",
                   "enum": [
@@ -61,19 +130,75 @@
                     "read_input_registers"
                   ]
                 },
-                "address": { "type": "integer", "minimum": 0, "maximum": 65535 },
+                "address": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 65535
+                },
                 "scaling": {
                   "type": "object",
                   "description": "FR-DP-003: engineering_value = raw * scale + offset.",
                   "additionalProperties": false,
                   "properties": {
-                    "scale": { "type": "number", "default": 1.0 },
-                    "offset": { "type": "number", "default": 0.0 }
+                    "scale": {
+                      "type": "number",
+                      "default": 1.0
+                    },
+                    "offset": {
+                      "type": "number",
+                      "default": 0.0
+                    }
                   }
                 },
-                "engineering_unit": { "type": "string" }
+                "engineering_unit": {
+                  "type": "string"
+                },
+                "data_type": {
+                  "type": "string",
+                  "enum": [
+                    "uint16",
+                    "int16",
+                    "uint32",
+                    "int32",
+                    "float32",
+                    "uint64",
+                    "int64",
+                    "float64"
+                  ],
+                  "default": "uint16",
+                  "description": "XEDGE-412: how many registers this tag spans and how they combine. Ignored for read_coils/read_discrete_inputs, which address single bits."
+                },
+                "word_order": {
+                  "type": "string",
+                  "enum": [
+                    "big",
+                    "little"
+                  ],
+                  "default": "big",
+                  "description": "Which register holds the most significant half of a multi-register value. 'big' (ABCD) is the Modbus convention; 'little' (CDAB) matches devices that report the low word first."
+                },
+                "byte_order": {
+                  "type": "string",
+                  "enum": [
+                    "big",
+                    "little"
+                  ],
+                  "default": "big",
+                  "description": "Endianness within each 16-bit register. Almost always 'big'; 'little' (BADC) is for byte-swapped devices."
+                }
               }
             }
+          },
+          "max_block_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "XEDGE-411: largest single read request, in registers (FC03/04) or coils (FC01/02). Clamped to the protocol ceiling (125 registers / 2000 coils). Omit for the ceiling; set to 1 to disable batching."
+          },
+          "max_block_gap": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "How many unrequested registers may sit inside one read block. 0 (default) keeps blocks strictly contiguous. Raise it only for devices known to tolerate reads of unmapped registers \u2014 many answer ILLEGAL_DATA_ADDRESS, which fails the whole block."
           }
         }
       }
