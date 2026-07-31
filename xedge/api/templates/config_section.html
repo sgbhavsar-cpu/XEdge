@@ -36,16 +36,6 @@
     delivery confirmation matters.
   </p>
   {% endif %}
-  {% if section == "alarms" %}
-  <p class="xedge-hint">
-    Alarm rules aren't editable here yet; use the
-    <a href="/ui/config/advanced">Advanced (raw YAML)</a> editor's
-    <code>alarms.rules</code> — see config/examples/smtp-example.yaml for
-    the shape (a list of rules keyed by <code>tag_id</code>, each with any
-    of <code>high</code>/<code>high_high</code>/<code>low</code>/
-    <code>low_low</code>/<code>rate_of_change_per_second</code>).
-  </p>
-  {% endif %}
   <form method="post" action="/ui/config/core/{{ section }}">
     {% for f in fields %}
     {{ macros.render_field(f) }}

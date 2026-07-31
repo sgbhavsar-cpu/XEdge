@@ -242,58 +242,6 @@ class TestCoreSectionSkippedFieldsSurviveUnrelatedSaves:
 
         assert "distinctive-recipient@example.com" not in response.text
 
-    def test_saving_alarms_retention_preserves_rules(
-        self, tmp_path: Path, core_schema_path: Path
-    ) -> None:
-        """alarms.rules predates mqtt_broker.users/smtp's skip-listed
-        fields (present since the alarm engine's own config section) but
-        was never added to _core_section_skip -- found manually verifying
-        Sprint H1's customer documentation (XEDGE-493). Same round-trip
-        guarantee as smtp's own test above, now extended to alarms."""
-        _seed_config(
-            tmp_path,
-            {
-                "schema_version": "0.1",
-                "alarms": {
-                    "enabled": True,
-                    "retention_duration_seconds": 86400,
-                    "rules": [{"tag_id": "modbus_01/temperature", "high": 80.0}],
-                },
-            },
-        )
-        app = _build_app(tmp_path, core_schema_path)
-        client = _authenticated_client(app)
-
-        response = client.post(
-            "/ui/config/core/alarms",
-            data={"enabled": "on", "retention_duration_seconds": "172800"},
-        )
-
-        assert response.status_code == 200
-        assert "Saved" in response.text
-        alarms_config = _current_config(tmp_path)["alarms"]
-        assert alarms_config["retention_duration_seconds"] == 172800
-        assert alarms_config["rules"] == [{"tag_id": "modbus_01/temperature", "high": 80.0}]
-
-    def test_alarms_form_does_not_render_rules_as_raw_text(
-        self, tmp_path: Path, core_schema_path: Path
-    ) -> None:
-        _seed_config(
-            tmp_path,
-            {
-                "schema_version": "0.1",
-                "alarms": {
-                    "rules": [{"tag_id": "distinctive_instance/distinctive_tag", "high": 80.0}]
-                },
-            },
-        )
-        app = _build_app(tmp_path, core_schema_path)
-        client = _authenticated_client(app)
-
-        response = client.get("/ui/config/core/alarms")
-
-        assert "distinctive_instance/distinctive_tag" not in response.text
-
 
 class TestDriverCrud:
     def test_add_driver_form_lists_known_types(

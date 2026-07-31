@@ -109,15 +109,6 @@ _SKIP_SMTP_MANAGED_FIELDS = frozenset({"alarm_notifications", "scheduled_reports
 # time).
 _SKIP_SNMP_NOTIFY_MANAGED_FIELDS = frozenset({"destinations"})
 
-# alarms.rules is an array of objects -- the same schema_forms gap as the
-# three above. Unlike those, this one predates all of them (present since
-# the alarm engine's own Sprint 31 config section) and was never given the
-# skip-list + Advanced-editor-hint treatment, so build_object_fields fell
-# through to a generic (and here, non-functional) plain-text input for an
-# array-typed field -- found manually verifying Sprint H1's customer
-# documentation (XEDGE-493), not part of any story that touched this file.
-_SKIP_ALARMS_MANAGED_FIELDS = frozenset({"rules"})
-
 CORE_SECTIONS = [
     ("logging", "Logging"),
     ("watchdog", "Watchdog"),
@@ -301,8 +292,6 @@ def create_config_ui_router(
             return _SKIP_SMTP_MANAGED_FIELDS
         if section == "snmp_notify":
             return _SKIP_SNMP_NOTIFY_MANAGED_FIELDS
-        if section == "alarms":
-            return _SKIP_ALARMS_MANAGED_FIELDS
         return frozenset()
 
     @router.get("/core/{section}", response_class=HTMLResponse)
