@@ -1045,6 +1045,37 @@ across the entire delivery, and this is now stated as a still-open item
 in both the compliance report and the handover package rather than
 quietly upgraded to "resolved" at the finish line.
 
+**Post-handover merge to `main` surfaced a real, intermittent full-suite
+CI hang — found by the merge process, not caused by it.** Merging the
+sprint-by-sprint PR stack into `main` required every branch to pass CI
+against `main` for the first time (each PR had only ever run CI against
+its own predecessor branch before). Two branches (#5, Sprint C3; #14,
+Sprint C8) hung on the "Unit + Integration Tests" job for 30+ minutes on
+GitHub's runners. Reproduced directly (not just theorized) by running the
+identical suite in a real `python:3.11-slim` Docker container on the dev
+machine, matching `ubuntu-latest` far more closely than native Windows
+ever could:
+- First full-suite container run hung at
+  `test_serial_bus_manager.py::TestMultiDropSharedBus::test_two_instances_on_one_port_both_read_correctly`
+  (POSIX-only `pty`-based code — explicitly documented as untestable on
+  Windows, so this was never catchable on the development machine no
+  matter how many clean local runs preceded it).
+- That same test passed 5/5 times when run in isolation, under 1 second
+  each.
+- A second full-suite container run hung at a **different** test entirely
+  (`test_e2e_modbus_to_sparkplug.py`), ruling out a bug specific to either
+  test.
+
+**Working theory, not yet confirmed:** an intermittent async
+resource-cleanup race — some fixture (a socket, a pty fd, an event-loop
+reader) not fully released before the next test starts, occasionally
+colliding with whatever runs next. Timing-dependent, not deterministic,
+Linux-scheduling-specific. **Decision:** treat as a known, tracked flake
+— retry CI until green, same handling as the pre-existing amqtt
+shutdown-timing flake (Sprint H1 quality-gate notes) — rather than block
+the merge on a full root-cause fix. Follow-up root-cause investigation
+is open, not closed by this entry.
+
 ---
 
 ## 8. Revision history
