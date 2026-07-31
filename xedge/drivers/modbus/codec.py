@@ -33,6 +33,7 @@ class FunctionCode(IntEnum):
     READ_INPUT_REGISTERS = 0x04
     WRITE_SINGLE_COIL = 0x05
     WRITE_SINGLE_REGISTER = 0x06
+    WRITE_MULTIPLE_COILS = 0x0F
     WRITE_MULTIPLE_REGISTERS = 0x10
 
 
@@ -215,6 +216,37 @@ def encode_write_multiple_registers(address: int, values: list[int]) -> bytes:
     )
 
 
+# Modbus Application Protocol V1.1b3 §6.11: Quantity of Outputs is
+# 0x0001-0x07B0 (1968) — the largest count of packed bits (246 bytes) that
+# still fits the same 253-byte PDU ceiling every other request/response is
+# bound by, alongside function code, address, quantity and byte-count
+# fields (implemented, Sprint C2, XEDGE-423).
+MAX_WRITE_COILS = 1968
+
+
+def encode_write_multiple_coils(address: int, values: list[bool]) -> bytes:
+    """FC15 request PDU. Packed 8-per-byte, LSB first — identical bit
+    order to a read coils response (`decode_bits_response`), since both
+    describe the same on-the-wire coil layout."""
+    if not 0 <= address <= 0xFFFF:
+        raise ValueError(f"address out of range: {address}")
+    if not 1 <= len(values) <= MAX_WRITE_COILS:
+        raise ValueError(f"quantity out of range: {len(values)} (max {MAX_WRITE_COILS})")
+    byte_count = -(-len(values) // 8)  # ceiling division: 8 coils per byte
+    packed = bytearray(byte_count)
+    for i, bit in enumerate(values):
+        if bit:
+            packed[i // 8] |= 1 << (i % 8)
+    return struct.pack(
+        f">BHHB{byte_count}s",
+        FunctionCode.WRITE_MULTIPLE_COILS,
+        address,
+        len(values),
+        byte_count,
+        bytes(packed),
+    )
+
+
 def decode_write_single_response(pdu: bytes) -> tuple[int, int]:
     """FC05/FC06 response PDU: an echo of the request (address, value) —
     the write is confirmed once this decodes without a ModbusException."""
@@ -224,7 +256,9 @@ def decode_write_single_response(pdu: bytes) -> tuple[int, int]:
 
 
 def decode_write_multiple_response(pdu: bytes) -> tuple[int, int]:
-    """FC16 response PDU: (address, quantity written)."""
+    """FC15/FC16 response PDU: (address, quantity written) — both function
+    codes share this response shape per the spec, so one decoder serves
+    both write-multiple-coils and write-multiple-registers confirmations."""
     _check_exception(pdu)
     address, quantity = struct.unpack(">HH", pdu[1:5])
     return address, quantity

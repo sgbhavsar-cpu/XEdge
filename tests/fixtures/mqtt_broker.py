@@ -5,12 +5,15 @@ MQTT implementation rather than mocking the network layer."""
 
 from __future__ import annotations
 
+import asyncio
 import socket
 from collections.abc import AsyncIterator
 
 import pytest
 from amqtt.broker import Broker
 from amqtt.contexts import BrokerConfig, ListenerConfig
+
+_START_TIMEOUT_SECONDS = 15.0
 
 
 def free_port() -> int:
@@ -24,7 +27,10 @@ async def mqtt_broker() -> AsyncIterator[tuple[str, int]]:
     host, port = "127.0.0.1", free_port()
     config = BrokerConfig(listeners={"default": ListenerConfig(bind=f"{host}:{port}")})
     broker = Broker(config)
-    await broker.start()
+    # Bounded defensively: a broker that never finishes starting should
+    # fail this fixture with a clear TimeoutError, not hang whatever test
+    # uses it (and, transitively, the entire test run) indefinitely.
+    await asyncio.wait_for(broker.start(), timeout=_START_TIMEOUT_SECONDS)
     try:
         yield host, port
     finally:

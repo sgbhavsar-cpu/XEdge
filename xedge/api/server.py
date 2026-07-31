@@ -49,6 +49,7 @@ from xedge.api.rate_limit import RateLimitMiddleware
 from xedge.api.ui import create_ui_router
 from xedge.core.alarms import AlarmEngine
 from xedge.core.config import ConfigValidationError, ConfigValidator, ConfigVersionHistory
+from xedge.core.connectivity import ConnectivityState
 from xedge.core.driver_config import build_driver_config
 from xedge.core.supervisor import DriverSupervisor
 from xedge.core.write_router import WriteRouter
@@ -264,6 +265,7 @@ def create_app(
                 "consecutive_failures": status_.consecutive_failures,
                 "last_error": status_.last_error,
                 "metrics": asdict(status_.metrics),
+                "connectivity_state": status_.connectivity_state.value,
             }
             for status_ in supervisor.all_status().values()
         ]
@@ -295,6 +297,12 @@ def create_app(
                         "timestamp": tag.timestamp.isoformat(),
                         "source_address": tag.source_address,
                         "engineering_unit": tag.engineering_unit,
+                        # Human-readable Modbus exception name (Sprint C1,
+                        # XEDGE-425) for a Bad-quality tag — before this,
+                        # only the raw numeric exception code ever reached
+                        # the operator. None for driver types that don't set
+                        # it, and for Good-quality tags.
+                        "detail": tag.metadata.get("modbus_exception_name"),
                     }
                 )
         return {"tags": tags, "system": system}
@@ -353,6 +361,9 @@ def create_app(
                 "last_error": status_.last_error,
                 "metrics": asdict(status_.metrics),
                 "last_read_age_seconds": last_read_age_seconds,
+                # Device-level connectivity (Sprint C2, XEDGE-420/421) —
+                # distinct from `state` above; see xedge.core.connectivity.
+                "connectivity_state": status_.connectivity_state.value,
             }
         # Never started (e.g. disabled since before this process booted) —
         # the supervisor has no status to report; synthesize one from config
@@ -368,6 +379,7 @@ def create_app(
             "last_error": None,
             "metrics": asdict(DriverMetrics()),
             "last_read_age_seconds": None,
+            "connectivity_state": ConnectivityState.UNKNOWN.value,
         }
 
     def _set_driver_enabled(instance_id: str, enabled: bool, user: str) -> dict[str, str]:

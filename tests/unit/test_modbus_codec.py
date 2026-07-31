@@ -145,3 +145,54 @@ def test_decode_write_multiple_response_returns_address_and_quantity() -> None:
     pdu = b"\x10\x00\x05\x00\x03"
     address, quantity = codec.decode_write_multiple_response(pdu)
     assert (address, quantity) == (5, 3)
+
+
+def test_encode_write_multiple_coils_matches_pymodbus_oracle() -> None:
+    from pymodbus.pdu.bit_message import WriteMultipleCoilsRequest
+
+    pdu = codec.encode_write_multiple_coils(address=5, values=[True, False, True])
+    assert pdu[0] == codec.FunctionCode.WRITE_MULTIPLE_COILS
+    assert pdu[1:] == WriteMultipleCoilsRequest(address=5, bits=[True, False, True]).encode()
+
+
+def test_encode_write_multiple_coils_packs_lsb_first() -> None:
+    # bit 0 -> byte 0's LSB, matching decode_bits_response's own bit order.
+    pdu = codec.encode_write_multiple_coils(address=0, values=[True, False, False, True])
+    assert pdu == b"\x0f\x00\x00\x00\x04\x01\x09"
+
+
+def test_encode_write_multiple_coils_spans_multiple_bytes() -> None:
+    values = [True] * 9  # 9 coils needs 2 bytes (ceil(9/8))
+    pdu = codec.encode_write_multiple_coils(address=0, values=values)
+    byte_count = pdu[5]
+    assert byte_count == 2
+    assert len(pdu) == 6 + byte_count
+
+
+def test_encode_write_multiple_coils_rejects_empty() -> None:
+    with pytest.raises(ValueError, match="quantity out of range"):
+        codec.encode_write_multiple_coils(address=0, values=[])
+
+
+def test_encode_write_multiple_coils_rejects_over_max() -> None:
+    with pytest.raises(ValueError, match="quantity out of range"):
+        codec.encode_write_multiple_coils(address=0, values=[True] * (codec.MAX_WRITE_COILS + 1))
+
+
+def test_encode_write_multiple_coils_accepts_the_max() -> None:
+    pdu = codec.encode_write_multiple_coils(address=0, values=[True] * codec.MAX_WRITE_COILS)
+    assert pdu[3:5] == codec.MAX_WRITE_COILS.to_bytes(2, "big")
+
+
+def test_encode_write_multiple_coils_rejects_bad_address() -> None:
+    with pytest.raises(ValueError, match="address out of range"):
+        codec.encode_write_multiple_coils(address=-1, values=[True])
+
+
+def test_decode_write_multiple_response_serves_fc15_and_fc16_identically() -> None:
+    """Both function codes share the same (address, quantity) response
+    shape per the spec, so one decoder is correct for both. A real device's
+    response echoes address+quantity with FC15's code, not the request
+    PDU itself — simulate that shape directly."""
+    response = b"\x0f\x00\x05\x00\x03"
+    assert codec.decode_write_multiple_response(response) == (5, 3)

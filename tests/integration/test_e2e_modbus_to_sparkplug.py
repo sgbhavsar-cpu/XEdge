@@ -29,9 +29,27 @@ from xedge.store.ring_buffer import RingBufferManager
 class _NdataCapture:
     def __init__(self, host: str, port: int) -> None:
         self.messages: list[bytes] = []
+        self._host = host
+        self._port = port
         self._client = mqtt.Client(CallbackAPIVersion.VERSION2)
         self._client.on_message = lambda _c, _u, msg: self.messages.append(msg.payload)
-        self._client.connect(host, port, 10)
+
+    async def start(self) -> None:
+        """`Client.connect()`'s third positional argument is the MQTT
+        keepalive interval, not a connect timeout -- it is a *blocking*
+        socket call with no timeout of its own, so a broker that accepts
+        the TCP connection but never answers CONNECT hangs this call, and
+        with it the entire event loop thread, forever. That is exactly what
+        was observed hanging this suite's Python-3.11 CI job silently for
+        90+ minutes (identical Python-3.12 job: 13 minutes) -- run off-
+        thread and bounded here so that failure mode becomes a clear
+        TimeoutError instead.
+        """
+        loop = asyncio.get_running_loop()
+        await asyncio.wait_for(
+            loop.run_in_executor(None, self._client.connect, self._host, self._port, 10),
+            timeout=10.0,
+        )
         self._client.subscribe("spBv1.0/+/NDATA/+")
         self._client.loop_start()
 
@@ -68,6 +86,7 @@ async def test_end_to_end_modbus_to_sparkplug_to_mqtt(mqtt_broker: tuple[str, in
     dispatcher_task = asyncio.create_task(dispatcher.run())
 
     capture = _NdataCapture(broker_host, broker_port)
+    await capture.start()
     await asyncio.sleep(0.2)  # let the NDATA subscription land
 
     try:

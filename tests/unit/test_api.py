@@ -268,6 +268,11 @@ async def test_drivers_endpoint_lists_status_and_live_metrics(
         assert entry["driver_type"] == "fake"
         assert entry["state"] == "running"
         assert entry["metrics"]["tag_read_count"] == driver.emitted_count
+        # XEDGE-421: "unknown" here is correct, not a placeholder oversight —
+        # FakeDriver (this fixture's driver) doesn't implement
+        # get_connectivity_state(), so the dashboard listing must degrade to
+        # "unknown" for driver types the adapter doesn't cover yet, not error.
+        assert entry["connectivity_state"] == "unknown"
     finally:
         await supervisor.stop_all()
 
@@ -309,6 +314,61 @@ async def test_driver_tags_endpoint_splits_system_tags_from_real_tags(
         body = response.json()
         assert [t["tag_id"] for t in body["tags"]] == ["d1/counter"]
         assert body["system"] == {"status": "running"}
+    finally:
+        await supervisor.stop_all()
+
+
+async def test_driver_tags_endpoint_surfaces_modbus_exception_name_as_detail(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    """XEDGE-425: before Sprint C1 only the raw numeric exception code ever
+    reached the operator; this is the Web UI's Detail column's data source."""
+    supervisor, _driver = await _running_supervisor()
+    history = ConfigVersionHistory(tmp_path)
+    latest_values = LatestValueStore()
+    latest_values.update(
+        UnifiedTag(
+            tag_id="d1/bad_tag",
+            timestamp=datetime.now(UTC),
+            value=0,
+            data_type="INT64",
+            quality=Quality.BAD,
+            source_driver="d1",
+            source_address="7",
+            metadata={"modbus_exception": 2, "modbus_exception_name": "ILLEGAL_DATA_ADDRESS"},
+        )
+    )
+    app = _build_app(supervisor, history, tmp_path, core_schema_path, latest_values=latest_values)
+    client = _authenticated_client(app)
+    try:
+        body = client.get("/api/v1/drivers/d1/tags").json()
+        assert body["tags"][0]["detail"] == "ILLEGAL_DATA_ADDRESS"
+    finally:
+        await supervisor.stop_all()
+
+
+async def test_driver_tags_endpoint_detail_is_none_for_a_good_tag(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    supervisor, _driver = await _running_supervisor()
+    history = ConfigVersionHistory(tmp_path)
+    latest_values = LatestValueStore()
+    latest_values.update(
+        UnifiedTag(
+            tag_id="d1/counter",
+            timestamp=datetime.now(UTC),
+            value=1,
+            data_type="INT64",
+            quality=Quality.GOOD,
+            source_driver="d1",
+            source_address="0",
+        )
+    )
+    app = _build_app(supervisor, history, tmp_path, core_schema_path, latest_values=latest_values)
+    client = _authenticated_client(app)
+    try:
+        body = client.get("/api/v1/drivers/d1/tags").json()
+        assert body["tags"][0]["detail"] is None
     finally:
         await supervisor.stop_all()
 
@@ -687,6 +747,28 @@ class TestDriverHealthEnableDisableValidate:
         client = _authenticated_client(app)
 
         assert client.get("/api/v1/drivers/nonexistent/health").status_code == 404
+
+    def test_health_includes_connectivity_state_for_running_driver(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        """XEDGE-421: distinct from `state` — see xedge.core.connectivity."""
+        app, _supervisor = self._build_app_with_driver(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+        client.post("/api/v1/drivers/modbus_sim_01/enable")
+
+        body = client.get("/api/v1/drivers/modbus_sim_01/health").json()
+
+        assert body["connectivity_state"] == "unknown"
+
+    def test_health_synthesizes_unknown_connectivity_for_never_started_driver(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        app, _supervisor = self._build_app_with_driver(tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        body = client.get("/api/v1/drivers/modbus_sim_01/health").json()
+
+        assert body["connectivity_state"] == "unknown"
 
     def test_disable_persists_config_and_updates_live_state(
         self, tmp_path: Path, core_schema_path: Path

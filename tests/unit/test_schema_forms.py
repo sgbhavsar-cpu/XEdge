@@ -293,3 +293,38 @@ class TestSprintC1FieldsRenderFromSchema:
         assert fields["retry_count"].control == "number"
         assert fields["retry_on_exception"].control == "checkbox"
         assert fields["retry_backoff_seconds"].control == "number"
+
+
+class TestSprintC2FieldsRenderFromSchema:
+    """XEDGE-421/422. Same schema-driven guarantee as
+    TestSprintC1FieldsRenderFromSchema, for this sprint's additions."""
+
+    @staticmethod
+    def _modbus_schema() -> dict[str, Any]:
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "config"
+            / "schema"
+            / "drivers"
+            / "modbus_tcp.schema.json"
+        )
+        return json.loads(path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+
+    def _fields(self, section: str) -> dict[str, FieldDescriptor]:
+        schema = self._modbus_schema()
+        group = schema["properties"]["tag_groups"]["items"]
+        target = {
+            "tag": group["properties"]["tags"]["items"],
+            "config": schema["properties"]["config"],
+        }[section]
+        return {field.name: field for field in build_object_fields(target, {})}
+
+    def test_access_is_a_dropdown_of_the_three_write_semantics(self) -> None:
+        field = self._fields("tag")["access"]
+        assert field.control == "select"
+        assert field.options == ["read_write", "read_only", "write_only"]
+
+    def test_connectivity_thresholds_appear_on_the_driver_config_form(self) -> None:
+        fields = self._fields("config")
+        assert fields["consecutive_failure_threshold"].control == "number"
+        assert fields["recovery_threshold"].control == "number"

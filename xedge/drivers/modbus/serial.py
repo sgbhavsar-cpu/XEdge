@@ -4,6 +4,14 @@ Uses pyserial-asyncio purely as the serial transport (open/read/write) — all
 Modbus framing (CRC-16, address/PDU layout, T3.5 inter-frame silence) is the
 in-house rtu_codec, per ADR-006.
 
+The per-instance `asyncio.Lock` this transport used through Sprint C1 is
+gone as of Sprint C2 (XEDGE-424): `BaseModbusPollingDriver`'s
+`RequestScheduler` now serializes every read and write onto this
+connection (with writes ahead of pending reads), which already guarantees
+at most one in-flight request at a time — the T3.5 inter-frame sleep below
+still runs before every single transmission exactly as before, it just no
+longer needs its own lock to do so.
+
 Hardware note: this driver has no automated test coverage requiring a real
 or virtual serial port (none is available in this environment); it is
 exercised indirectly via rtu_codec's unit tests (framing/CRC, cross-checked
@@ -76,7 +84,6 @@ class ModbusRtuSerialDriver(BaseModbusPollingDriver):
         super().__init__()
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
-        self._request_lock = asyncio.Lock()
         self._inter_frame_delay_seconds = 0.0
 
     def _require_connection(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
@@ -120,7 +127,7 @@ class ModbusRtuSerialDriver(BaseModbusPollingDriver):
                     request_count=len(blocks),
                 )
 
-    async def connect(self) -> None:
+    async def _connect_transport(self) -> None:
         cfg = self._require_config().config
         baud_rate = cfg.get("baud_rate", 9600)
         self._inter_frame_delay_seconds = rtu_codec.inter_frame_delay_seconds(baud_rate)
@@ -132,7 +139,7 @@ class ModbusRtuSerialDriver(BaseModbusPollingDriver):
             stopbits=cfg.get("stop_bits", 1),
         )
 
-    async def disconnect(self) -> None:
+    async def _disconnect_transport(self) -> None:
         if self._writer is not None:
             self._writer.close()
             try:
@@ -149,20 +156,19 @@ class ModbusRtuSerialDriver(BaseModbusPollingDriver):
         reader, writer = self._require_connection()
         request_pdu = codec.encode_read_request(function_code, address, quantity)
 
-        async with self._request_lock:
-            # T3.5 silence before transmitting, so the bus has settled since
-            # any prior frame (ours or, on a shared multi-drop line, another
-            # master's) — required for slaves to correctly detect frame
-            # boundaries (Modbus over Serial Line spec).
-            await asyncio.sleep(self._inter_frame_delay_seconds)
-            frame = rtu_codec.encode_rtu_frame(cfg.get("unit_id", 1), request_pdu)
-            writer.write(frame)
-            await writer.drain()
+        # T3.5 silence before transmitting, so the bus has settled since any
+        # prior frame (ours or, on a shared multi-drop line, another
+        # master's) — required for slaves to correctly detect frame
+        # boundaries (Modbus over Serial Line spec).
+        await asyncio.sleep(self._inter_frame_delay_seconds)
+        frame = rtu_codec.encode_rtu_frame(cfg.get("unit_id", 1), request_pdu)
+        writer.write(frame)
+        await writer.drain()
 
-            response_frame = await asyncio.wait_for(
-                self._read_frame(reader),
-                timeout=cfg.get("read_timeout_seconds", _DEFAULT_READ_TIMEOUT_SECONDS),
-            )
+        response_frame = await asyncio.wait_for(
+            self._read_frame(reader),
+            timeout=cfg.get("read_timeout_seconds", _DEFAULT_READ_TIMEOUT_SECONDS),
+        )
 
         _, response_pdu = rtu_codec.decode_rtu_frame(response_frame)
         if codec.is_bit_function(function_code):
@@ -181,7 +187,7 @@ class ModbusRtuSerialDriver(BaseModbusPollingDriver):
         return head + rest
 
     async def _read_write_response_frame(self, reader: asyncio.StreamReader) -> bytes:
-        """FC05/06/16 responses aren't byte-count-prefixed like read
+        """FC05/06/15/16 responses aren't byte-count-prefixed like read
         responses (see `_read_frame`) — success echoes a fixed 4-byte
         address+value/quantity payload; only an exception response is
         shorter."""
@@ -204,16 +210,35 @@ class ModbusRtuSerialDriver(BaseModbusPollingDriver):
             else codec.encode_write_single_register(address, int(value))
         )
 
-        async with self._request_lock:
-            await asyncio.sleep(self._inter_frame_delay_seconds)
-            frame = rtu_codec.encode_rtu_frame(cfg.get("unit_id", 1), request_pdu)
-            writer.write(frame)
-            await writer.drain()
+        await asyncio.sleep(self._inter_frame_delay_seconds)
+        frame = rtu_codec.encode_rtu_frame(cfg.get("unit_id", 1), request_pdu)
+        writer.write(frame)
+        await writer.drain()
 
-            response_frame = await asyncio.wait_for(
-                self._read_write_response_frame(reader),
-                timeout=cfg.get("read_timeout_seconds", _DEFAULT_READ_TIMEOUT_SECONDS),
-            )
+        response_frame = await asyncio.wait_for(
+            self._read_write_response_frame(reader),
+            timeout=cfg.get("read_timeout_seconds", _DEFAULT_READ_TIMEOUT_SECONDS),
+        )
 
         _, response_pdu = rtu_codec.decode_rtu_frame(response_frame)
         codec.decode_write_single_response(response_pdu)
+
+    async def _write_registers(self, address: int, values: list[int]) -> None:
+        """FC16 (Sprint C2, XEDGE-423) — a tag whose data_type spans more
+        than one register."""
+        cfg = self._require_config().config
+        reader, writer = self._require_connection()
+        request_pdu = codec.encode_write_multiple_registers(address, values)
+
+        await asyncio.sleep(self._inter_frame_delay_seconds)
+        frame = rtu_codec.encode_rtu_frame(cfg.get("unit_id", 1), request_pdu)
+        writer.write(frame)
+        await writer.drain()
+
+        response_frame = await asyncio.wait_for(
+            self._read_write_response_frame(reader),
+            timeout=cfg.get("read_timeout_seconds", _DEFAULT_READ_TIMEOUT_SECONDS),
+        )
+
+        _, response_pdu = rtu_codec.decode_rtu_frame(response_frame)
+        codec.decode_write_multiple_response(response_pdu)

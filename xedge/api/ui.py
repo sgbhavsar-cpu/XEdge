@@ -200,6 +200,7 @@ def create_ui_router(
                 "consecutive_failures": s.consecutive_failures,
                 "last_error": s.last_error,
                 "metrics": s.metrics,
+                "connectivity_state": s.connectivity_state.value,
             }
             for s in supervisor.all_status().values()
         ]
