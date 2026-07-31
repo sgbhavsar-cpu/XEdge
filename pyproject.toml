@@ -86,6 +86,16 @@ dependencies = [
     # (prerequisites P-3/P-4), including the PyPI naming-fragmentation
     # finding (pysnmp-lextudio is deprecated in favor of plain pysnmp).
     "pysnmp>=7.1",
+    # Fleet Manager registry, Postgres migration (Sprint P1, XEDGE-500;
+    # ADR-013 §5): SQLAlchemy 2.0's async ORM + asyncpg — asyncpg rather
+    # than psycopg because it needs no libpq C library at all (a from-
+    # scratch protocol implementation), matching the same "avoid a second
+    # system dependency on the 1GB-RAM ARM target" reasoning already
+    # applied to the OTLP exporter choice above. Alembic owns schema
+    # versioning (XEDGE-501) — see xedge/fleet/migrations/.
+    "sqlalchemy>=2.0",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
 ]
 
 [project.optional-dependencies]
@@ -126,6 +136,18 @@ test = [
     # this would otherwise have used. Apache-2.0; deps attrs (MIT) and
     # atpublic (Apache-2.0) both checked too.
     "aiosmtpd>=1.4",
+    # Real Postgres for the Fleet Manager registry's tests (Sprint P1,
+    # XEDGE-500/503) -- the same "test against the real server, not a
+    # mock" posture as pymodbus/amqtt/aiosmtpd above, but Postgres can't
+    # be embedded in-process the way those are, so this spins up a real
+    # `postgres:16-alpine` container instead (see tests/fixtures/postgres.py).
+    # >=4.15 pinned as a floor: that's the first version verified to expose
+    # `testcontainers.community.postgres` (the pre-4.15 `testcontainers.
+    # postgres` import path still works but is deprecated). Needs a Docker
+    # daemon reachable from wherever `pytest` runs -- true for GitHub
+    # Actions' ubuntu-latest runners out of the box, so no ci.yml changes
+    # were needed for this.
+    "testcontainers[postgres]>=4.15",
 ]
 
 [project.scripts]

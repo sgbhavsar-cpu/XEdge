@@ -26,7 +26,10 @@ Auth here: two distinct bearer tokens, never the same value.
     (create join tokens, list/inspect devices, push a config). A plain
     shared secret (ADR-009) — no RBAC/multi-operator model yet, mirroring
     how the per-device Web UI started as a single account before Sprint 14
-    added RBAC.
+    added RBAC. Sprint P1 (XEDGE-500) resolves it to a `tenant_id` (today,
+    always the one bootstrapped default tenant — see
+    `xedge.fleet.registry.DeviceRegistry.ensure_default_tenant`) rather
+    than replacing it outright; real per-tenant user accounts are XEDGE-502.
   - A registered device's own `device_token` (returned by `/enroll`)
     authenticates its calls on the *device* port, not this one.
 """
@@ -43,7 +46,7 @@ from pydantic import BaseModel
 from xedge import __version__
 from xedge.core.config import ConfigValidationError, ConfigValidator
 from xedge.fleet._device_auth import bearer_value
-from xedge.fleet.registry import DeviceRegistry
+from xedge.fleet.registry import DeviceRegistry, DeviceTenantConflictError
 from xedge.security.ca import CertificateAuthority, InvalidCsrError
 
 _DEFAULT_JOIN_TOKEN_TTL_SECONDS = 3600.0
@@ -109,38 +112,56 @@ def create_fleet_manager_app(
     ca: CertificateAuthority,
     *,
     admin_token: str,
+    default_tenant_id: str,
     cert_validity_days: int,
     config_validator: ConfigValidator | None = None,
 ) -> FastAPI:
     app = FastAPI(title="xEdge Fleet Manager", version=__version__)
 
-    def require_admin(authorization: str = Header(default="")) -> None:
+    def require_admin(authorization: str = Header(default="")) -> str:
+        """Returns the resolved `tenant_id` rather than `None` (Sprint P1,
+        XEDGE-500) — today every valid `admin_token` resolves to the same
+        bootstrapped default tenant, but every route below already reads
+        its tenant from this dependency's return value, so XEDGE-502 can
+        replace the resolution *inside* this function (looking up a real
+        per-user session instead of one shared secret) without touching a
+        single route signature."""
         if not hmac.compare_digest(bearer_value(authorization), admin_token):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing admin token")
+        return default_tenant_id
 
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.post("/api/v1/fleet/join-tokens")
-    def create_join_token(
-        body: _CreateJoinTokenBody, _auth: None = Depends(require_admin)
+    async def create_join_token(
+        body: _CreateJoinTokenBody, tenant_id: str = Depends(require_admin)
     ) -> dict[str, Any]:
         """XEDGE-442: an operator provisions a one-time enrollment
         credential for a specific device, ahead of that device ever
         contacting the manager. Replaces the old manager-wide `join_token`
         this app used to accept directly."""
-        token = registry.create_join_token(body.device_id, body.ttl_seconds)
+        try:
+            token = await registry.create_join_token(tenant_id, body.device_id, body.ttl_seconds)
+        except DeviceTenantConflictError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         return {"join_token": token, "device_id": body.device_id, "ttl_seconds": body.ttl_seconds}
 
     @app.post("/api/v1/fleet/enroll")
-    def enroll(body: _EnrollBody) -> dict[str, Any]:
+    async def enroll(body: _EnrollBody) -> dict[str, Any]:
         """XEDGE-442: redeem a single-use join token and a CSR together —
         the token proves this caller is allowed to become `device_id`, the
         CSR supplies the public key that identity's certificate is issued
         for. The private key backing the CSR never reached this process
-        (ADR-013 §3); only the certificate is handed back."""
-        if not registry.consume_join_token(body.device_id, body.join_token):
+        (ADR-013 §3); only the certificate is handed back.
+
+        XEDGE-500: the token also carries the `tenant_id` it was
+        provisioned under — the device joins *that* tenant. The device
+        never asserts its own tenant; only whoever held the join token
+        decides it, same trust boundary as `device_id` itself."""
+        tenant_id = await registry.consume_join_token(body.device_id, body.join_token)
+        if tenant_id is None:
             raise HTTPException(
                 status.HTTP_401_UNAUTHORIZED, "Invalid, expired, or used join token"
             )
@@ -153,14 +174,15 @@ def create_fleet_manager_app(
         except (InvalidCsrError, ValueError) as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid CSR: {exc}") from exc
 
-        device_token = registry.register(
+        device_token = await registry.register(
+            tenant_id,
             body.device_id,
             body.display_name,
             body.agent_version,
             body.heartbeat_interval_seconds,
         )
         certificate = x509.load_pem_x509_certificate(certificate_pem)
-        registry.record_certificate_issued(
+        await registry.record_certificate_issued(
             body.device_id, certificate.serial_number, certificate.not_valid_after_utc
         )
         return {
@@ -170,19 +192,19 @@ def create_fleet_manager_app(
         }
 
     @app.get("/api/v1/fleet/devices")
-    def list_devices(_auth: None = Depends(require_admin)) -> list[dict[str, Any]]:
-        return [_device_summary(r) for r in registry.list_devices()]
+    async def list_devices(tenant_id: str = Depends(require_admin)) -> list[dict[str, Any]]:
+        return [_device_summary(r) for r in await registry.list_devices(tenant_id)]
 
     @app.get("/api/v1/fleet/devices/{device_id}")
-    def get_device(device_id: str, _auth: None = Depends(require_admin)) -> dict[str, Any]:
-        record = registry.get(device_id)
+    async def get_device(device_id: str, tenant_id: str = Depends(require_admin)) -> dict[str, Any]:
+        record = await registry.get(tenant_id, device_id)
         if record is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"No such device: {device_id!r}")
         return _device_summary(record)
 
     @app.patch("/api/v1/fleet/devices/{device_id}/metadata")
-    def update_metadata(
-        device_id: str, body: _UpdateMetadataBody, _auth: None = Depends(require_admin)
+    async def update_metadata(
+        device_id: str, body: _UpdateMetadataBody, tenant_id: str = Depends(require_admin)
     ) -> dict[str, Any]:
         """XEDGE-444: gateway provisioning metadata (CRD §4.9) an operator
         knows about the physical device — serial number, make, protocol,
@@ -190,13 +212,20 @@ def create_fleet_manager_app(
         discover on its own. Only the fields present in the request body
         are touched; omitted fields keep their current value."""
         fields = body.model_dump(exclude_unset=True)
-        if not registry.update_metadata(device_id, fields):
+        if not await registry.update_metadata(tenant_id, device_id, fields):
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"No such device: {device_id!r}")
-        return _device_summary(registry.get(device_id))
+        record = await registry.get(tenant_id, device_id)
+        if record is None:
+            # update_metadata just returned True for this exact (tenant_id,
+            # device_id) above -- an `assert` here would be stripped under
+            # `python -O` (bandit B101), so this stays a real, unstrippable
+            # check even though it's not reachable in practice.
+            raise AssertionError(f"{device_id!r} vanished between update and read-back")
+        return _device_summary(record)
 
     @app.post("/api/v1/fleet/devices/{device_id}/config", status_code=status.HTTP_202_ACCEPTED)
-    def push_config(
-        device_id: str, body: _ConfigPushBody, _auth: None = Depends(require_admin)
+    async def push_config(
+        device_id: str, body: _ConfigPushBody, tenant_id: str = Depends(require_admin)
     ) -> dict[str, Any]:
         """Queues `config` for delivery on the device's next heartbeat
         (XEDGE-213) — not applied synchronously; see ADR-009 for why this
@@ -217,14 +246,16 @@ def create_fleet_manager_app(
             except ConfigValidationError as exc:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
         try:
-            version = registry.queue_config(device_id, body.config)
+            version = await registry.queue_config(tenant_id, device_id, body.config)
         except KeyError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
         return {"queued": True, "pending_config_version": version}
 
     @app.get("/api/v1/fleet/devices/{device_id}/config/status")
-    def config_status(device_id: str, _auth: None = Depends(require_admin)) -> dict[str, Any]:
-        record = registry.get(device_id)
+    async def config_status(
+        device_id: str, tenant_id: str = Depends(require_admin)
+    ) -> dict[str, Any]:
+        record = await registry.get(tenant_id, device_id)
         if record is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"No such device: {device_id!r}")
         return {

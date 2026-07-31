@@ -1,9 +1,11 @@
 # Fleet Manager deployment (Sprint 29, XEDGE-215; reworked Sprint C4,
-# XEDGE-440/442/443) — a separate service from any individual xEdge device
-# (ADR-009, Sprint 32's documented split), built from the same image as the
-# device's own Dockerfile since the fleet code ships inside the same
-# `xedge` wheel (just a different console-script entrypoint). SQLite-backed
-# (ADR-009 §4) — no separate database container.
+# XEDGE-440/442/443; Postgres migration Sprint P1, XEDGE-500/501) — a
+# separate service from any individual xEdge device (ADR-009, Sprint 32's
+# documented split), built from the same image as the device's own
+# Dockerfile since the fleet code ships inside the same `xedge` wheel (just
+# a different console-script entrypoint). The device registry is
+# Postgres-backed as of XEDGE-500 (ADR-013 §5 supersedes ADR-009 §4 for the
+# central server only — a device's own local store stays SQLite).
 #
 # Usage: docker compose -f deploy/docker/docker-compose.fleet.yml up
 #
@@ -28,6 +30,22 @@
 # The device's own fleet.join_token config field takes the resulting
 # one-time token; xedge/fleet/agent.py handles the CSR/enrollment exchange.
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: xedge
+      POSTGRES_PASSWORD: xedge
+      POSTGRES_DB: xedge_fleet
+    volumes:
+      - fleet-manager-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xedge"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    restart: unless-stopped
+
   fleet-manager:
     build:
       context: ../..
@@ -36,6 +54,7 @@ services:
     command:
       [
         "--data-dir", "/data",
+        "--database-url", "postgresql+asyncpg://xedge:xedge@postgres:5432/xedge_fleet",
         "--host", "0.0.0.0",
         "--port", "8090",
         "--device-port", "8091",
@@ -45,6 +64,9 @@ services:
       - "8091:8091"
     volumes:
       - fleet-manager-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import ssl, urllib.request; urllib.request.urlopen('https://127.0.0.1:8090/health', timeout=5, context=ssl._create_unverified_context())"]
       interval: 30s
@@ -55,3 +77,4 @@ services:
 
 volumes:
   fleet-manager-data:
+  fleet-manager-postgres-data:
