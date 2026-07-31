@@ -175,7 +175,7 @@ Foundations built once in Delivery 1 and consumed by Delivery 2:
 |---|---|---|
 | C2 | Connectivity state machine (ADR-011) | gateway state, asset state, every future driver's health model |
 | C3 | RS-485 shared bus manager (ADR-011) | **BACnet MS/TP (P7)** — the largest single interleaving win |
-| C3 | Transport-neutral scheduler with write priority | every future polled driver |
+| C1 + C2 | Transport-neutral fixed-period scheduler (XEDGE-410, C1) with write priority added on top (C2) — corrected 2026-07-31: originally miscredited to C3 in this table, verified against `git log` on `xedge/drivers/modbus/scheduler.py` while planning Delivery 2's P6 (DNP3) | every future polled driver |
 | C4 | Certificate management subsystem (ADR-013 §4) | fleet mTLS, MQTT TLS, SL-2 controls |
 | C6 | Asset metadata layer (ADR-010) | composes over EtherNet/IP, SNMP, and all Tier-2 drivers with no per-driver work |
 
