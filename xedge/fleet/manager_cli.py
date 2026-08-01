@@ -24,12 +24,19 @@ issue_or_load_leaf_identity`), so a device that received the CA chain
 during enrollment can verify the manager's identity on the device port
 using that same chain.
 
-`--admin-token` defaults to an auto-generated, persisted-to-disk secret
-(same load-or-create pattern as `xedge.api.auth.load_or_create_secret_key`)
-so a fresh deployment doesn't need one supplied up front, but reuses the
-same value across restarts. There is no `--join-token` anymore — join
-tokens are single-use and per-device now (XEDGE-442), provisioned through
-the admin API, not a CLI flag.
+There is no `--admin-token` anymore (Sprint P2, XEDGE-502 removes it
+outright rather than keeping it alongside real accounts — pre-GA, no
+deployment depends on it yet). On first-ever startup (no user account
+exists for the bootstrapped default tenant), one is created for you --
+`username="admin"`, an auto-generated password persisted to
+`--data-dir/admin_bootstrap_password` (same load-or-create ergonomics
+`--admin-token` used to have: a fresh deployment needs nothing supplied
+up front, retrieved the same way — `docker exec ... cat
+/data/admin_bootstrap_password`). Log in with it via `POST /api/v1/
+fleet/auth/login` to get a session token, then change the password.
+There is no `--join-token` anymore either — join tokens are single-use
+and per-device now (XEDGE-442), provisioned through the admin API, not
+a CLI flag.
 """
 
 from __future__ import annotations
@@ -47,6 +54,8 @@ import uvicorn
 
 from xedge import __version__
 from xedge.core.config import ConfigValidator
+from xedge.fleet.audit import FleetAuditLog
+from xedge.fleet.auth import FleetSessionManager, FleetUserStore, LoginLockout
 from xedge.fleet.db_models import create_engine
 from xedge.fleet.manager_app import create_fleet_manager_app
 from xedge.fleet.manager_device_app import create_fleet_device_app
@@ -74,15 +83,6 @@ def _default_schema_path() -> Path:
     return Path(__file__).resolve().parent.parent.parent / "config" / "schema" / _SCHEMA_FILENAME
 
 
-def _load_or_create_token(path: Path) -> str:
-    if path.is_file():
-        return path.read_text(encoding="utf-8").strip()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    token = secrets.token_urlsafe(32)
-    path.write_text(token, encoding="utf-8")
-    return token
-
-
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="xedge-fleet-manager", description="xEdge Fleet Manager service"
@@ -91,7 +91,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--data-dir",
         type=Path,
         default=Path("/data/fleet-manager"),
-        help="Directory for the fleet CA and auto-generated tokens "
+        help="Directory for the fleet CA and the first-startup bootstrap admin password "
         "(Sprint P1, XEDGE-500: no longer holds the device registry database — see --database-url)",
     )
     parser.add_argument(
@@ -110,12 +110,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=8091,
         help="mTLS port for heartbeat/certificate-rotation calls from already-enrolled devices",
-    )
-    parser.add_argument(
-        "--admin-token",
-        default=None,
-        help="Bearer token for operator/CLI calls "
-        "(default: auto-generated, persisted in --data-dir)",
     )
     parser.add_argument(
         "--cert-validity-days",
@@ -151,8 +145,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 async def _serve(
     registry: DeviceRegistry,
     ca: CertificateAuthority,
+    user_store: FleetUserStore,
+    session_manager: FleetSessionManager,
+    audit_log: FleetAuditLog,
+    login_lockout: LoginLockout,
     *,
-    admin_token: str,
     cert_validity_days: int,
     config_validator: ConfigValidator,
     host: str,
@@ -161,24 +158,41 @@ async def _serve(
     cert_path: Path,
     key_path: Path,
     ca_cert_path: Path,
+    bootstrap_password_path: Path,
 ) -> None:
-    """Builds both apps and bootstraps the default tenant *here*, inside
-    the one `asyncio.run()` call that also serves them — not in `run()`
-    beforehand. `DeviceRegistry`'s asyncpg connection pool is bound to
-    whichever event loop first uses it; an earlier, separate `asyncio.
-    run(registry.ensure_default_tenant())` call in `run()` created and
-    tore down its own loop, and the pooled connection it left behind then
-    failed with "attached to a different loop" the first time a real
-    request here tried to reuse it (found by actually running the
+    """Builds both apps and bootstraps the default tenant/admin account
+    *here*, inside the one `asyncio.run()` call that also serves them —
+    not in `run()` beforehand. `DeviceRegistry`'s asyncpg connection pool
+    is bound to whichever event loop first uses it; an earlier, separate
+    `asyncio.run(registry.ensure_default_tenant())` call in `run()`
+    created and tore down its own loop, and the pooled connection it left
+    behind then failed with "attached to a different loop" the first time
+    a real request here tried to reuse it (found by actually running the
     docker-compose stack end-to-end, not by the test suite -- pytest-
     asyncio keeps one loop per test, which this bug needs *two* separate
     `asyncio.run()` calls to reproduce)."""
     default_tenant_id = await registry.ensure_default_tenant()
+    if not await user_store.has_any_users(default_tenant_id):
+        # First-ever startup for this tenant (or every account was since
+        # deleted -- either way, "zero accounts" gets a fresh bootstrap
+        # rather than a permanent lockout).
+        password = secrets.token_urlsafe(32)
+        await user_store.create_user(default_tenant_id, "admin", password, "admin")
+        # Blocking writes, but only ever once per manager lifetime, and
+        # before either uvicorn server below has started accepting
+        # connections -- there is no concurrent request this could ever
+        # delay (same reasoning xedge.core.hot_reload's poll-loop stat()
+        # already applies to a *much* more frequent blocking call).
+        bootstrap_password_path.parent.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240
+        bootstrap_password_path.write_text(password, encoding="utf-8")  # noqa: ASYNC240
+
     public_app = create_fleet_manager_app(
         registry,
         ca,
-        admin_token=admin_token,
-        default_tenant_id=default_tenant_id,
+        user_store,
+        session_manager,
+        audit_log,
+        login_lockout,
         cert_validity_days=cert_validity_days,
         config_validator=config_validator,
     )
@@ -212,11 +226,14 @@ async def _serve(
 def run(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     args.data_dir.mkdir(parents=True, exist_ok=True)
-    admin_token = args.admin_token or _load_or_create_token(args.data_dir / "admin_token")
 
     run_migrations(args.database_url)
     engine = create_engine(args.database_url)
     registry = DeviceRegistry(engine)
+    user_store = FleetUserStore(engine)
+    session_manager = FleetSessionManager(engine)
+    audit_log = FleetAuditLog(engine)
+    login_lockout = LoginLockout()
 
     ca_cert_path = args.data_dir / "ca.pem"
     ca = load_or_create_ca(
@@ -240,7 +257,10 @@ def run(argv: list[str] | None = None) -> int:
         _serve(
             registry,
             ca,
-            admin_token=admin_token,
+            user_store,
+            session_manager,
+            audit_log,
+            login_lockout,
             cert_validity_days=args.cert_validity_days,
             config_validator=config_validator,
             host=args.host,
@@ -249,6 +269,7 @@ def run(argv: list[str] | None = None) -> int:
             cert_path=manager_cert_path,
             key_path=manager_key_path,
             ca_cert_path=ca_cert_path,
+            bootstrap_password_path=args.data_dir / "admin_bootstrap_password",
         )
     )
     return 0

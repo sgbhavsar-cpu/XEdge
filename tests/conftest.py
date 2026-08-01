@@ -18,9 +18,14 @@ from tests.fixtures.mqtt_broker import (  # noqa: F401 — re-exported fixtures
 )
 from tests.fixtures.opcua_server import opcua_test_server  # noqa: F401 — re-exported fixture
 from tests.fixtures.postgres import (  # noqa: F401 — re-exported fixtures
+    _fleet_auth_engine,
     _fleet_postgres_url,
+    fleet_audit_log,
     fleet_default_tenant_id,
+    fleet_login_lockout,
     fleet_registry,
+    fleet_session_manager,
+    fleet_user_store,
     other_tenant_id,
 )
 from tests.fixtures.smtp_server import (  # noqa: F401 — re-exported fixtures

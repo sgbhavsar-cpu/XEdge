@@ -35,6 +35,8 @@ from xedge.fleet.agent import (
     FleetAgentStatus,
     fleet_heartbeat_loop,
 )
+from xedge.fleet.audit import FleetAuditLog
+from xedge.fleet.auth import FleetSessionManager, FleetUserStore, LoginLockout
 from xedge.fleet.manager_app import create_fleet_manager_app
 from xedge.fleet.manager_device_app import create_fleet_device_app
 from xedge.fleet.registry import DeviceRegistry
@@ -42,7 +44,7 @@ from xedge.security.ca import load_or_create_ca
 from xedge.security.csr import generate_key_and_csr
 from xedge.security.tls_context import build_mtls_client_context
 
-_ADMIN_TOKEN = "test-admin-token"
+_ADMIN_PASSWORD = "test-admin-password"
 _HEARTBEAT_INTERVAL_SECONDS = 0.05
 _CERT_VALIDITY_DAYS = 90
 
@@ -85,6 +87,10 @@ class _FleetManagerFixture:
         tmp_path: Path,
         registry: DeviceRegistry,
         default_tenant_id: str,
+        user_store: FleetUserStore,
+        session_manager: FleetSessionManager,
+        audit_log: FleetAuditLog,
+        login_lockout: LoginLockout,
         *,
         device_keep_alive_timeout: int = 5,
         device_cert_validity_days: int = _CERT_VALIDITY_DAYS,
@@ -96,6 +102,8 @@ class _FleetManagerFixture:
 
         self.registry = registry
         self.tenant_id = default_tenant_id
+        self.user_store = user_store
+        self.admin_session_token = ""  # set by start(), once a real login succeeds
         self.ca_cert_path = tmp_path / "manager" / "ca.pem"
         self.ca = load_or_create_ca(
             self.ca_cert_path, tmp_path / "manager" / "ca.key", "test-fleet-ca", 3650
@@ -113,8 +121,10 @@ class _FleetManagerFixture:
         public_app = create_fleet_manager_app(
             self.registry,
             self.ca,
-            admin_token=_ADMIN_TOKEN,
-            default_tenant_id=default_tenant_id,
+            user_store,
+            session_manager,
+            audit_log,
+            login_lockout,
             cert_validity_days=device_cert_validity_days,
         )
         device_app = create_fleet_device_app(
@@ -167,6 +177,19 @@ class _FleetManagerFixture:
                 else:
                     pytest.fail(f"{url} never became reachable")
 
+            # XEDGE-502: no more flat admin_token -- create the bootstrap
+            # admin account directly (skips manager_cli.run's first-startup
+            # auto-bootstrap, which this fixture doesn't go through) and
+            # log in over real TLS to get a session token every other admin
+            # call below presents as a bearer token.
+            await self.user_store.create_user(self.tenant_id, "admin", _ADMIN_PASSWORD, "admin")
+            login = await client.post(
+                f"{self.public_url}/api/v1/fleet/auth/login",
+                json={"tenant_name": "default", "username": "admin", "password": _ADMIN_PASSWORD},
+            )
+            login.raise_for_status()
+            self.admin_session_token = login.json()["session_token"]
+
     async def stop(self) -> None:
         self.public_server.should_exit = True
         self.device_server.should_exit = True
@@ -184,7 +207,7 @@ class _FleetManagerFixture:
         async with httpx.AsyncClient(verify=False) as client:
             response = await client.post(
                 f"{self.public_url}/api/v1/fleet/join-tokens",
-                headers={"Authorization": f"Bearer {_ADMIN_TOKEN}"},
+                headers={"Authorization": f"Bearer {self.admin_session_token}"},
                 json={"device_id": device_id},
             )
         response.raise_for_status()
@@ -206,9 +229,23 @@ class _FleetManagerFixture:
 
 @pytest.fixture
 async def fleet_manager(  # type: ignore[no-untyped-def]
-    tmp_path: Path, fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
+    tmp_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_default_tenant_id: str,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
 ):
-    manager = _FleetManagerFixture(tmp_path, fleet_registry, fleet_default_tenant_id)
+    manager = _FleetManagerFixture(
+        tmp_path,
+        fleet_registry,
+        fleet_default_tenant_id,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
+    )
     await manager.start()
     try:
         yield manager
@@ -270,7 +307,7 @@ async def test_agent_enrolls_heartbeats_and_applies_pushed_config(
         async with httpx.AsyncClient(verify=False) as admin_client:
             push = await admin_client.post(
                 f"{fleet_manager.public_url}/api/v1/fleet/devices/test-device-1/config",
-                headers={"Authorization": f"Bearer {_ADMIN_TOKEN}"},
+                headers={"Authorization": f"Bearer {fleet_manager.admin_session_token}"},
                 json={"config": {"schema_version": "0.1", "logging": {"level": "DEBUG"}}},
             )
             assert push.status_code == 202
@@ -324,7 +361,7 @@ async def test_agent_reports_a_rejected_config_without_writing_it(
             # Missing required "schema_version" -- invalid against the core schema.
             push = await admin_client.post(
                 f"{fleet_manager.public_url}/api/v1/fleet/devices/test-device-2/config",
-                headers={"Authorization": f"Bearer {_ADMIN_TOKEN}"},
+                headers={"Authorization": f"Bearer {fleet_manager.admin_session_token}"},
                 json={"config": {"logging": {"level": "DEBUG"}}},
             )
             assert push.status_code == 202
@@ -343,6 +380,10 @@ async def test_heartbeat_survives_the_servers_keep_alive_timeout(
     core_schema_path: Path,
     fleet_registry: DeviceRegistry,
     fleet_default_tenant_id: str,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
 ) -> None:
     """Regression test for a bug found by manually running the agent
     against a real Fleet Manager, not by any existing automated test:
@@ -362,6 +403,10 @@ async def test_heartbeat_survives_the_servers_keep_alive_timeout(
         tmp_path,
         fleet_registry,
         fleet_default_tenant_id,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
         device_keep_alive_timeout=device_keep_alive_timeout,
     )
     await manager.start()
@@ -466,6 +511,10 @@ async def test_agent_proactively_rotates_a_certificate_nearing_expiry(
     core_schema_path: Path,
     fleet_registry: DeviceRegistry,
     fleet_default_tenant_id: str,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
 ) -> None:
     """Carried from Sprint C4 into C5: XEDGE-443's rotate-certificate
     endpoint had no caller on the device side until now. Uses a
@@ -484,6 +533,10 @@ async def test_agent_proactively_rotates_a_certificate_nearing_expiry(
         tmp_path,
         fleet_registry,
         fleet_default_tenant_id,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
         device_cert_validity_days=device_cert_validity_days,
     )
     await manager.start()
