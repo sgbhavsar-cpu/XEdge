@@ -50,7 +50,7 @@ gate is passed):
 | httpx | **test-only** (FastAPI TestClient transport) | BSD-3-Clause | ✅ Clear | Not a runtime dependency; only exercised via `fastapi.testclient.TestClient` and directly in the live REST API smoke test |
 | open62541 | OPC UA client + server (ADR-006) | MPL-2.0 | ✅ Clear (file-level copyleft; compatible with proprietary linking) | In-house asyncio C-extension binding required (no off-the-shelf async Python binding exists) |
 | lib60870-C | **black-box oracle only** (ADR-006) | GPL-2.0 (OSS ed.) / Commercial | ⚠ GPL — do not link into commercial edition | IEC 104 stack is built in-house from the purchased IEC 60870-5-104 spec |
-| OpenDNP3 / pydnp3 | **archived — do not use** | Apache-2.0 (dead upstream) | N/A | Upstream unmaintained; in-house lean-build master planned (ADR-006 gate) or commercial Rust `dnp3` crate fallback |
+| OpenDNP3 / pydnp3 | **archived — do not use** | Apache-2.0 (dead upstream) | ✅ Re-verified 2026-07-31, see §4 item 10 | Upstream confirmed still unmaintained (maintenance-only since 2020-12-20). In-house lean-build master planned (ADR-006/Sprint-20 gate, conditional on Delivery 2 P5's outcome) or the `stepfunc/dnp3` Rust crate fallback — **confirmed commercial-only for production use**, not merely "commercial support available" |
 | bacpypes3 | BACnet IP/MSTP | MIT | ✅ Clear | Selected over BAC0 per ADR-006 update (both MIT; bacpypes3 is the actively maintained async-native option) |
 | pycomm3 | EtherNet/IP | MIT | ✅ Clear — re-verified 2026-07-28, see §3.1 | **Not actively maintained** (upstream's own notice — see §3.1); explicit messaging only, no CIP Class 1 implicit I/O (ADR-012 §1, XEDGE-DR-001 Q-7 resolved: accepted for Sprint C7) |
 | libiec61850 | IEC 61850 MMS | GPL-3.0 (OSS ed.) / Commercial (MZ Automation) | ⚠ Commercial license required for commercial edition | Budget approved (ADR-006 §6); procure before Sprint 27 |
@@ -300,6 +300,83 @@ XEDGE-DR-001 D-12). Entries below record the *candidate* and the
      release, unblocking a compatible `click`. Re-check on the next
      `amqtt` version bump (already tracked whenever item 6 is revisited)
      rather than opening a separate recurring task.
+
+10. **DNP3 build-vs-buy landscape refreshed** (Delivery 2, P6; ADR-006 /
+    `sprint-planning.md` Sprint 20 gate) — 2026-07-31, ahead of Delivery 2
+    planning, not a cleared decision. The Sprint 20 gate itself is
+    **unchanged and still correctly conditional**: *"proceed in-house only
+    if the IEC 104 in-house stack (Sprint 19/P5) landed on budget;
+    otherwise license the commercial Rust `dnp3` crate."* That condition
+    cannot be evaluated until P5 actually runs — this item refreshes the
+    facts the gate will be evaluated against, so the P6 planning session
+    doesn't have to redo this research from zero.
+    - **OpenDNP3 (C++, Apache-2.0) — confirmed still dead, not just
+      old.** Now maintained (nominally) by Step Function I/O, the same
+      company that owns Automatak's legacy. Their own blog post
+      ("OpenDNP3: Retrospective") states it has been in
+      **maintenance-only mode since 2020-12-20** — no new features, and
+      the company's own engineering effort has moved to a from-scratch
+      Rust rewrite (below). Free and Apache-2.0, but building on it
+      today means building on a stack its own authors have stopped
+      developing.
+    - **The Python wrappers around OpenDNP3 inherit that deadness.**
+      `pydnp3` (ChargePoint): last PyPI release 2018-06-07, its own repo
+      calls it "a work in progress." A community fork
+      (`garretfick/pydnp3`) exists aiming for "up-to-date multi-platform
+      PyPI packages" but has no evidence of closing the gap. `dnp3-python`
+      (VOLTTRON, a redesign of pydnp3): most recent release found is
+      2022-12-15 (0.2.3b23/0.3.0b2, still beta). None of the three show
+      2025-2026 activity.
+    - **The actively-developed successor, `stepfunc/dnp3` (Rust), is
+      commercial — confirmed from its own LICENSE.txt, not inferred from
+      marketing copy.** Its GitHub repository is described as a
+      "Commercial DNP3 library by Step Function I/O." Fetching
+      `LICENSE.txt` directly: free use is permitted only for
+      "evaluation, research, teaching and training"; the license text
+      explicitly states **"the Purpose excludes commercial use and use
+      in production"** and prohibits any use that "generates revenue or
+      any other form of compensation." Production use requires
+      contacting Step Function I/O for a separate commercial agreement,
+      which the license states they have **no obligation to grant**.
+      This is a materially stronger claim than "commercial support is
+      available" (the framing `sprint-planning.md`'s original gate text
+      used) — it is source-available, not open-source, and there is no
+      free production tier at any price point disclosed publicly.
+    - **`pydnp3-stepfunc`** (the Python binding, via `cffi`) is itself
+      MIT-licensed, but that only covers the binding shim — it links
+      against the commercial Rust library above, so the MIT license on
+      the wrapper does not change the production-use restriction
+      underneath. Same shape as the `lib60870-C`/`libiec61850` rows in
+      §3: a permissive wrapper around a copyleft-or-commercial core is
+      still gated by the core's license, not the wrapper's.
+    - **Net effect on the gate's two named options, plus a third the
+      original wording didn't spell out:**
+      1. *In-house clean-room build* (original gate's first option) —
+         unchanged: buy the IEEE 1815 spec (already an open item, §4
+         item 3), build from the standard only. Real engineering cost,
+         no licensing cost, no upstream-abandonment risk.
+      2. *License `stepfunc/dnp3`* (original gate's fallback) —
+         unchanged in substance, now confirmed in exact terms: a real
+         commercial agreement with Step Function I/O, price and terms
+         undisclosed publicly, **not** a fixed line-item the way
+         `libiec61850`'s MZ Automation license is (§3 row, "budget
+         approved"). Needs an actual vendor quote before this can be
+         budgeted the same way.
+      3. *Wrap the free-but-abandoned OpenDNP3* (not named in the
+         original gate text as a distinct option; grouping it under
+         "in-house" would have been misleading, so recorded separately
+         here) — lowest short-term engineering cost of the three, but
+         carries indefinite exposure to unpatched upstream bugs/CVEs in
+         a protocol stack its own authors won't be fixing, in the same
+         risk family as pycomm3's "no longer actively developed" finding
+         (§4 item 7) except with no active maintainer at all rather than
+         a slow one.
+    - **Not resolved here on purpose.** Consistent with how this
+      document treats every other budget-relevant finding (`libiec61850`,
+      §3; DLMS, §3): the actual in-house-vs-buy call is a delivery
+      planning decision informed by P5's real outcome, not a license-audit
+      verification. This item's job is only to make sure that decision,
+      whenever it's made, is made against current facts.
 
 ## 5. Provenance record template (per in-house driver)
 
