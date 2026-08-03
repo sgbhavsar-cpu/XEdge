@@ -98,6 +98,16 @@ class SerialBusManager:
         self._ref_count += 1
         if self._ref_count > 1:
             return
+        # A fresh scheduler per open cycle, not a reused one: its queue
+        # binds to whichever event loop first touches it and is never
+        # rebound, so carrying one across a prior close (this manager's
+        # registry entry outlives any one open/closed cycle, by design —
+        # see get_bus_manager) into a reopen on a *different* running loop
+        # raises "bound to a different event loop" from inside the
+        # consumer task, which no caller submit()ting a request is watching
+        # for -- observed as that caller's submit() hanging forever, not a
+        # visible error.
+        self.scheduler = RequestScheduler()
         baud_rate = config.get("baud_rate", 9600)
         self._inter_frame_delay_seconds = rtu_codec.inter_frame_delay_seconds(baud_rate)
         self._rts_pre_delay_seconds = config.get("rts_pre_delay_us", 0) / 1_000_000

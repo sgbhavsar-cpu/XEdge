@@ -171,13 +171,20 @@ class MqttSparkplugConnector(NorthboundConnector):
             client.on_message = self._make_on_message(loop, self._write_router)
         self._client = client
 
-        await loop.run_in_executor(
-            None,
-            client.connect,
-            self._config.host,
-            self._config.port,
-            self._config.keepalive_seconds,
-        )
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    client.connect,
+                    self._config.host,
+                    self._config.port,
+                    self._config.keepalive_seconds,
+                ),
+                timeout=self._config.connect_timeout_seconds,
+            )
+        except TimeoutError:
+            self._client = None
+            raise
         client.loop_start()
         try:
             await asyncio.wait_for(
