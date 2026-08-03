@@ -63,6 +63,35 @@ jobs:
       - run: pip-audit --strict
         continue-on-error: true # tighten to blocking once a baseline is established (SR-VM-001)
 
+  frontend:
+    name: Frontend Lint + Typecheck + Test + Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - working-directory: frontend
+        run: npm ci
+      - working-directory: frontend
+        run: npm run lint
+      - working-directory: frontend
+        run: npm run typecheck
+      - working-directory: frontend
+        run: npm run test
+      - working-directory: frontend
+        run: npm run build
+      # Blocking from day one (XEDGE-514, ADR-013 §6's own accepted
+      # consequence) -- unlike pip-audit above, there's no pre-existing
+      # npm tree to grandfather a violation backlog against. The one
+      # currently known finding (an RSC-mode-specific react-router
+      # advisory this SPA doesn't use) is an explicit, documented
+      # exception in frontend/audit-ci.jsonc, not silently ignored here.
+      - working-directory: frontend
+        run: npm run audit
+
   docker-build:
     name: Docker Build (amd64, arm64, armv7)
     runs-on: ubuntu-latest
