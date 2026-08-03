@@ -9,7 +9,10 @@ import { AuthProvider } from '../auth/AuthContext'
 // doesn't have to repeat it, and a new provider added later only needs
 // updating in this one place.
 export function renderWithProviders(ui: ReactElement, { route = '/' } = {}) {
-  const queryClient = new QueryClient()
+  // retry: false -- react-query's default retries would otherwise make
+  // any error-path test wait through several backoff cycles before the
+  // query settles into its error state.
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[route]}>
