@@ -43,7 +43,6 @@ schema/upsert logic it protects).
 from __future__ import annotations
 
 import enum
-import hashlib
 import hmac
 import secrets
 import uuid
@@ -55,6 +54,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from xedge.fleet._device_auth import hash_token
 from xedge.fleet.db_models import Device, JoinToken, Tenant
 
 # A device is considered "offline" once this many missed heartbeat
@@ -74,10 +74,6 @@ DEFAULT_TENANT_NAME = "default"
 _METADATA_COLUMNS = frozenset(
     {"display_name", "serial_number", "make", "protocol", "hardware_firmware_version"}
 )
-
-
-def _hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 class GatewayConnectionState(enum.Enum):
@@ -258,7 +254,7 @@ class DeviceRegistry:
         "rotate token" endpoint yet)."""
         tenant_uuid = uuid.UUID(tenant_id)
         token = secrets.token_urlsafe(32)
-        token_hash = _hash_token(token)
+        token_hash = hash_token(token)
         now = datetime.now(UTC)
         async with self._sessionmaker() as session, session.begin():
             existing = await session.get(Device, device_id)
@@ -295,7 +291,7 @@ class DeviceRegistry:
             device = await session.get(Device, device_id)
             if device is None:
                 return False
-            return hmac.compare_digest(device.token_hash, _hash_token(token))
+            return hmac.compare_digest(device.token_hash, hash_token(token))
 
     async def heartbeat(
         self,
@@ -363,7 +359,7 @@ class DeviceRegistry:
             now = datetime.now(UTC)
             session.add(
                 JoinToken(
-                    token_hash=_hash_token(token),
+                    token_hash=hash_token(token),
                     tenant_id=tenant_uuid,
                     device_id=device_id,
                     created_at=now,
@@ -383,7 +379,7 @@ class DeviceRegistry:
         registers the new device into that tenant — the device never
         asserts its own tenant)."""
         async with self._sessionmaker() as session, session.begin():
-            join_token = await session.get(JoinToken, _hash_token(token))
+            join_token = await session.get(JoinToken, hash_token(token))
             if join_token is None or join_token.consumed_at is not None:
                 return None
             if not hmac.compare_digest(join_token.device_id, device_id):

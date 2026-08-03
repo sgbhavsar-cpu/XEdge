@@ -23,9 +23,11 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from testcontainers.community.postgres import PostgresContainer
 
+from xedge.fleet.audit import FleetAuditLog
+from xedge.fleet.auth import FleetSessionManager, FleetUserStore, LoginLockout
 from xedge.fleet.db_models import Base, Tenant, create_engine
 from xedge.fleet.migrate import run_migrations
 from xedge.fleet.registry import DeviceRegistry
@@ -85,3 +87,40 @@ async def other_tenant_id(_fleet_postgres_url: str, fleet_registry: DeviceRegist
         tenant_id = str(tenant.id)
     await engine.dispose()
     return tenant_id
+
+
+@pytest.fixture
+async def _fleet_auth_engine(
+    _fleet_postgres_url: str, fleet_registry: DeviceRegistry
+) -> AsyncIterator[AsyncEngine]:
+    """One engine shared by the four fixtures below (Sprint P2, XEDGE-502)
+    — separate from `fleet_registry`'s own (`DeviceRegistry` doesn't
+    expose its internal engine, by design), but there's no reason for
+    `FleetUserStore`/`FleetSessionManager`/`FleetAuditLog` to each open a
+    *different* one. Depends on `fleet_registry` purely for ordering,
+    same reasoning as `other_tenant_id` above."""
+    engine = create_engine(_fleet_postgres_url)
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+def fleet_user_store(_fleet_auth_engine: AsyncEngine) -> FleetUserStore:
+    return FleetUserStore(_fleet_auth_engine)
+
+
+@pytest.fixture
+def fleet_session_manager(_fleet_auth_engine: AsyncEngine) -> FleetSessionManager:
+    return FleetSessionManager(_fleet_auth_engine)
+
+
+@pytest.fixture
+def fleet_audit_log(_fleet_auth_engine: AsyncEngine) -> FleetAuditLog:
+    return FleetAuditLog(_fleet_auth_engine)
+
+
+@pytest.fixture
+def fleet_login_lockout() -> LoginLockout:
+    return LoginLockout()

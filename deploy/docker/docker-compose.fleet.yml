@@ -1,30 +1,38 @@
 # Fleet Manager deployment (Sprint 29, XEDGE-215; reworked Sprint C4,
-# XEDGE-440/442/443; Postgres migration Sprint P1, XEDGE-500/501) — a
-# separate service from any individual xEdge device (ADR-009, Sprint 32's
-# documented split), built from the same image as the device's own
-# Dockerfile since the fleet code ships inside the same `xedge` wheel (just
-# a different console-script entrypoint). The device registry is
-# Postgres-backed as of XEDGE-500 (ADR-013 §5 supersedes ADR-009 §4 for the
-# central server only — a device's own local store stays SQLite).
+# XEDGE-440/442/443; Postgres migration Sprint P1, XEDGE-500/501; user
+# accounts/RBAC Sprint P2, XEDGE-502) — a separate service from any
+# individual xEdge device (ADR-009, Sprint 32's documented split), built
+# from the same image as the device's own Dockerfile since the fleet code
+# ships inside the same `xedge` wheel (just a different console-script
+# entrypoint). The device registry is Postgres-backed as of XEDGE-500
+# (ADR-013 §5 supersedes ADR-009 §4 for the central server only — a
+# device's own local store stays SQLite).
 #
 # Usage: docker compose -f deploy/docker/docker-compose.fleet.yml up
 #
 # Serves two ports (ADR-013 §3/§4; xedge/fleet/manager_cli.py):
-#   - 8090: join-token provisioning, device enrollment, and admin calls.
-#     Server-TLS only, using a certificate the manager's own fleet CA
-#     issues to itself on first run.
+#   - 8090: login, join-token provisioning, device enrollment, and admin
+#     calls. Server-TLS only, using a certificate the manager's own fleet
+#     CA issues to itself on first run.
 #   - 8091: heartbeat and certificate rotation for already-enrolled
 #     devices. mTLS — the TLS handshake itself rejects any connection not
 #     presenting a certificate the fleet CA issued.
 #
-# admin_token is auto-generated on first run and persisted into the
-# `fleet-manager-data` volume if not supplied via environment. There is no
-# manager-wide join_token anymore: join tokens are single-use and scoped to
-# one device_id, created through the admin API. To enroll a device:
+# There is no admin_token anymore (XEDGE-502): a bootstrap "admin" account
+# is created on first run, with an auto-generated password persisted into
+# the `fleet-manager-data` volume. Log in to get a session token, then
+# create named accounts for real operators and change the bootstrap
+# password. There is no manager-wide join_token either: join tokens are
+# single-use and scoped to one device_id, created through the admin API.
+# To enroll a device:
 #   docker compose -f deploy/docker/docker-compose.fleet.yml exec \
-#     fleet-manager cat /data/admin_token
+#     fleet-manager cat /data/admin_bootstrap_password
+#   SESSION_TOKEN=$(curl -sk -X POST https://localhost:8090/api/v1/fleet/auth/login \
+#     -H "Content-Type: application/json" \
+#     -d '{"tenant_name": "default", "username": "admin", "password": "<bootstrap password>"}' \
+#     | python3 -c "import sys, json; print(json.load(sys.stdin)['session_token'])")
 #   curl -sk -X POST https://localhost:8090/api/v1/fleet/join-tokens \
-#     -H "Authorization: Bearer <admin_token>" \
+#     -H "Authorization: Bearer $SESSION_TOKEN" \
 #     -H "Content-Type: application/json" \
 #     -d '{"device_id": "<device_id>"}'
 # The device's own fleet.join_token config field takes the resulting

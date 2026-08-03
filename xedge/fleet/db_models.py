@@ -98,6 +98,89 @@ class JoinToken(Base):
     consumed_at: Mapped[datetime | None]
 
 
+class FleetUser(Base):
+    """Named operator accounts (Sprint P2, XEDGE-502) — supersedes the
+    single shared `admin_token` (ADR-009), the same kind of transition
+    `xedge.api.auth.UserStore` made for the device-local Web UI in
+    Sprint 14. `username` is unique per tenant, not globally: two
+    tenants each choosing "admin" doesn't collide, since a username only
+    ever needs to be unambiguous within the one tenant a session is
+    scoped to."""
+
+    __tablename__ = "fleet_users"
+    __table_args__ = (
+        Index("ix_fleet_users_tenant_id", "tenant_id"),
+        Index("ix_fleet_users_tenant_id_username", "tenant_id", "username", unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    username: Mapped[str]
+    password_hash: Mapped[str]
+    role: Mapped[str]
+    created_at: Mapped[datetime]
+
+
+class FleetSession(Base):
+    """A logged-in user's bearer session (Sprint P2, XEDGE-502) —
+    deliberately *not* `xedge.api.auth.SessionManager`'s stateless,
+    HMAC-signed cookie: this token is instead opaque and hash-verified
+    against this table, the same shape as this manager's own
+    `join_tokens`/`devices.token_hash` (Sprint C4). A compromised admin
+    session is higher blast-radius than a compromised device token (it
+    carries `user:manage` over a whole tenant), so it gets the mechanism
+    that supports real, immediate revocation — deleting the row ends the
+    session outright, which a global HMAC secret can't do without
+    invalidating every other session at once. `ON DELETE CASCADE`:
+    deleting a user (or, transitively, its tenant) must not leave orphaned
+    sessions someone could still be presenting."""
+
+    __tablename__ = "fleet_sessions"
+    __table_args__ = (Index("ix_fleet_sessions_expires_at", "expires_at"),)
+
+    token_hash: Mapped[str] = mapped_column(primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fleet_users.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime]
+    expires_at: Mapped[datetime]
+
+
+class FleetAuditLogEntry(Base):
+    """Manager-side admin action log (Sprint P2, XEDGE-505) — the
+    device-local Web UI has had this since ADR-007 (`xedge.observability.
+    audit_log.AuditLog`); the manager didn't because there was no
+    per-user identity to attribute an action to before XEDGE-502. Field
+    names (`actor`/`event`/`details`) match that module's vocabulary, but
+    the storage mechanism deliberately doesn't: the device-side log is a
+    hash-chained append-only JSONL *file*, the right choice for a single-
+    process gateway with no database of its own, but exactly the
+    single-file-concurrent-write problem ADR-013 §5 migrated the rest of
+    this manager away from (XEDGE-500) — a real Postgres table gets
+    row-level tenant scoping and durable, access-controlled storage for
+    free instead. Hash-chain tamper-evidence is not reproduced here; it
+    was never XEDGE-505's own ask (a per-manager audit trail), just a
+    property of the device-side's specific file-based mechanism.
+    `actor` is plain text, not a foreign key to `fleet_users`: an entry
+    must read the same after the account that made it is later renamed
+    or deleted. Append-only by convention — nothing in this codebase
+    ever issues an UPDATE or DELETE against this table."""
+
+    __tablename__ = "fleet_audit_log"
+    __table_args__ = (Index("ix_fleet_audit_log_tenant_id_created_at", "tenant_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    created_at: Mapped[datetime]
+    actor: Mapped[str]
+    event: Mapped[str]
+    details: Mapped[dict[str, Any]]
+
+
 def create_engine(database_url: str) -> AsyncEngine:
     """One place for the engine options every caller (`manager_cli`, the
     Postgres test fixture, the SQLite→Postgres import script) needs
