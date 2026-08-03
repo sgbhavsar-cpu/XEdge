@@ -46,7 +46,9 @@ async def _enrolled_client(
         login_lockout,
         cert_validity_days=_CERT_VALIDITY_DAYS,
     )
-    device_app = create_fleet_device_app(registry, ca, cert_validity_days=_CERT_VALIDITY_DAYS)
+    device_app = create_fleet_device_app(
+        registry, ca, audit_log, cert_validity_days=_CERT_VALIDITY_DAYS
+    )
     public_client = AsyncClient(transport=ASGITransport(app=public_app), base_url="http://test")
     device_client = AsyncClient(transport=ASGITransport(app=device_app), base_url="http://test")
 
@@ -280,3 +282,74 @@ async def test_rotate_certificate_rejects_a_malformed_csr(
     )
 
     assert response.status_code == 400
+
+
+async def test_rotate_certificate_is_recorded_in_the_audit_log(
+    tmp_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_default_tenant_id: str,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
+) -> None:
+    """Sprint P3, XEDGE-512: unlike enrollment (no operator session
+    involved, deliberately not audit-logged), a rotation on an
+    already-enrolled device now is -- a real observability gap this
+    closes."""
+    _public, device_client, _ca, _admin_token, token = await _enrolled_client(
+        tmp_path,
+        fleet_registry,
+        fleet_default_tenant_id,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
+    )
+    _private_key_pem, csr_pem = generate_key_and_csr("dev1")
+
+    response = await device_client.post(
+        "/api/v1/fleet/devices/dev1/rotate-certificate",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"csr_pem": csr_pem.decode("ascii")},
+    )
+    assert response.status_code == 200
+
+    entries = await fleet_audit_log.tail(fleet_default_tenant_id, event_prefix="cert.rotated")
+    assert len(entries) == 1
+    assert entries[0].actor == "dev1"
+
+
+async def test_rotate_certificate_appends_to_certificate_history(
+    tmp_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_default_tenant_id: str,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
+) -> None:
+    """Sprint P3, XEDGE-512: the history table records both the initial
+    enrollment issuance and every later rotation -- distinct from the
+    device's own `cert_serial_number`/`cert_not_after`, which only ever
+    hold the current certificate's identity."""
+    _public, device_client, _ca, _admin_token, token = await _enrolled_client(
+        tmp_path,
+        fleet_registry,
+        fleet_default_tenant_id,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
+    )
+    _private_key_pem, csr_pem = generate_key_and_csr("dev1")
+
+    response = await device_client.post(
+        "/api/v1/fleet/devices/dev1/rotate-certificate",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"csr_pem": csr_pem.decode("ascii")},
+    )
+    assert response.status_code == 200
+
+    history = await fleet_registry.list_certificate_history(fleet_default_tenant_id, "dev1")
+    assert [h.reason for h in history] == ["rotation", "enrollment"]

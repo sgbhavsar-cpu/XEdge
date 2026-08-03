@@ -96,6 +96,15 @@ class JoinToken(Base):
     created_at: Mapped[datetime]
     expires_at: Mapped[datetime]
     consumed_at: Mapped[datetime | None]
+    # Sprint P3, XEDGE-513: operator-initiated revocation, kept distinct
+    # from `consumed_at` -- reusing that column for revocation would
+    # conflate "the device redeemed it" with "an operator killed it
+    # first," losing the distinction for anyone reading the join-token
+    # list later. `revoked_by` is plain text (a username), not a foreign
+    # key to `fleet_users` -- same "must still read correctly after the
+    # account is renamed/deleted" reasoning as `FleetAuditLogEntry.actor`.
+    revoked_at: Mapped[datetime | None]
+    revoked_by: Mapped[str | None]
 
 
 class FleetUser(Base):
@@ -179,6 +188,76 @@ class FleetAuditLogEntry(Base):
     actor: Mapped[str]
     event: Mapped[str]
     details: Mapped[dict[str, Any]]
+
+
+class DeviceConfigHistory(Base):
+    """Every config push queued for a device (Sprint P3, XEDGE-512) —
+    `Device.pending_config_json`/`last_config_apply_json` only ever hold
+    the *current* queue/latest-report, overwritten on the next push or
+    heartbeat; this table is the append-only record a dashboard's
+    "config history" view actually reads. `applied_at`/`apply_success`/
+    `apply_error` start `NULL` and are filled in by
+    `DeviceRegistry.heartbeat` once the device's heartbeat body reports
+    back which version it applied and whether that succeeded
+    (`xedge.fleet.agent._apply_pending_config`'s `{"version", "success",
+    "error"}` shape) -- a push a device never reports back on (e.g. it's
+    replaced by a newer push before applying, or the device is
+    decommissioned) simply stays `NULL` forever, which is itself
+    meaningful information, not a bug."""
+
+    __tablename__ = "device_config_history"
+    __table_args__ = (
+        Index("ix_device_config_history_tenant_id_device_id", "tenant_id", "device_id"),
+        Index(
+            "ix_device_config_history_device_id_version",
+            "device_id",
+            "config_version",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.device_id"), nullable=False)
+    config_version: Mapped[int]
+    config_json: Mapped[dict[str, Any]]
+    pushed_at: Mapped[datetime]
+    pushed_by: Mapped[str]
+    applied_at: Mapped[datetime | None]
+    apply_success: Mapped[bool | None]
+    apply_error: Mapped[str | None]
+
+
+class DeviceCertificateHistory(Base):
+    """Every certificate issued to a device -- initial enrollment and
+    every later rotation (Sprint P3, XEDGE-512). `Device.
+    cert_serial_number`/`cert_not_after` only ever hold the *current*
+    certificate's identity, overwritten in place by
+    `DeviceRegistry.record_certificate_issued` on every issuance; this
+    table is the append-only history underneath that. `reason`
+    distinguishes the one-time enrollment issuance (XEDGE-442) from a
+    later proactive rotation (XEDGE-443) -- not a foreign key or enum
+    type, a plain constrained string, the same "keep it simple until a
+    second consumer needs more" posture already used for
+    `DeviceRecord.status`'s three string values."""
+
+    __tablename__ = "device_certificate_history"
+    __table_args__ = (
+        Index("ix_device_certificate_history_tenant_id_device_id", "tenant_id", "device_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.device_id"), nullable=False)
+    serial_number: Mapped[str]
+    not_before: Mapped[datetime]
+    not_after: Mapped[datetime]
+    issued_at: Mapped[datetime]
+    reason: Mapped[str]
 
 
 def create_engine(database_url: str) -> AsyncEngine:

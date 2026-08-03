@@ -226,6 +226,19 @@ def create_fleet_manager_app(
         await audit_log.record(tenant_id, user.username, "auth.login_success")
         return {"session_token": token, "username": user.username, "role": user.role}
 
+    @app.post("/api/v1/fleet/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+    async def logout(
+        authorization: str = Header(default=""),
+        session: AuthenticatedSession = Depends(require_session),  # noqa: B008
+    ) -> None:
+        """Sprint P3: the one way a session ends today besides idle-timeout
+        expiry — `FleetSessionManager.revoke` existed already but no route
+        called it. Requires a currently-valid session (via `require_session`)
+        purely so this can be audit-logged as the right actor; `revoke`
+        itself would happily no-op on an already-invalid token."""
+        await session_manager.revoke(bearer_value(authorization))
+        await audit_log.record(session.tenant_id, session.username, "auth.logout")
+
     @app.post("/api/v1/fleet/users", status_code=status.HTTP_201_CREATED)
     async def create_user(
         body: _CreateUserBody,
@@ -341,6 +354,45 @@ def create_fleet_manager_app(
         )
         return {"join_token": token, "device_id": body.device_id, "ttl_seconds": body.ttl_seconds}
 
+    @app.get("/api/v1/fleet/join-tokens")
+    async def list_join_tokens(
+        session: AuthenticatedSession = Depends(require_device_write),  # noqa: B008
+    ) -> list[dict[str, Any]]:
+        """XEDGE-513. `id` is the row's `token_hash` — the raw token was
+        never persisted (see `xedge.fleet.registry`'s module docstring),
+        so it's the only thing this list can identify a row by; it's not
+        a secret (revealing a hash isn't the same as revealing the token
+        it hashes), unlike the raw token this list can never show again."""
+        return [
+            {
+                "id": t.id,
+                "device_id": t.device_id,
+                "created_at": t.created_at.isoformat(),
+                "expires_at": t.expires_at.isoformat(),
+                "consumed_at": t.consumed_at.isoformat() if t.consumed_at else None,
+                "revoked_at": t.revoked_at.isoformat() if t.revoked_at else None,
+                "revoked_by": t.revoked_by,
+                "status": t.status,
+            }
+            for t in await registry.list_join_tokens(session.tenant_id)
+        ]
+
+    @app.delete("/api/v1/fleet/join-tokens/{token_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def revoke_join_token(
+        token_id: str,
+        session: AuthenticatedSession = Depends(require_device_write),  # noqa: B008
+    ) -> None:
+        """XEDGE-513: an operator-initiated kill, distinct from a device
+        redeeming the token itself — see `DeviceRegistry.revoke_join_token`.
+        Idempotent (revoking twice, or revoking an already-consumed/expired
+        token, still succeeds) — 404 means only "no such token in this
+        tenant," not "already unusable for some other reason."""
+        if not await registry.revoke_join_token(session.tenant_id, token_id, session.username):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"No such join token: {token_id!r}")
+        await audit_log.record(
+            session.tenant_id, session.username, "join_token.revoked", {"token_id": token_id}
+        )
+
     @app.post("/api/v1/fleet/enroll")
     async def enroll(body: _EnrollBody) -> dict[str, Any]:
         """XEDGE-442: redeem a single-use join token and a CSR together —
@@ -378,7 +430,11 @@ def create_fleet_manager_app(
         )
         certificate = x509.load_pem_x509_certificate(certificate_pem)
         await registry.record_certificate_issued(
-            body.device_id, certificate.serial_number, certificate.not_valid_after_utc
+            body.device_id,
+            certificate.serial_number,
+            certificate.not_valid_before_utc,
+            certificate.not_valid_after_utc,
+            reason="enrollment",
         )
         return {
             "device_token": device_token,
@@ -450,7 +506,9 @@ def create_fleet_manager_app(
             except ConfigValidationError as exc:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
         try:
-            version = await registry.queue_config(session.tenant_id, device_id, body.config)
+            version = await registry.queue_config(
+                session.tenant_id, device_id, body.config, session.username
+            )
         except KeyError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
         await audit_log.record(
@@ -474,5 +532,50 @@ def create_fleet_manager_app(
             "pending_config_version": record.pending_config_version,
             "last_config_apply": record.last_config_apply,
         }
+
+    @app.get("/api/v1/fleet/devices/{device_id}/config-history")
+    async def get_config_history(
+        device_id: str,
+        session: AuthenticatedSession = Depends(require_device_read),  # noqa: B008
+    ) -> list[dict[str, Any]]:
+        """XEDGE-512: the append-only record of every config ever pushed
+        to this device — `config/status` above shows only the current
+        queue/latest-apply snapshot."""
+        if await registry.get(session.tenant_id, device_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"No such device: {device_id!r}")
+        return [
+            {
+                "config_version": h.config_version,
+                "config": h.config,
+                "pushed_at": h.pushed_at.isoformat(),
+                "pushed_by": h.pushed_by,
+                "applied_at": h.applied_at.isoformat() if h.applied_at else None,
+                "apply_success": h.apply_success,
+                "apply_error": h.apply_error,
+            }
+            for h in await registry.list_config_history(session.tenant_id, device_id)
+        ]
+
+    @app.get("/api/v1/fleet/devices/{device_id}/certificate-history")
+    async def get_certificate_history(
+        device_id: str,
+        session: AuthenticatedSession = Depends(require_device_read),  # noqa: B008
+    ) -> list[dict[str, Any]]:
+        """XEDGE-512: every certificate this device has ever been issued —
+        initial enrollment plus every later rotation — distinct from
+        `cert_serial_number`/`cert_not_after` on the device summary above,
+        which hold only the current certificate's identity."""
+        if await registry.get(session.tenant_id, device_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"No such device: {device_id!r}")
+        return [
+            {
+                "serial_number": h.serial_number,
+                "not_before": h.not_before.isoformat(),
+                "not_after": h.not_after.isoformat(),
+                "issued_at": h.issued_at.isoformat(),
+                "reason": h.reason,
+            }
+            for h in await registry.list_certificate_history(session.tenant_id, device_id)
+        ]
 
     return app

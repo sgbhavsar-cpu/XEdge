@@ -128,7 +128,7 @@ class _FleetManagerFixture:
             cert_validity_days=device_cert_validity_days,
         )
         device_app = create_fleet_device_app(
-            self.registry, self.ca, cert_validity_days=device_cert_validity_days
+            self.registry, self.ca, audit_log, cert_validity_days=device_cert_validity_days
         )
         self.public_server = uvicorn.Server(
             uvicorn.Config(

@@ -1095,3 +1095,368 @@ async def test_two_tenants_do_not_see_each_others_devices_through_the_api(
     tenant_b_audit = (await client.get("/api/v1/fleet/audit", headers=tenant_b_headers)).json()
     assert any(e["event"] == "join_token.created" for e in tenant_a_audit)
     assert not any(e["event"] == "join_token.created" for e in tenant_b_audit)
+
+
+# --- auth: logout (Sprint P3) ---
+
+
+async def test_logout_invalidates_the_session(
+    tmp_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_default_tenant_id: str,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
+) -> None:
+    client, _ca = _client(
+        tmp_path,
+        fleet_registry,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
+    )
+    headers = await _admin_session_headers(client, fleet_user_store, fleet_default_tenant_id)
+
+    logout = await client.post("/api/v1/fleet/auth/logout", headers=headers)
+    assert logout.status_code == 204
+
+    response = await client.get("/api/v1/fleet/devices", headers=headers)
+    assert response.status_code == 401
+
+    entries = await fleet_audit_log.tail(fleet_default_tenant_id, event_prefix="auth.logout")
+    assert len(entries) == 1
+    assert entries[0].actor == "admin"
+
+
+async def test_logout_without_a_session_is_401(
+    tmp_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
+) -> None:
+    client, _ca = _client(
+        tmp_path,
+        fleet_registry,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
+    )
+
+    response = await client.post("/api/v1/fleet/auth/logout")
+
+    assert response.status_code == 401
+
+
+# --- join-token list/revoke (Sprint P3, XEDGE-513) ---
+
+
+async def test_list_join_tokens_shows_status_for_each_token(
+    tmp_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_default_tenant_id: str,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
+) -> None:
+    client, _ca = _client(
+        tmp_path,
+        fleet_registry,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
+    )
+    headers = await _admin_session_headers(client, fleet_user_store, fleet_default_tenant_id)
+    await _provision_join_token(client, "dev1", headers)
+
+    response = await client.get("/api/v1/fleet/join-tokens", headers=headers)
+
+    assert response.status_code == 200
+    tokens = response.json()
+    assert len(tokens) == 1
+    assert tokens[0]["device_id"] == "dev1"
+    assert tokens[0]["status"] == "active"
+    assert "id" in tokens[0]
+
+
+async def test_readonly_role_cannot_list_join_tokens(
+    tmp_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_default_tenant_id: str,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
+) -> None:
+    client, _ca = _client(
+        tmp_path,
+        fleet_registry,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
+    )
+    await fleet_user_store.create_user(fleet_default_tenant_id, "viewer", "pw", "readonly")
+    login = await _login(client, username="viewer", password="pw")
+    headers = _auth_headers(login.json()["session_token"])
+
+    response = await client.get("/api/v1/fleet/join-tokens", headers=headers)
+
+    assert response.status_code == 403
+
+
+async def test_revoke_join_token_prevents_enrollment(
+    tmp_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_default_tenant_id: str,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
+) -> None:
+    client, _ca = _client(
+        tmp_path,
+        fleet_registry,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
+    )
+    headers = await _admin_session_headers(client, fleet_user_store, fleet_default_tenant_id)
+    join_token = await _provision_join_token(client, "dev1", headers)
+    token_id = (await client.get("/api/v1/fleet/join-tokens", headers=headers)).json()[0]["id"]
+
+    revoke = await client.delete(f"/api/v1/fleet/join-tokens/{token_id}", headers=headers)
+    assert revoke.status_code == 204
+
+    enroll = await _enroll(client, "dev1", join_token)
+    assert enroll.status_code == 401
+
+    audit = (await client.get("/api/v1/fleet/audit", headers=headers)).json()
+    assert any(e["event"] == "join_token.revoked" for e in audit)
+
+
+async def test_revoke_unknown_join_token_is_404(
+    tmp_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_default_tenant_id: str,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
+) -> None:
+    client, _ca = _client(
+        tmp_path,
+        fleet_registry,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
+    )
+    headers = await _admin_session_headers(client, fleet_user_store, fleet_default_tenant_id)
+
+    response = await client.delete("/api/v1/fleet/join-tokens/not-a-real-id", headers=headers)
+
+    assert response.status_code == 404
+
+
+async def test_revoke_join_token_for_a_token_in_another_tenant_is_404(
+    tmp_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_default_tenant_id: str,
+    other_tenant_id: str,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
+) -> None:
+    """XEDGE-503: an operator in tenant B must not be able to revoke a
+    token that belongs to tenant A."""
+    client, _ca = _client(
+        tmp_path,
+        fleet_registry,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
+    )
+    tenant_a_headers = await _admin_session_headers(
+        client, fleet_user_store, fleet_default_tenant_id
+    )
+    await _provision_join_token(client, "dev1", tenant_a_headers)
+    token_id = (await client.get("/api/v1/fleet/join-tokens", headers=tenant_a_headers)).json()[0][
+        "id"
+    ]
+
+    await fleet_user_store.create_user(other_tenant_id, "admin", _ADMIN_PASSWORD, "admin")
+    tenant_b_login = await _login(client, tenant_name="other-tenant")
+    tenant_b_headers = _auth_headers(tenant_b_login.json()["session_token"])
+
+    response = await client.delete(
+        f"/api/v1/fleet/join-tokens/{token_id}", headers=tenant_b_headers
+    )
+
+    assert response.status_code == 404
+
+
+# --- device config-history / certificate-history (Sprint P3, XEDGE-512) ---
+
+
+async def test_config_history_reflects_a_push_and_its_later_apply_report(
+    tmp_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_default_tenant_id: str,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
+) -> None:
+    client, _ca = _client(
+        tmp_path,
+        fleet_registry,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
+    )
+    headers = await _admin_session_headers(client, fleet_user_store, fleet_default_tenant_id)
+    join_token = await _provision_join_token(client, "dev1", headers)
+    await _enroll(client, "dev1", join_token)
+    await client.post(
+        "/api/v1/fleet/devices/dev1/config",
+        headers=headers,
+        json={"config": {"schema_version": "0.1"}},
+    )
+
+    before_apply = await client.get("/api/v1/fleet/devices/dev1/config-history", headers=headers)
+    assert before_apply.status_code == 200
+    assert len(before_apply.json()) == 1
+    assert before_apply.json()[0]["applied_at"] is None
+    assert before_apply.json()[0]["pushed_by"] == "admin"
+
+    await fleet_registry.heartbeat(
+        "dev1", None, None, None, {"version": 1, "success": True, "error": None}
+    )
+
+    after_apply = await client.get("/api/v1/fleet/devices/dev1/config-history", headers=headers)
+    assert after_apply.json()[0]["applied_at"] is not None
+    assert after_apply.json()[0]["apply_success"] is True
+
+
+async def test_config_history_for_unknown_device_is_404(
+    tmp_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_default_tenant_id: str,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
+) -> None:
+    client, _ca = _client(
+        tmp_path,
+        fleet_registry,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
+    )
+    headers = await _admin_session_headers(client, fleet_user_store, fleet_default_tenant_id)
+
+    response = await client.get("/api/v1/fleet/devices/nope/config-history", headers=headers)
+
+    assert response.status_code == 404
+
+
+async def test_config_history_for_a_device_in_another_tenant_is_404(
+    tmp_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_default_tenant_id: str,
+    other_tenant_id: str,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
+) -> None:
+    """XEDGE-503: every new query path needs a cross-tenant-leak test."""
+    client, _ca = _client(
+        tmp_path,
+        fleet_registry,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
+    )
+    tenant_a_headers = await _admin_session_headers(
+        client, fleet_user_store, fleet_default_tenant_id
+    )
+    join_token = await _provision_join_token(client, "dev1", tenant_a_headers)
+    await _enroll(client, "dev1", join_token)
+
+    await fleet_user_store.create_user(other_tenant_id, "admin", _ADMIN_PASSWORD, "admin")
+    tenant_b_login = await _login(client, tenant_name="other-tenant")
+    tenant_b_headers = _auth_headers(tenant_b_login.json()["session_token"])
+
+    response = await client.get(
+        "/api/v1/fleet/devices/dev1/config-history", headers=tenant_b_headers
+    )
+
+    assert response.status_code == 404
+
+
+async def test_certificate_history_shows_the_enrollment_issuance(
+    tmp_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_default_tenant_id: str,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
+) -> None:
+    client, _ca = _client(
+        tmp_path,
+        fleet_registry,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
+    )
+    headers = await _admin_session_headers(client, fleet_user_store, fleet_default_tenant_id)
+    join_token = await _provision_join_token(client, "dev1", headers)
+    await _enroll(client, "dev1", join_token)
+
+    response = await client.get("/api/v1/fleet/devices/dev1/certificate-history", headers=headers)
+
+    assert response.status_code == 200
+    history = response.json()
+    assert len(history) == 1
+    assert history[0]["reason"] == "enrollment"
+
+
+async def test_certificate_history_for_unknown_device_is_404(
+    tmp_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_default_tenant_id: str,
+    fleet_user_store: FleetUserStore,
+    fleet_session_manager: FleetSessionManager,
+    fleet_audit_log: FleetAuditLog,
+    fleet_login_lockout: LoginLockout,
+) -> None:
+    client, _ca = _client(
+        tmp_path,
+        fleet_registry,
+        fleet_user_store,
+        fleet_session_manager,
+        fleet_audit_log,
+        fleet_login_lockout,
+    )
+    headers = await _admin_session_headers(client, fleet_user_store, fleet_default_tenant_id)
+
+    response = await client.get("/api/v1/fleet/devices/nope/certificate-history", headers=headers)
+
+    assert response.status_code == 404

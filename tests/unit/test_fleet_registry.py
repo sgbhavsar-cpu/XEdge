@@ -145,7 +145,7 @@ async def test_queue_config_and_take_pending_config_round_trip(
     )
 
     version = await fleet_registry.queue_config(
-        fleet_default_tenant_id, "dev1", {"schema_version": "0.1"}
+        fleet_default_tenant_id, "dev1", {"schema_version": "0.1"}, "admin"
     )
     assert version == 1
     assert (await fleet_registry.get(fleet_default_tenant_id, "dev1")).has_pending_config is True
@@ -161,7 +161,7 @@ async def test_queue_config_for_unknown_device_raises_key_error(
     fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
 ) -> None:
     with pytest.raises(KeyError):
-        await fleet_registry.queue_config(fleet_default_tenant_id, "no-such-device", {})
+        await fleet_registry.queue_config(fleet_default_tenant_id, "no-such-device", {}, "admin")
 
 
 async def test_queue_config_for_a_device_in_another_tenant_raises_key_error(
@@ -174,7 +174,7 @@ async def test_queue_config_for_a_device_in_another_tenant_raises_key_error(
     )
 
     with pytest.raises(KeyError):
-        await fleet_registry.queue_config(other_tenant_id, "dev1", {})
+        await fleet_registry.queue_config(other_tenant_id, "dev1", {}, "admin")
 
 
 async def test_list_devices_is_sorted_by_device_id(
@@ -385,13 +385,27 @@ async def test_record_certificate_issued_updates_the_device_record(
     await fleet_registry.register(
         fleet_default_tenant_id, "dev1", None, None, heartbeat_interval_seconds=60
     )
-    not_after = datetime.now(UTC) + timedelta(days=90)
+    not_before = datetime.now(UTC)
+    not_after = not_before + timedelta(days=90)
 
-    await fleet_registry.record_certificate_issued("dev1", 12345, not_after)
+    tenant_id = await fleet_registry.record_certificate_issued(
+        "dev1", 12345, not_before, not_after, reason="enrollment"
+    )
 
+    assert tenant_id == fleet_default_tenant_id
     record = await fleet_registry.get(fleet_default_tenant_id, "dev1")
     assert record.cert_serial_number == "12345"
     assert record.cert_not_after == not_after
+
+
+async def test_record_certificate_issued_for_unknown_device_returns_none(
+    fleet_registry: DeviceRegistry,
+) -> None:
+    now = datetime.now(UTC)
+    tenant_id = await fleet_registry.record_certificate_issued(
+        "no-such-device", 1, now, now + timedelta(days=90), reason="enrollment"
+    )
+    assert tenant_id is None
 
 
 async def test_get_and_list_devices_do_not_see_another_tenants_device(
@@ -424,3 +438,273 @@ async def test_verify_token_and_heartbeat_are_not_tenant_scoped(
     await fleet_registry.heartbeat("dev1", "0.1.0", 1, 1.0, None)
     record = await fleet_registry.get(fleet_default_tenant_id, "dev1")
     assert record.status == "online"
+
+
+# --- join-token list/revoke (Sprint P3, XEDGE-513) ---
+
+
+async def test_list_join_tokens_is_empty_before_any_are_created(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
+) -> None:
+    assert await fleet_registry.list_join_tokens(fleet_default_tenant_id) == []
+
+
+async def test_list_join_tokens_returns_newest_first(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
+) -> None:
+    await fleet_registry.create_join_token(fleet_default_tenant_id, "dev1", ttl_seconds=3600)
+    await fleet_registry.create_join_token(fleet_default_tenant_id, "dev2", ttl_seconds=3600)
+
+    tokens = await fleet_registry.list_join_tokens(fleet_default_tenant_id)
+
+    assert [t.device_id for t in tokens] == ["dev2", "dev1"]
+    assert all(t.status == "active" for t in tokens)
+
+
+async def test_list_join_tokens_reflects_consumed_and_expired_status(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
+) -> None:
+    consumed_token = await fleet_registry.create_join_token(
+        fleet_default_tenant_id, "dev1", ttl_seconds=3600
+    )
+    await fleet_registry.create_join_token(fleet_default_tenant_id, "dev2", ttl_seconds=-1)
+    await fleet_registry.consume_join_token("dev1", consumed_token)
+
+    tokens = {
+        t.device_id: t for t in await fleet_registry.list_join_tokens(fleet_default_tenant_id)
+    }
+
+    assert tokens["dev1"].status == "consumed"
+    assert tokens["dev2"].status == "expired"
+
+
+async def test_list_join_tokens_does_not_see_another_tenants_tokens(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str, other_tenant_id: str
+) -> None:
+    """XEDGE-503: every new query path needs a cross-tenant-leak test."""
+    await fleet_registry.create_join_token(fleet_default_tenant_id, "dev1", ttl_seconds=3600)
+
+    assert await fleet_registry.list_join_tokens(other_tenant_id) == []
+    assert len(await fleet_registry.list_join_tokens(fleet_default_tenant_id)) == 1
+
+
+async def test_revoke_join_token_sets_revoked_at_and_revoked_by(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
+) -> None:
+    await fleet_registry.create_join_token(fleet_default_tenant_id, "dev1", ttl_seconds=3600)
+    token_id = (await fleet_registry.list_join_tokens(fleet_default_tenant_id))[0].id
+
+    revoked = await fleet_registry.revoke_join_token(fleet_default_tenant_id, token_id, "alice")
+
+    assert revoked is True
+    record = (await fleet_registry.list_join_tokens(fleet_default_tenant_id))[0]
+    assert record.revoked_by == "alice"
+    assert record.revoked_at is not None
+    assert record.status == "revoked"
+
+
+async def test_revoke_join_token_is_idempotent(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
+) -> None:
+    await fleet_registry.create_join_token(fleet_default_tenant_id, "dev1", ttl_seconds=3600)
+    token_id = (await fleet_registry.list_join_tokens(fleet_default_tenant_id))[0].id
+
+    assert (
+        await fleet_registry.revoke_join_token(fleet_default_tenant_id, token_id, "alice") is True
+    )
+    assert await fleet_registry.revoke_join_token(fleet_default_tenant_id, token_id, "bob") is True
+    record = (await fleet_registry.list_join_tokens(fleet_default_tenant_id))[0]
+    assert record.revoked_by == "bob"
+
+
+async def test_revoke_join_token_for_unknown_token_returns_false(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
+) -> None:
+    revoked = await fleet_registry.revoke_join_token(fleet_default_tenant_id, "not-a-hash", "alice")
+    assert revoked is False
+
+
+async def test_revoke_join_token_for_a_token_in_another_tenant_returns_false(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str, other_tenant_id: str
+) -> None:
+    """XEDGE-503: an operator in tenant B must not be able to revoke a
+    token that belongs to tenant A."""
+    await fleet_registry.create_join_token(fleet_default_tenant_id, "dev1", ttl_seconds=3600)
+    token_id = (await fleet_registry.list_join_tokens(fleet_default_tenant_id))[0].id
+
+    revoked = await fleet_registry.revoke_join_token(other_tenant_id, token_id, "mallory")
+
+    assert revoked is False
+    record = (await fleet_registry.list_join_tokens(fleet_default_tenant_id))[0]
+    assert record.revoked_at is None
+
+
+async def test_consume_join_token_rejects_a_revoked_token(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
+) -> None:
+    token = await fleet_registry.create_join_token(
+        fleet_default_tenant_id, "dev1", ttl_seconds=3600
+    )
+    token_id = (await fleet_registry.list_join_tokens(fleet_default_tenant_id))[0].id
+    await fleet_registry.revoke_join_token(fleet_default_tenant_id, token_id, "alice")
+
+    assert await fleet_registry.consume_join_token("dev1", token) is None
+
+
+# --- device config history (Sprint P3, XEDGE-512) ---
+
+
+async def test_queue_config_appends_a_config_history_row(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
+) -> None:
+    await fleet_registry.register(
+        fleet_default_tenant_id, "dev1", None, None, heartbeat_interval_seconds=60
+    )
+
+    version = await fleet_registry.queue_config(
+        fleet_default_tenant_id, "dev1", {"schema_version": "0.1"}, "alice"
+    )
+
+    history = await fleet_registry.list_config_history(fleet_default_tenant_id, "dev1")
+    assert len(history) == 1
+    assert history[0].config_version == version
+    assert history[0].config == {"schema_version": "0.1"}
+    assert history[0].pushed_by == "alice"
+    assert history[0].applied_at is None
+    assert history[0].apply_success is None
+
+
+async def test_list_config_history_is_ordered_newest_version_first(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
+) -> None:
+    await fleet_registry.register(
+        fleet_default_tenant_id, "dev1", None, None, heartbeat_interval_seconds=60
+    )
+    await fleet_registry.queue_config(fleet_default_tenant_id, "dev1", {"n": 1}, "alice")
+    await fleet_registry.queue_config(fleet_default_tenant_id, "dev1", {"n": 2}, "alice")
+
+    history = await fleet_registry.list_config_history(fleet_default_tenant_id, "dev1")
+
+    assert [h.config_version for h in history] == [2, 1]
+
+
+async def test_heartbeat_reporting_apply_success_updates_the_matching_history_row(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
+) -> None:
+    await fleet_registry.register(
+        fleet_default_tenant_id, "dev1", None, None, heartbeat_interval_seconds=60
+    )
+    version = await fleet_registry.queue_config(
+        fleet_default_tenant_id, "dev1", {"schema_version": "0.1"}, "alice"
+    )
+
+    await fleet_registry.heartbeat(
+        "dev1", None, None, None, {"version": version, "success": True, "error": None}
+    )
+
+    history = await fleet_registry.list_config_history(fleet_default_tenant_id, "dev1")
+    assert history[0].applied_at is not None
+    assert history[0].apply_success is True
+    assert history[0].apply_error is None
+
+
+async def test_heartbeat_reporting_apply_failure_records_the_error(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
+) -> None:
+    await fleet_registry.register(
+        fleet_default_tenant_id, "dev1", None, None, heartbeat_interval_seconds=60
+    )
+    version = await fleet_registry.queue_config(
+        fleet_default_tenant_id, "dev1", {"bad": True}, "alice"
+    )
+
+    await fleet_registry.heartbeat(
+        "dev1", None, None, None, {"version": version, "success": False, "error": "boom"}
+    )
+
+    history = await fleet_registry.list_config_history(fleet_default_tenant_id, "dev1")
+    assert history[0].apply_success is False
+    assert history[0].apply_error == "boom"
+
+
+async def test_heartbeat_reporting_an_unknown_version_does_not_raise(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
+) -> None:
+    """A version this device never had pushed (e.g. a stale report after
+    a fresh re-registration) has no matching history row -- silently a
+    no-op, not an error."""
+    await fleet_registry.register(
+        fleet_default_tenant_id, "dev1", None, None, heartbeat_interval_seconds=60
+    )
+
+    await fleet_registry.heartbeat(
+        "dev1", None, None, None, {"version": 999, "success": True, "error": None}
+    )
+
+
+async def test_list_config_history_does_not_see_another_tenants_device(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str, other_tenant_id: str
+) -> None:
+    """XEDGE-503: every new query path needs a cross-tenant-leak test."""
+    await fleet_registry.register(
+        fleet_default_tenant_id, "dev1", None, None, heartbeat_interval_seconds=60
+    )
+    await fleet_registry.queue_config(fleet_default_tenant_id, "dev1", {"n": 1}, "alice")
+
+    assert await fleet_registry.list_config_history(other_tenant_id, "dev1") == []
+
+
+# --- device certificate history (Sprint P3, XEDGE-512) ---
+
+
+async def test_record_certificate_issued_appends_a_certificate_history_row(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
+) -> None:
+    await fleet_registry.register(
+        fleet_default_tenant_id, "dev1", None, None, heartbeat_interval_seconds=60
+    )
+    not_before = datetime.now(UTC)
+    not_after = not_before + timedelta(days=90)
+
+    await fleet_registry.record_certificate_issued(
+        "dev1", 111, not_before, not_after, reason="enrollment"
+    )
+
+    history = await fleet_registry.list_certificate_history(fleet_default_tenant_id, "dev1")
+    assert len(history) == 1
+    assert history[0].serial_number == "111"
+    assert history[0].reason == "enrollment"
+
+
+async def test_list_certificate_history_includes_both_enrollment_and_rotation(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
+) -> None:
+    await fleet_registry.register(
+        fleet_default_tenant_id, "dev1", None, None, heartbeat_interval_seconds=60
+    )
+    now = datetime.now(UTC)
+    await fleet_registry.record_certificate_issued(
+        "dev1", 111, now, now + timedelta(days=90), reason="enrollment"
+    )
+    await fleet_registry.record_certificate_issued(
+        "dev1", 222, now, now + timedelta(days=90), reason="rotation"
+    )
+
+    history = await fleet_registry.list_certificate_history(fleet_default_tenant_id, "dev1")
+
+    assert [h.reason for h in history] == ["rotation", "enrollment"]
+
+
+async def test_list_certificate_history_does_not_see_another_tenants_device(
+    fleet_registry: DeviceRegistry, fleet_default_tenant_id: str, other_tenant_id: str
+) -> None:
+    """XEDGE-503: every new query path needs a cross-tenant-leak test."""
+    await fleet_registry.register(
+        fleet_default_tenant_id, "dev1", None, None, heartbeat_interval_seconds=60
+    )
+    now = datetime.now(UTC)
+    await fleet_registry.record_certificate_issued(
+        "dev1", 111, now, now + timedelta(days=90), reason="enrollment"
+    )
+
+    assert await fleet_registry.list_certificate_history(other_tenant_id, "dev1") == []
