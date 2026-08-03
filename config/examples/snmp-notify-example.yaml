@@ -1,0 +1,61 @@
+# SNMP TRAP/INFORM Originator (Sprint C8, XEDGE-483): wired to the Alarm
+# Engine, sends one notification per alarm raise or clear -- same ack/
+# shelve suppression rules as smtp.alarm_notifications (see that section's
+# own example for the reasoning, identical here).
+#
+# notify_type: trap is fire-and-forget UDP (RFC 1905) -- a successful send
+# only ever confirms the packet left this device, never that the NMS
+# actually received it. Use notify_type: inform (a confirmed round trip)
+# for any destination where that distinction matters.
+schema_version: "0.1"
+
+data_dir: /data
+
+logging:
+  level: INFO
+
+watchdog:
+  enabled: true
+  interval_seconds: 15
+
+drivers: []
+
+alarms:
+  enabled: true
+  rules:
+    - tag_id: modbus_01/temperature
+      high: 80.0
+      high_high: 95.0
+
+snmp_notify:
+  enabled: true
+  destinations:
+    - host: 192.168.1.200 # customer's NMS
+      port: 162
+      version: v2c
+      community: "${SECRET:snmp_notify_nms_community}"
+      notify_type: inform # confirmed delivery to the primary NMS
+    - host: 192.168.1.201 # a secondary logging collector
+      port: 162
+      version: v3
+      v3_username: xedge-notify
+      v3_auth_protocol: sha256
+      v3_auth_password: "${SECRET:snmp_notify_v3_auth_password}"
+      v3_priv_protocol: aes128
+      v3_priv_password: "${SECRET:snmp_notify_v3_priv_password}"
+      notify_type: trap # fire-and-forget is acceptable for this destination
+
+store:
+  ram_max_depth: 10000
+  retention_duration_seconds: 604800 # 7 days
+  purge_interval_seconds: 3600
+
+config_management:
+  hot_reload_enabled: true
+  poll_interval_seconds: 2.0
+  max_versions: 10
+
+api:
+  enabled: true
+  host: 127.0.0.1
+  port: 8080

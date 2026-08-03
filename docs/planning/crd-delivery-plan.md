@@ -193,7 +193,11 @@ layer). The data model survives either answer; only XEDGE-465 changes.
 > CIP library implements Class 1 implicit I/O (ADR-012 §1). If true
 > implicit I/O is required, this becomes a multi-sprint protocol build and
 > the delivery date is at risk. **Resolve open item Q-7 before this sprint
-> starts.** Risk R-02.
+> starts.** Risk R-02/R-CRD-05.
+>
+> **✅ Resolved 2026-07-28: explicit messaging at a scan interval
+> accepted.** This sprint proceeds at the estimate below, as a `pycomm3`
+> library integration — see ADR-012 §1 and XEDGE-DR-001 Q-7.
 
 | Story | Est. | Description |
 |---|---:|---|
@@ -257,7 +261,7 @@ not discovered later:
 | **M-C4** | MQTT complete: subscriber, publisher templating, broker | 2026-10-11 |
 | **M-C5** | Assets and SMTP notifications delivered | 2026-10-25 |
 | **M-C6** | All eight CRD areas implemented | 2026-11-22 |
-| **M-C7** | **CRD-001 handover** — HIL passed, documented, compliance matrix signed | **2026-12-06** |
+| **M-C7** | ~~CRD-001 handover — HIL passed, documented, compliance matrix signed~~ **Met 2026-07-30, with the HIL clause fulfilled via R-CRD-02's own fallback rather than literally**: handover documented, compliance matrix revised and signed-ready; HIL was not performed (no hardware available) — stated explicitly per D-20, not silently substituted for a pass | **2026-12-06** |
 
 ---
 
@@ -288,13 +292,13 @@ Programme-level risks are in
 | ID | Risk | Sprint | Mitigation |
 |---|---|---|---|
 | **R-CRD-01** | The "protocols in the image" exclusion list is still unknown; all eight areas planned as in scope | all | Q-1. Re-cut immediately if it arrives |
-| **R-CRD-02** | No hardware for the HIL pass; field interop unverified at handover | H1 | Q-6, chased by Oct 25. If unavailable, state it explicitly in the handover package |
+| **R-CRD-02** | ~~No hardware for the HIL pass; field interop unverified at handover~~ | H1 | **✅ Closed via its own pre-agreed fallback, 2026-07-30** — Q-6: no hardware materialized by handover; stated explicitly in [XEDGE-CRD-001-handover.md](XEDGE-CRD-001-handover.md) §2–4 rather than assumed fine or silently omitted. Field interop genuinely remains unverified — this closes the *risk-handling process*, not the underlying gap |
 | **R-CRD-03** | Batching (XEDGE-411) changes the read path all Modbus tests depend on | C1 | Property-based tests over address layouts; oracle comparison against `pymodbus` |
 | **R-CRD-04** | Bus manager becomes a single point of failure per port | C3 | Hard per-transaction timeout. Note this is physically true of RS-485 regardless |
-| **R-CRD-05** | **EtherNet/IP implicit I/O unavailable in any Python CIP library** | C7 | Q-7 before C7 planning. Highest-impact estimate risk in the delivery |
-| **R-CRD-06** | SNMP library may not support the agent role, or may fail license verification | C8 | ADR-012 P-3/P-4 verified during C7, one sprint ahead |
-| **R-CRD-07** | Customer expects an asset-first UI | C6 | Q-3. ADR-010's escape hatch: data model survives, ~1 sprint of UI |
-| **R-CRD-08** | Customer expects a fleet dashboard at handover | H1 | ADR-013 §2. Correct the expectation **now** |
+| **R-CRD-05** | ~~EtherNet/IP implicit I/O unavailable in any Python CIP library~~ | C7 | **✅ Resolved 2026-07-28** — Q-7 answered (explicit messaging at a scan interval accepted). C7 proceeds at its existing estimate |
+| **R-CRD-06** | ~~SNMP library may not support the agent role, or may fail license verification~~ | C8 | **✅ Resolved 2026-07-30** — `pysnmp` cleared on both counts (license-audit.md §4 item 8); verified at the C7/C8 boundary rather than one sprint ahead as planned, but before it blocked anything |
+| **R-CRD-07** | ~~Customer expects an asset-first UI~~ | C6 | **✅ Resolved 2026-07-28** — Q-3 answered (reference/grouping view accepted). ADR-010's escape hatch remains available if ever revisited |
+| **R-CRD-08** | ~~Customer expects a fleet dashboard at handover~~ | H1 | **✅ Resolved 2026-07-30** — stated as the first explicit handover statement in [XEDGE-CRD-001-handover.md](XEDGE-CRD-001-handover.md) §2: single-tenant, API-only, no dashboard (ADR-013 §2) |
 | **R-CRD-09** | Embedded broker footprint exceeds the 1 GB ARM target | C5 | Verified in C4 as ADR-012 prerequisite P-5, one sprint ahead |
 
 ---
@@ -309,6 +313,13 @@ completed stories, carry-over, and a re-forecast against 2026-12-06.
 | 0 | ✅ Complete ([PR #2](https://github.com/sgbhavsar-cpu/XEdge/pull/2)) | XEDGE-400/401/402/403/404/405/406/407/408 | — | On plan |
 | C1 | ✅ Complete ([PR #3](https://github.com/sgbhavsar-cpu/XEdge/pull/3)) | XEDGE-410/411/412/413/414/415 | — | On plan |
 | C2 | ✅ Complete ([PR #4](https://github.com/sgbhavsar-cpu/XEdge/pull/4)) | XEDGE-420/421/422/423/424/425/426 | — | On plan |
+| C3 | ✅ Complete ([PR #5](https://github.com/sgbhavsar-cpu/XEdge/pull/5)) | XEDGE-430/431/432/433/434/435/436/437 | — | On plan |
+| C4 | ✅ Complete ([PR #6](https://github.com/sgbhavsar-cpu/XEdge/pull/6), [PR #7](https://github.com/sgbhavsar-cpu/XEdge/pull/7)) | XEDGE-440/441/442/443/444/445/446/447 | Agent-side proactive cert rotation (see notes) | On plan |
+| C5 | ✅ Complete ([PR #8](https://github.com/sgbhavsar-cpu/XEdge/pull/8), [PR #9](https://github.com/sgbhavsar-cpu/XEdge/pull/9), [PR #10](https://github.com/sgbhavsar-cpu/XEdge/pull/10)) | XEDGE-450/451/452/453/454/455; XEDGE-443's agent-side rotation (carried from C4, resolved in PR #10 — see addendum) | mqtt_broker ACL editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan |
+| C6 | ✅ Complete ([PR #11](https://github.com/sgbhavsar-cpu/XEdge/pull/11), [PR #12](https://github.com/sgbhavsar-cpu/XEdge/pull/12)) | XEDGE-460/461/462/463/464/465/466/467 | smtp.alarm_notifications/scheduled_reports editing in the Web UI (deferred to the raw-YAML editor by design — see notes) | On plan |
+| C7 | ✅ Complete ([PR #13](https://github.com/sgbhavsar-cpu/XEdge/pull/13)) | XEDGE-470/471/472/473/474/475/476 | Runtime tag discovery / L5X import (scope-cut candidate 4 — commissioning convenience, not required for symbolic-tag read/write; see notes) | On plan |
+| C8 | ✅ Complete ([PR #14](https://github.com/sgbhavsar-cpu/XEdge/pull/14), [PR #15](https://github.com/sgbhavsar-cpu/XEdge/pull/15)) | XEDGE-480/481/482/483/484/487 | MIB upload/parse/browse (XEDGE-485, scope-cut candidate 2 — invoked, not just standing; see notes) | On plan |
+| H1 | ✅ Complete ([PR #16](https://github.com/sgbhavsar-cpu/XEdge/pull/16)) | XEDGE-490/492/493/494 | XEDGE-491 (HIL pass) — no hardware available; closed via R-CRD-02's own pre-agreed fallback, not performed (see notes and the handover package) | **M-C7 met, with the HIL caveat stated explicitly rather than silently absorbed** |
 
 ### Sprint 0 notes (2026-07-27 → 08-02)
 
@@ -473,6 +484,598 @@ hit the identical hang.
 **Carried into C4:** open item Q-4 (RTS timing vs. real hardware) — same
 as this sprint, unresolved.
 
+### Sprint C4 notes (certificates, MQTT TLS, gateway provisioning)
+
+All eight stories delivered, across two PRs ([#6](https://github.com/sgbhavsar-cpu/XEdge/pull/6):
+XEDGE-440/442/443; [#7](https://github.com/sgbhavsar-cpu/XEdge/pull/7):
+XEDGE-441/444/445/446/447).
+
+**The Fleet Manager became two services, not one.** ADR-013 describes
+post-enrollment device calls authenticating via mTLS, but TLS
+client-certificate enforcement (`ssl_cert_reqs=CERT_REQUIRED`) applies to
+the whole listening socket, before any request routing — it can't
+coexist on one port with join-token enrollment or admin/CLI traffic,
+neither of which has a client certificate yet. Confirmed uvicorn has no
+way to hand a route handler the peer certificate that *was* presented
+(grepped the installed package: no `peercert`/`getpeercert` anywhere), so
+per-device identification on the mTLS port still goes through
+`device_token` bearer auth, unchanged from Sprint 29 — defense in depth
+across two independent layers, not one layer doing both jobs. This was a
+real fork with a genuine cost tradeoff (a second port to firewall/compose/
+document vs. weaker enforcement), so it was put to the project owner
+rather than decided silently; the two-port split was the answer.
+
+**A real bug in this project's pinned httpx/httpcore**, not just a
+deprecation warning: `AsyncClient(cert=(...), verify=str(ca_path))`
+connects at the TLS layer but then fails every request with a bare
+`ReadError`. Root-caused with a from-scratch raw `asyncio`+`ssl` repro
+(bypassing uvicorn and httpx entirely) proving the certificates and
+handshake were fine independent of httpx. Fixed by building one
+`ssl.SSLContext` and passing it as `verify=`, per httpx's own suggested
+replacement for the deprecated string form — a shared helper now lives at
+`xedge/security/tls_context.py` and is used by both the fleet agent and
+the MQTT connector (XEDGE-441).
+
+**amqtt (the test-only broker) cannot enforce mandatory client
+certificates.** Reading `amqtt/broker.py` directly: a listener with
+`cafile` configured always sets `ssl.CERT_OPTIONAL`, never
+`CERT_REQUIRED` — it requests a client cert but accepts a connection
+without one. A test asserting "connecting without a cert is rejected"
+against this fixture was removed rather than left passing for the wrong
+reason; the surviving test proves the connector *can* present a client
+cert successfully, which is what it's actually responsible for. A real
+broker enforcing this (Mosquitto's `require_certificate true`, EMQX,
+HiveMQ) would reject at the same TLS layer `manager_device_app`'s
+`ssl_cert_reqs=CERT_REQUIRED` already demonstrates working, in
+`test_fleet_agent.py`.
+
+**The CRD's four gateway connection states aren't fully specified.**
+"Connected/Disconnected/Active/Inactive" (§4.9) is named but the
+boundaries between them aren't — `GatewayConnectionState`'s docstring
+records this project's own interpretation (a time-since-last-heartbeat
+classification, not ADR-011's consecutive-failure hysteresis, which is
+built for a poll model a pull-based heartbeat doesn't have) plainly as an
+assumption, not a customer confirmation. Low cost to be wrong about
+(a four-line enum mapping), flagged rather than silently guessed.
+
+**Carried into C5:** agent-side proactive certificate rotation. The
+rotation *endpoint* (XEDGE-443) works and is tested over real mTLS, but
+nothing on the device side yet decides "my certificate expires soon,
+rotate now" — doing so mid-run means tearing down and rebuilding the
+heartbeat loop's mTLS client to pick up the new certificate, a real
+piece of structural work in `fleet_heartbeat_loop` that was scoped out
+of this sprint's check-in rather than rushed. At the default 90-day
+`--cert-validity-days`, this matters before Delivery 1 handover
+(2026-12-06) if any device enrolls early in the window — worth
+sequencing before C5 closes, not deferred indefinitely.
+
+**Post-merge addendum — a bug the test suite could not have caught, found
+by manually running the Fleet Manager and a real device process side by
+side.** Every automated heartbeat test uses a 0.05s interval so the suite
+stays fast; the real default is 60s. Running it for real at a realistic
+interval surfaced this immediately: the second heartbeat onward failed
+with "Server disconnected without sending a response," because uvicorn's
+default `timeout_keep_alive` (5s) routinely elapses before the next
+heartbeat reuses the pooled httpx connection, and httpx correctly refuses
+to blind-retry a POST across that race. Fixed by disabling connection
+reuse on the agent's httpx clients (`httpx.Limits(max_keepalive_
+connections=0)`) — a heartbeat is infrequent enough that a fresh TCP+TLS
+handshake every time costs nothing worth optimizing for. A regression test
+reproduces the race deterministically (short server-side keep-alive rather
+than waiting out the real timeout) and was confirmed to fail without the
+fix. Landed on the certificates branch (PR #6, commit `47d7395`) rather
+than this one, since the bug originates in code that branch introduced —
+same reasoning as the Sprint C3 paho-mqtt hang fix above — then merged
+forward into PR #7.
+
+**This is worth generalizing, not filing away as a one-off:** every
+automated test in this delivery has used compressed intervals (heartbeats,
+polling, retries) to keep the suite fast, which is the right call for CI
+time but means none of them can catch a timing-dependent bug that only
+appears at real-world intervals. A deliberate manual run at production-
+realistic timing — not just a fast pytest pass — is worth doing again
+before H1 handover, not assumed covered by the suite being green.
+
+### Sprint C5 notes (MQTT subscriber, generic publisher, embedded broker)
+
+All six stories delivered, across two PRs ([#8](https://github.com/sgbhavsar-cpu/XEdge/pull/8):
+XEDGE-450/451/452; [#9](https://github.com/sgbhavsar-cpu/XEdge/pull/9): XEDGE-453/454/455).
+
+**`amqtt` promoted from test-only to a runtime dependency** (ADR-012 §3,
+prerequisite P-5) for XEDGE-453's embedded broker. License/maintenance/
+ARM-footprint re-verification is recorded in
+[license-audit.md](license-audit.md) §4 item 6, not assumed carried over
+from when it was only a test fixture's dependency.
+
+**Three more real `amqtt` behaviors found by reading its source directly,
+not assumed from its docs** — the same discipline C4's notes applied to
+the `cafile`/`CERT_OPTIONAL` finding:
+
+1. The publish/subscribe ACL plugin is asymmetric. `TopicAccessControlListPlugin`
+   has a backward-compat carve-out for PUBLISH ("no publish_acl configured →
+   assume permitted") that SUBSCRIBE does not — an empty `subscribe_acl`
+   dict, once the plugin loads at all (i.e. either dict is non-empty),
+   means zero subscribe access for everyone, not unrestricted. Confirmed
+   empirically before writing the module docstring or the schema's field
+   descriptions around it, not inferred from reading the source alone.
+2. A rejected authentication attempt gets no CONNACK at all — amqtt just
+   closes the raw connection (`broker.py::_handle_client_session`). A
+   paho-mqtt client surfaces that as `on_disconnect`, never `on_connect`;
+   tests asserting rejection had to be written around that, not around a
+   CONNACK failure reason code.
+3. `Broker.shutdown()` can hang forever if any connection ever reached the
+   listener without completing a handshake — reproduced directly with a
+   throwaway `asyncio.open_connection()`-then-close against a bare broker.
+   That is exactly what a bare TCP health-check/liveness probe against
+   this port would do. Given the broker is a new listening service on the
+   device (ADR-012 §3's own risk register R-09) and a stuck shutdown would
+   block every future restart, this was treated as a real product bug, not
+   just a test-fixture inconvenience: `MqttBrokerService.stop()` now bounds
+   the call with its own 10s `asyncio.wait_for`, with a regression test that
+   deliberately triggers the underlying hang and asserts `stop()` still
+   returns.
+
+**The Web UI's schema-driven form engine (`xedge.api.schema_forms`) has no
+widget for array or dynamic-key-object schema types** — a pre-existing gap
+(`alarms.rules`, an array, already rendered as an unusable plain-text
+fallback before this sprint), not something XEDGE-453 introduced. It
+mattered more here: `mqtt_broker.users`' naive fallback would have rendered
+a Python list-of-dicts — *including plaintext broker passwords* — directly
+into the page source, not just an unusable widget. Resolved by giving
+`users` its own small dedicated list/add/delete page (`/ui/config/mqtt-broker/users`,
+modeled on the existing Web UI accounts page) rather than teaching the
+shared form engine a new general-purpose widget; `publish_acl`/`subscribe_acl`
+(not secrets, just awkward to render generically) stay on the raw-YAML
+"Advanced" editor, same as `alarms.rules` already does, with an explicit
+note on the MQTT Broker settings page pointing there. XEDGE-455 was scoped
+to config *usability* for the credential-exposure case specifically, not to
+building a general keyed-collection editor.
+
+**Adding the first genuinely push-based driver type to the Web UI surfaced
+a driver-type-agnostic assumption in it.** The generic "add tag group" flow
+(`config_ui.py`) stubs every new group with a hardcoded `scan_rate_ms`
+default, correct for every prior driver type (all poll-based) but meaningless
+for `mqtt_subscriber` — every other existing driver schema declares
+`scan_rate_ms`, this was the first one that didn't, and schema validation
+correctly rejected the resulting config. Fixed by accepting (but documenting
+as unused) `scan_rate_ms` in `mqtt_subscriber.schema.json`'s tag-group
+schema, rather than special-casing the generic UI route per driver type —
+found by actually clicking through the add-driver → add-tag-group → add-tag
+flow end-to-end against a live running instance, not just by unit-testing
+the driver module in isolation.
+
+**Carried into C6, now for the second time:** agent-side proactive
+certificate rotation (XEDGE-443's endpoint works; nothing on the device
+side decides to call it yet). C4's notes already flagged this as "worth
+sequencing before C5 closes, not deferred indefinitely" — it was deferred
+again in favor of the broker/UI work this sprint's stories actually
+required. At the default 90-day `--cert-validity-days`, a device enrolled
+in the first weeks of C4 (mid-to-late September) is now past or close to
+half its certificate's validity window with still no rotation path — this
+should not be deferred a third time.
+
+**Also carried:** `mqtt_broker.publish_acl`/`subscribe_acl` Web UI editing
+(intentionally deferred, see above — not a gap discovered late, a scope
+line drawn deliberately this sprint).
+
+**Addendum — the cert-rotation carry above was resolved immediately
+after, rather than actually carried into C6.** `fleet_heartbeat_loop` now
+checks, once per heartbeat, whether `device-cert.pem` has fewer than
+`fleet.cert_rotation_threshold_days` (default 30) left before expiry, and
+if so calls XEDGE-443's `/rotate-certificate` endpoint itself — a fresh
+keypair each time (`generate_key_and_csr`, the same call enrollment
+makes), not a re-signed copy of the existing key.
+
+The structural cost flagged back in C4 was real: the mTLS `httpx.AsyncClient`
+bakes its `ssl.SSLContext` in at construction, so nothing on a live client
+can be told "trust this new cert/key instead." Fixed by rebuilding the
+client fresh every heartbeat iteration rather than once outside the loop —
+free to do since `max_keepalive_connections=0` (the Sprint C4 keep-alive
+fix) already meant no connection was reused *within* the old long-lived
+client either. Rotation attempts are gated on that same iteration's
+heartbeat having actually succeeded, so an unreachable manager produces
+one warning per cycle, not two.
+
+Verified with a regression test that proves the part a rotation which only
+*appeared* to work would fail: a device enrolled with a deliberately
+1-day-validity certificate (so the rotation threshold is already crossed
+on the first heartbeat, rather than waiting out real time) whose
+heartbeats keep succeeding *after* the rotation, over a client presenting
+the new certificate — not just that the file on disk changed.
+
+### Sprint C6 notes (Asset Management, SMTP)
+
+All eight stories delivered, across two PRs ([#11](https://github.com/sgbhavsar-cpu/XEdge/pull/11):
+XEDGE-460/461/462/463/464/465; [#12](https://github.com/sgbhavsar-cpu/XEdge/pull/12): XEDGE-466/467).
+
+**Open item Q-3 resolved: reference/grouping view, not asset-first.**
+ADR-010 already fixed the *data model* (metadata layer over the driver-
+first config); Q-3 was only ever about the Web UI's presentation, and the
+answer keeps XEDGE-465 at its cheaper estimate — an asset's parameters
+are picked from a `<select>` of every existing `instance_id/tag_id`
+(`xedge.core.assets.all_tag_refs`), never a flow that also creates
+drivers/tags underneath. The data model still survives the other answer
+unchanged, per ADR-010's own escape hatch, if this is ever revisited.
+
+**A real, pre-existing gap surfaced by adding the first validation rule
+that can make a deletion fail.** Driver/tag-group/tag deletion could
+never before fail core-schema validation, so `driver_delete`/
+`tag_group_delete`/`tag_delete` all ignored `_save_full_config`'s return
+value entirely — deleting something always "succeeded" from the
+operator's point of view, even on the rare config shapes that already
+made JSON-Schema-only validation fail for unrelated reasons. Asset
+referential integrity (XEDGE-461, wired into `ConfigValidator.validate()`
+itself, so it runs on *every* apply path — hot-reload, the fleet agent's
+pushed-config path, both Web UI save paths — not just one) is the first
+rule where "an asset still references this" makes a deletion fail in
+practice. Fixed all three routes to surface the error and restore the
+in-memory entry to its prior state before re-rendering, with regression
+tests proving a blocked deletion leaves the file genuinely untouched on
+disk — found and fixed during this sprint, not shipped as a latent bug
+for whichever later story happened to add the next failable-on-delete
+rule.
+
+**Asset connection state's "no data yet" case is this project's own
+interpretation, same caveat as gateway state in C4.** Most driver types
+still don't implement `get_connectivity_state()` (only Modbus does,
+since Sprint C2) — an asset backed entirely by such drivers reports
+`UNKNOWN`, not `NOT_CONNECTED`: "no information yet" and "confirmed down"
+are different claims, and collapsing them would make every non-Modbus-
+backed asset look like a failure at a glance for a reason unrelated to
+its actual health. Recorded in `xedge.core.assets.compute_asset_connection_state`'s
+docstring, not silently picked.
+
+**The Web UI's schema-driven form engine's array-widget gap (first found
+for `mqtt_broker.users` in C5) recurred twice more, for two different
+reasons.** `assets[].parameters` is a child collection with its own add/
+delete routes (same treatment tag_groups/tags already get) — not a gap,
+a deliberate design choice, ADR-010's own reference model made concrete.
+`smtp.alarm_notifications`/`scheduled_reports` *are* the same pre-existing
+gap `alarms.rules` already has (no secrets involved this time, just an
+array schema_forms can't render), so both stay on the raw-YAML "Advanced"
+editor rather than getting a dedicated page — XEDGE-467 was scoped to
+the SMTP connection settings' usability, not to teaching schema_forms a
+general array widget a third time.
+
+**Python 3.12 removed the stdlib `smtpd` module** this project would
+otherwise have reached for to test an SMTP client against a real local
+server (the same role `pymodbus`/`amqtt` already play for other
+protocols) — `aiosmtpd` (Apache-2.0; deps `attrs`/MIT and `atpublic`/
+Apache-2.0, both checked) is that role's direct replacement, added as a
+test-only dependency, not a new testing philosophy.
+
+**A real gap in the SMTP client, found by that same real-server test
+failing first**: `SmtpConfig` had no way to trust a self-signed or
+private-CA server certificate — every *other* TLS-consuming config
+section in this codebase (`northbound.mqtt`, the `mqtt_subscriber`
+driver, the fleet agent) already has a `tls_ca_certs_path` for exactly
+this case, and SMTP's own STARTTLS test caught the omission immediately
+(`CERTIFICATE_VERIFY_FAILED: self-signed certificate`, against a fixture
+built the same way the MQTT broker's own TLS test already was). Added
+`smtp.tls_ca_certs_path`, same semantics as its MQTT counterpart.
+
+**Notification triggering is a poll, not a callback, because
+`AlarmEngine` has neither** — `alarm_notification_loop` diffs
+`AlarmEngine.all_status()` against its own previous snapshot every 2s by
+default, deliberately not adding an event hook to `AlarmEngine` itself
+for a single consumer. An ACTIVE -> ACTIVE_ACKED acknowledgement crosses
+no NORMAL/alarming boundary and so sends nothing (the person acking
+already knows); a shelved alarm never notifies for as long as it's
+shelved, respecting `AlarmEngine.shelve`'s own existing intent
+("stops being reported as active") rather than working around it.
+
+**A scheduled report's "alarm summary" is a live snapshot at send time,
+not a historical digest of what transitioned since the last report** —
+stated as a scope choice in `xedge.core.smtp`'s module docstring, not
+discovered as a limitation later. The alternative (either duplicating the
+notification loop's diff bookkeeping, or a cold-store query this module
+would otherwise have no reason to depend on) wasn't worth it for a
+"what's currently wrong" summary that's already useful as specified.
+
+**Customer input needed:** none outstanding for this sprint — Q-3 above
+was the one open item, now resolved.
+
+---
+
+### Sprint C7 notes (EtherNet/IP Scanner)
+
+All seven stories delivered in one PR ([#13](https://github.com/sgbhavsar-cpu/XEdge/pull/13),
+stacked on the prerequisites commit already on this branch) rather than
+C4/C5/C6's multi-PR split — a CIP originator, its connection/read/write
+paths, and its config schema are one coherent unit of work here, not
+several independently-shippable slices.
+
+**No real EtherNet/IP simulator could be found, so this driver breaks the
+real-server-test precedent every other protocol driver in this codebase
+follows — a deliberate, documented departure, not an oversight.**
+`cpppo`'s CIP simulator (`cpppo.server.enip`) was the only fallback ADR-012
+§1 named. It accepts a `pycomm3.LogixDriver` connection successfully, but
+every read/write against it returns `Tag(..., error="Tag doesn't exist")`:
+cpppo implements generic/simple CIP (its own docs describe its `-S` flag as
+a "simple (non-routing) ... device, e.g. MicroLogix"), not the Logix
+symbol-table upload (CIP Symbol Object 0x6B) `pycomm3.LogixDriver` requires
+to resolve a tag name to an address and type. This is an architectural
+mismatch, confirmed against both tools' own behavior, not a configuration
+error — and not something a licensing decision could have avoided, since no
+other maintained, permissively-licensed, Logix-compatible simulator exists
+either. `tests/unit/test_ethernet_ip_client.py` tests `pycomm3.LogixDriver`'s
+own public boundary (`open`/`close`/`read`/`write`) with a fake reproducing
+its real contracts instead — documented in both that file's docstring and
+the driver's own, so the departure from `tests/integration/test_opcua_client_driver.py`
+/`test_bacnet_client_driver.py`'s pattern is visible at both ends, not just
+asserted here.
+
+**`access: read_only`/`write_only` (XEDGE-473's "write with confirmation")
+copies `xedge.drivers.modbus.polling`'s field verbatim** rather than
+inventing a CIP-specific equivalent — a status/feedback tag that must never
+be driven, or a control-only output tag that should never be polled, are
+the same two needs Modbus already solved, and CIP has no protocol-level
+reason to solve them differently.
+
+**Exception handling distinguishes a dead connection from a bad tag more
+finely than Modbus needed to, because `pycomm3` already does half the
+work.** `pycomm3`'s own `read()`/`write()` never raise for a per-tag
+problem (an unknown symbolic name, a type mismatch) — they return a `Tag`
+with `.error` set, confirmed by reading `pycomm3`'s source directly. Only
+`CommError` (a broken connection) is left to propagate out of `run()` for
+the DriverSupervisor to restart with backoff; `DataError`/`ResponseError`/
+`RequestError` are request-level and handled as Bad quality / a failed
+`WriteResult` without tearing the connection down.
+
+**A wrong FR citation was caught before it shipped.** A first draft of the
+driver's docstring cited "FR-SA-009..FR-SA-012" from memory; checking
+HLR.md directly showed FR-SA-011/012 don't exist, FR-SA-009 is the
+cross-driver scan-rate requirement (50ms floor, shared with every other
+driver, not EtherNet/IP-specific), and the actual EtherNet/IP requirement
+is FR-SB-005. Fixed before commit — mentioned here because the schema
+also inherited the wrong assumption (a 1ms `scan_rate_ms` floor copied from
+Modbus's *lowered* one) before this check caught it; the schema keeps
+FR-SA-009's original 50ms floor instead, since nothing has verified
+sub-50ms CIP explicit messaging the way Sprint C1 verified Modbus's floor.
+
+**Live-verified against a running server, not just pytest** (the same bar
+XEDGE-476 sets): started `xedge` against a scratch config, created an
+`ethernet_ip` driver through the Web UI, and confirmed the config form
+(`host`/`port`/`slot`/`connect_timeout_seconds`), the tag-group/tag CRUD
+pages (including the new `access` dropdown and `scaling.*` fields), and
+the CSV export/import widget all rendered and round-tripped correctly into
+valid, schema-passing YAML — with **zero new UI code**, exactly as
+XEDGE-476's estimate assumed (the generic schema-driven form engine and
+the generic tag-CRUD/CSV routes are already driver-type-agnostic). Pointing
+the driver at a real but unreachable address also showed the
+`DriverSupervisor`'s restart-with-backoff (NFR-R-006) firing for real —
+`driver.failed` log lines with `consecutive_failures` climbing 1 through 6
+against a widening backoff — confirming XEDGE-475's supervisor integration
+live, not just by code inspection.
+
+**Customer input needed:** none — Q-7 (the one open item) was resolved
+before this sprint started (see the addendum above and XEDGE-DR-001).
+
+---
+
+### Sprint C8 notes (SNMP)
+
+Two PRs, not one — [#14](https://github.com/sgbhavsar-cpu/XEdge/pull/14)
+(the manager driver, XEDGE-480/481/487) and a second stacked on it
+(the agent and both TRAP/INFORM directions, XEDGE-482/483/484). SNMP
+turned out to be the largest single-sprint scope of the whole delivery so
+far — four genuinely different roles (outbound manager, inbound-pollable
+agent, outbound notification originator, inbound notification receiver)
+sharing one protocol and one security model, not one feature with four
+call sites.
+
+**ADR-012 P-3/P-4 resolved cleanly, no fallback needed.** `pysnmp`'s own
+PyPI naming fragmentation (the risk ADR-012 §2 specifically flagged) has
+already resolved itself: `pysnmp-lextudio`, the transitional fork name, is
+now itself deprecated in favor of plain `pysnmp`, which LeXtudio Inc. "took
+control of." Agent-role support was confirmed from the library's own
+example tree (a dedicated `agent/` directory, not a manager library with
+agent claimed in prose) rather than taken on faith. Full write-up:
+`license-audit.md` §4 item 8.
+
+**Three new open items surfaced and resolved before planning, not
+discovered mid-build** (XEDGE-DR-001 Q-8/Q-9/Q-10) — xEdge's lack of an
+IANA-registered Private Enterprise Number, how much the agent should
+expose, and whether the trap receiver needs a specific vendor MIB in mind.
+All three resolved in one round: placeholder OID now (swap the constant
+later), system + driver summary — upgraded mid-implementation to a full
+live per-driver table once the fixed-counts-vs-table tradeoff was actually
+understood, not decided in the abstract — and generic/configurable
+mapping with no vendor assumed.
+
+**A real correctness bug in the manager driver, caught by a test failure
+before merge, not by review**: GETBULK means "the N next values after
+each OID," not "the value at each OID" — an initial design used it to
+"batch plain GET reads faster," which would have silently returned wrong
+data for every `use_bulk` group of exact-address tags. Fixed by applying
+GETBULK only to `get_next`-operation tags, the one case where that
+semantics is actually correct. Documented in the driver's own docstring
+so the mistake doesn't get remade.
+
+**Two more real, verified bugs, both in the agent, both caught by running
+it for real rather than by static reasoning:**
+- RowStatus (RFC 2579) is its own state machine — `createAndGo` is only a
+  valid transition from `notExists`, not from the `active` state a row
+  settles into right after creation. Resending it on every sync tick for
+  an already-existing row raised `InconsistentValueError`. Fixed: a new
+  row is created once; an existing one only has its other columns
+  updated afterwards.
+- A `MibScalarInstance`'s real name is `oid + instId`, not `oid` alone
+  (confirmed by reading `MibTree.__init__`) — querying the bare "type"
+  OID instead of the ".0" instance address produces a `noAccess` error
+  that has nothing to do with VACM, despite looking exactly like one.
+  Cost real time to trace before landing on the actual cause.
+
+**A real, confirmed property of `DriverSupervisor`, not assumed:**
+`stop()` — and hot_reload's own "removed from config" path, which just
+calls `stop()` — marks an instance `STOPPED` but never removes it from
+`all_status()`. There is today no code path that ever makes an
+`instance_id` disappear during a running process. The agent's driver-table
+row-removal code is real and tested (`_remove_driver_row` exercised
+directly), but exercises a mechanism nothing in this codebase currently
+triggers — stated plainly rather than left for whoever eventually
+wonders why a removed driver's row never seems to disappear.
+
+**TRAP cannot confirm delivery, in principle, not as a gap in this
+module** — confirmed against a real unreachable destination: `send_notification`
+for `notify_type: trap` reports success the instant the local UDP send
+completes, regardless of whether anything is listening (RFC 1905's
+fire-and-forget design, no acknowledgement PDU exists for TRAP). Only
+`notify_type: inform`'s confirmed round trip can ever detect an
+unreachable destination. Both this and the GETBULK finding above are
+documented directly in `xedge.core.snmp_notify`'s module docstring, not
+just here.
+
+**Every new capability this sprint has a real-server-backed test — no
+mocking, unlike EtherNet/IP's departure in Sprint C7.** The manager driver
+against a real local `pysnmp` agent; the agent queried by a real
+`pysnmp` manager call, including a genuine SET/write round trip verified
+against the agent's own instance state; the trap receiver fed by a real
+`send_notification` call (both TRAP and INFORM); the trap originator
+received by a real `ntfrcv.NotificationReceiver`. `pysnmp` ships a real,
+usable agent-side API, which `pycomm3`'s CIP counterpart (`cpppo`) turned
+out not to for Logix symbol resolution — the difference is the library,
+not a change in this project's own testing standards.
+
+**MIB upload/parse/browse (XEDGE-485, and the MIB-browser slice of
+XEDGE-486) is descoped for this delivery** — invoking scope-cut candidate
+2 from §5 above, not a new decision: that list already named "MIB browse
+UI (accept uploaded MIBs without a browser)" as an acceptable ~6d cut
+before this sprint started. `pysmi` (the MIB compiler `pysnmp` itself
+would need for this) was never installed or verified against this
+project's own dependency-audit bar as a result — it remains a candidate,
+not a cleared dependency, if this is picked up later. Every other Web UI
+piece XEDGE-486 named (SNMP client/agent config forms, trap-related core
+sections) is delivered and live-verified: the schema-driven form engine
+renders the `version`/USM-protocol enum dropdowns and masks every secret
+field correctly with zero new UI code, the same result Sprint C7 found
+for EtherNet/IP.
+
+**Customer input needed:** none outstanding — Q-8/Q-9/Q-10 above were the
+open items, all resolved before implementation.
+
+### Sprint H1 notes (Integration, HIL, handover)
+
+All five stories delivered — XEDGE-490/492/493/494 as built, XEDGE-491
+closed via its own pre-agreed fallback rather than performed (see below)
+— in [PR #16](https://github.com/sgbhavsar-cpu/XEdge/pull/16).
+
+**XEDGE-491 (HIL pass): not performed, by design, not by shortfall.**
+This environment had no physical field hardware — no Modbus PLC, no
+ControlLogix/CompactLogix, no BACnet/OPC UA/SNMP equipment — at any point
+across the entire delivery, matching what R-CRD-02 anticipated from the
+start. Rather than delay handover chasing hardware access that R-CRD-02's
+own mitigation already treated as a real possibility, the pre-agreed
+fallback was invoked directly: state it explicitly in the handover
+package. See
+[XEDGE-CRD-001-handover.md](XEDGE-CRD-001-handover.md) §2/§3/§4 for
+exactly what was and wasn't verified as a result, protocol by protocol.
+
+**XEDGE-490's cross-protocol integration test found a real, previously
+undemonstrated consequence of a Sprint C6 design decision, not a new
+bug.** `compute_asset_connection_state`'s handling of a *mixed*
+Connected+Unknown input was already unit-tested in the abstract
+(`test_mixed_connected_and_unknown_is_degraded`) — but no prior sprint
+had a reason to build an Asset spanning both a connectivity-aware
+protocol (Modbus, SNMP) and a connectivity-unaware one (BACnet, OPC UA,
+EtherNet/IP) at the same time. Sprint H1's test does exactly that, against
+a real multi-protocol `DriverSupervisor`, and confirms: such an asset
+shows Degraded, never Connected, until every backing protocol implements
+`get_connectivity_state()` — today, only two of five do. This was
+deliberately **not** changed — `compute_asset_connection_state`'s
+existing behavior is shipped, customer-facing (C6), and already has a
+named test asserting the current behavior on purpose — so this was
+recorded as a known limitation (handover package §3) rather than
+"fixed," which would have been an unrequested behavior change to
+already-approved code on the strength of one new test's opinion about
+what it should do instead.
+
+**A second, smaller pre-existing bug was found and fixed while manually
+verifying the customer documentation (XEDGE-493), unrelated to any H1
+story's own scope:** `alarms.rules` — present since the alarm engine's
+own original config section, predating even C5/C6's mqtt_broker/smtp
+skip-list additions — was never added to `config_ui.py`'s
+`_core_section_skip` dispatch, so its Web UI page rendered a plain
+`<input type="text">` for an array-of-objects field: not just unusable,
+actively data-corrupting if submitted (the raw string would overwrite
+the real `rules` list on save). Fixed by adding
+`_SKIP_ALARMS_MANAGED_FIELDS = frozenset({"rules"})` and the matching
+Advanced-editor hint block, exactly mirroring the existing
+mqtt_broker/smtp/snmp_notify precedent — confirmed by hand against a
+running instance (the field disappeared, the hint appeared) before
+writing an automated regression test for it.
+
+**Performance validation (XEDGE-492) covered what could be measured in
+this environment and stated plainly what couldn't.** Batched-throughput
+and scan-rate-accuracy-under-load are both real, passing, timing-based
+tests against real `ModbusTcpDriver` instances and real `FakeModbusServer`
+fixtures (`tests/integration/test_performance_validation.py`) — not
+simulated numbers. The embedded broker's RAM footprint against the
+ADR-007 1GB ARM target was **not** measured, for the same underlying
+reason as the HIL gap: no ARM hardware or emulated target was available.
+This was already recorded honestly in `license-audit.md` §4 item 6 back
+in Sprint C5 ("not currently measured... carried forward as part of open
+item Q-6") — Sprint H1 confirmed this is the *same* Q-6 the HIL pass
+uses, applied the same resolution (state it, don't block), and did not
+re-litigate it as a fresh decision.
+
+**Customer documentation (XEDGE-493) was written against a running
+instance, not from memory of the schema.** Every CLI flag, REST endpoint,
+request/response shape, and Web UI route named in
+`docs/guide/onboarding-walkthrough.md` was read from a live instance's
+own OpenAPI schema and exercised with real requests — including the
+discovery that `/api/v1/auth/setup` takes only a `password` field (the
+admin username is fixed, not customer-configurable), which was not
+obvious from the schema field name alone.
+
+**The pre-delivery gap analysis
+(`docs/requirements/XEDGE-CRD-001-gateway-compliance-report.md`) was
+revised in place rather than left stale or duplicated.** It was an
+accurate snapshot of 2026-07-09, before eight sprints of work — by
+handover it asserted things like "No SNMP support anywhere" and "No
+Asset entity exists in the data model at all" that had been untrue since
+Sprints C6/C8. Every row was re-verified against the current codebase
+(not assumed from the delivery plan's own sprint notes) and revised to
+v2.0, with the original wording kept struck through inline so the delta
+is visible rather than silently overwritten. One correction made during
+that re-verification: the original open question about protocols
+"excluded... in the image" (Q-1/R-CRD-01) was previously going to be
+characterized as resolved; it is not — the image was never received
+across the entire delivery, and this is now stated as a still-open item
+in both the compliance report and the handover package rather than
+quietly upgraded to "resolved" at the finish line.
+
+**Post-handover merge to `main` surfaced a real, intermittent full-suite
+CI hang — found by the merge process, not caused by it.** Merging the
+sprint-by-sprint PR stack into `main` required every branch to pass CI
+against `main` for the first time (each PR had only ever run CI against
+its own predecessor branch before). Two branches (#5, Sprint C3; #14,
+Sprint C8) hung on the "Unit + Integration Tests" job for 30+ minutes on
+GitHub's runners. Reproduced directly (not just theorized) by running the
+identical suite in a real `python:3.11-slim` Docker container on the dev
+machine, matching `ubuntu-latest` far more closely than native Windows
+ever could:
+- First full-suite container run hung at
+  `test_serial_bus_manager.py::TestMultiDropSharedBus::test_two_instances_on_one_port_both_read_correctly`
+  (POSIX-only `pty`-based code — explicitly documented as untestable on
+  Windows, so this was never catchable on the development machine no
+  matter how many clean local runs preceded it).
+- That same test passed 5/5 times when run in isolation, under 1 second
+  each.
+- A second full-suite container run hung at a **different** test entirely
+  (`test_e2e_modbus_to_sparkplug.py`), ruling out a bug specific to either
+  test.
+
+**Working theory, not yet confirmed:** an intermittent async
+resource-cleanup race — some fixture (a socket, a pty fd, an event-loop
+reader) not fully released before the next test starts, occasionally
+colliding with whatever runs next. Timing-dependent, not deterministic,
+Linux-scheduling-specific. **Decision:** treat as a known, tracked flake
+— retry CI until green, same handling as the pre-existing amqtt
+shutdown-timing flake (Sprint H1 quality-gate notes) — rather than block
+the merge on a full root-cause fix. Follow-up root-cause investigation
+is open, not closed by this entry.
+
 ---
 
 ## 8. Revision history
@@ -480,3 +1083,11 @@ as this sprint, unresolved.
 | Version | Date | Change |
 |---|---|---|
 | 1.0 | 2026-07-26 | Initial Delivery 1 plan from XEDGE-DR-001 |
+| 1.1 | 2026-07-27 | Sprint C3 status row backfilled (was missing from §7's table despite its notes existing); Sprint C4 complete — status row + notes |
+| 1.2 | 2026-07-27 | Sprint C4 addendum: keep-alive connection-reuse bug found by manual verification, fixed, regression-tested |
+| 1.3 | 2026-07-27 | Sprint C5 complete — status row + notes (embedded MQTT broker, three more amqtt findings, Web UI config gap and fix, cert-rotation carry flagged as overdue) |
+| 1.4 | 2026-07-27 | Sprint C5 addendum: agent-side proactive certificate rotation (XEDGE-443, carried from C4) delivered in PR #10 — no longer carried into C6 |
+| 1.5 | 2026-07-28 | Sprint C6 complete — status row + notes (Asset Management resolving open item Q-3, a real driver/tag deletion validation gap found and fixed, SMTP notifications/reports, aiosmtpd added as a test dependency, an SMTP TLS trust-store gap found and fixed) |
+| 1.6 | 2026-07-28 | Sprint C7 complete — status row + notes (EtherNet/IP scanner via `pycomm3`; cpppo/pycomm3 incompatibility found, documented, mocked-boundary test strategy adopted instead; live Web UI verification confirming zero new UI code needed) |
+| 1.7 | 2026-07-30 | Sprint C8 complete — status row + notes (SNMP manager/agent/TRAP-INFORM originator+receiver via `pysnmp`; a real GETBULK semantics bug and two real agent bugs found and fixed; TRAP's fire-and-forget delivery confirmed and documented; MIB upload/parse/browse descoped per the pre-existing scope-cut candidate list) |
+| 1.8 | 2026-07-30 | **Delivery 1 complete.** Sprint H1 status row + notes (cross-protocol integration test across all five protocols with an asset spanning them, confirming a real Degraded-not-Connected consequence of existing C6 behavior rather than a new bug; performance validation with the ARM-footprint gap explicitly tied to the same Q-6 as the HIL pass; customer documentation verified against a running instance; a real pre-existing `alarms.rules` Web UI bug found and fixed); R-CRD-02/R-CRD-08 closed; the pre-delivery gap analysis revised to v2.0 as the handover compliance matrix, correcting one over-claimed resolution (Q-1 remains genuinely open); new [XEDGE-CRD-001-handover.md](XEDGE-CRD-001-handover.md) package published |

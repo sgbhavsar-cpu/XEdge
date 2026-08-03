@@ -45,6 +45,7 @@ from xedge.api.permissions import has_permission
 from xedge.api.schema_forms import build_object_fields, unflatten
 from xedge.api.tag_bulk_io import TagBulkParseError, tags_from_csv, tags_from_json, tags_to_csv
 from xedge.api.ui import require_permission_redirect
+from xedge.core.assets import all_tag_refs
 from xedge.core.config import ConfigValidationError, ConfigValidator
 from xedge.core.driver_config import driver_type_schema_path
 from xedge.observability.audit_log import AuditLog
@@ -60,6 +61,10 @@ KNOWN_DRIVER_TYPES = [
     "modbus_rtu_serial",
     "opcua_client",
     "bacnet_ip",
+    "ethernet_ip",
+    "mqtt_subscriber",
+    "snmp_client",
+    "snmp_trap_receiver",
     "loopback",
 ]
 
@@ -70,12 +75,58 @@ KNOWN_DRIVER_TYPES = [
 # (unflatten) so it can never be edited away by this UI.
 _SKIP_ID = frozenset({"id"})
 _SKIP_ID_AND_TAGS = frozenset({"id", "tags"})
+# Asset parameters (ADR-010's tag_ref list) are a child collection with
+# their own add/delete routes below, same reasoning as tags on a driver's
+# tag group -- not inlined into the asset's own metadata form.
+_SKIP_ID_AND_PARAMETERS = frozenset({"id", "parameters"})
+
+# mqtt_broker's users/publish_acl/subscribe_acl are all keyed collections
+# (a list of credentials; two dicts keyed by arbitrary usernames) that
+# xedge.api.schema_forms has no widget for (it renders scalars and fixed-
+# property objects only) -- the same pre-existing gap alarms.rules (an
+# array) already has, covered there by the raw-YAML "Advanced" editor.
+# `users` gets its own small dedicated page instead (see the
+# mqtt-broker/users routes below) because, unlike alarms.rules, the
+# generic form's plain-text fallback would render this one's *plaintext
+# passwords* directly into the page — not just an unusable widget, a
+# credential-exposure rough edge. publish_acl/subscribe_acl stay on the
+# Advanced editor for now; XEDGE-455 is scoped to config *usability*, not
+# to teaching schema_forms a general keyed-collection widget.
+_SKIP_MQTT_BROKER_MANAGED_FIELDS = frozenset({"users", "publish_acl", "subscribe_acl"})
+
+# smtp.alarm_notifications is a nested object whose own `recipients` is a
+# plain string array; smtp.scheduled_reports is an array of objects. Same
+# schema_forms gap as mqtt_broker's fields above (no keyed-collection/
+# array widget) -- neither involves secrets the way mqtt_broker.users
+# did, so both simply stay on the Advanced editor rather than getting a
+# dedicated page, with a note on the SMTP settings page pointing there.
+_SKIP_SMTP_MANAGED_FIELDS = frozenset({"alarm_notifications", "scheduled_reports"})
+
+# snmp_notify.destinations is an array of objects, the same schema_forms
+# gap as smtp.scheduled_reports above -- stays on the Advanced editor for
+# the same reason (XEDGE-486 was scoped to the SNMP client/agent config
+# screens, not to teaching schema_forms a general array widget a fourth
+# time).
+_SKIP_SNMP_NOTIFY_MANAGED_FIELDS = frozenset({"destinations"})
+
+# alarms.rules is an array of objects -- the same schema_forms gap as the
+# three above. Unlike those, this one predates all of them (present since
+# the alarm engine's own Sprint 31 config section) and was never given the
+# skip-list + Advanced-editor-hint treatment, so build_object_fields fell
+# through to a generic (and here, non-functional) plain-text input for an
+# array-typed field -- found manually verifying Sprint H1's customer
+# documentation (XEDGE-493), not part of any story that touched this file.
+_SKIP_ALARMS_MANAGED_FIELDS = frozenset({"rules"})
 
 CORE_SECTIONS = [
     ("logging", "Logging"),
     ("watchdog", "Watchdog"),
     ("northbound", "Northbound (MQTT)"),
     ("opcua_server", "OPC UA Server"),
+    ("mqtt_broker", "MQTT Broker"),
+    ("smtp", "SMTP"),
+    ("snmp_agent", "SNMP Agent"),
+    ("snmp_notify", "SNMP TRAP/INFORM"),
     ("store", "Store & Forward"),
     ("config_management", "Config Management"),
     ("api", "REST API / Web UI"),
@@ -133,6 +184,14 @@ def _find_tag(group_entry: dict[str, Any], tag_id: str) -> dict[str, Any]:
     raise ConfigNotFoundError(f"No tag with id {tag_id!r}")
 
 
+def _find_asset(config: dict[str, Any], asset_id: str) -> dict[str, Any]:
+    assets: list[dict[str, Any]] = config.get("assets", [])
+    for entry in assets:
+        if entry.get("id") == asset_id:
+            return entry
+    raise ConfigNotFoundError(f"No asset with id {asset_id!r}")
+
+
 def create_config_ui_router(
     *,
     session_manager: SessionManager,
@@ -172,9 +231,11 @@ def create_config_ui_router(
         }
 
     def render(request: Request, template: str, context: dict[str, Any]) -> Response:
+        current = _full_config(config_path)
         base_context = {
             "core_sections": CORE_SECTIONS,
-            "drivers": _full_config(config_path).get("drivers", []),
+            "drivers": current.get("drivers", []),
+            "assets": current.get("assets", []),
             "error": context.pop("error", None),
             "success": context.pop("success", False),
             "authenticated": True,
@@ -233,6 +294,17 @@ def create_config_ui_router(
 
     # ---- Core sections ----
 
+    def _core_section_skip(section: str) -> frozenset[str]:
+        if section == "mqtt_broker":
+            return _SKIP_MQTT_BROKER_MANAGED_FIELDS
+        if section == "smtp":
+            return _SKIP_SMTP_MANAGED_FIELDS
+        if section == "snmp_notify":
+            return _SKIP_SNMP_NOTIFY_MANAGED_FIELDS
+        if section == "alarms":
+            return _SKIP_ALARMS_MANAGED_FIELDS
+        return frozenset()
+
     @router.get("/core/{section}", response_class=HTMLResponse)
     def core_section_form(request: Request, section: str) -> Response:
         redirect = require_read(request)
@@ -243,7 +315,9 @@ def create_config_ui_router(
             return render(request, "config_root.html", {"error": f"Unknown section {section!r}"})
         section_schema = core_schema["properties"][section]
         current = _full_config(config_path)
-        fields = build_object_fields(section_schema, current.get(section, {}))
+        fields = build_object_fields(
+            section_schema, current.get(section, {}), skip=_core_section_skip(section)
+        )
         label = dict(CORE_SECTIONS)[section]
         return render(
             request, "config_section.html", {"section": section, "label": label, "fields": fields}
@@ -258,14 +332,20 @@ def create_config_ui_router(
         form_data: dict[str, str] = {k: v for k, v in raw_form.items() if isinstance(v, str)}
         section_schema = core_schema["properties"][section]
         current = _full_config(config_path)
-        new_section = unflatten(form_data, section_schema)
+        skip = _core_section_skip(section)
+        new_section = unflatten(form_data, section_schema, skip=skip)
         # Preserve any secret currently set if the form's password field
         # was left blank (FR-WU-006's "leave blank to keep").
         _merge_preserving_absent_secrets(section_schema, current.get(section, {}), new_section)
-        current[section] = new_section
+        # In place, and only over the schema's own properties minus `skip`
+        # -- mqtt_broker's users/publish_acl/subscribe_acl (see
+        # _SKIP_MQTT_BROKER_MANAGED_FIELDS) never appeared in this form, so
+        # a plain `current[section] = new_section` would silently delete
+        # them on every unrelated save (e.g. just flipping tls_enabled).
+        _replace_editable_fields(current.setdefault(section, {}), section_schema, new_section, skip)
         error = _save_full_config(current, request)
         label = dict(CORE_SECTIONS)[section]
-        fields = build_object_fields(section_schema, new_section)
+        fields = build_object_fields(section_schema, new_section, skip=skip)
         return render(
             request,
             "config_section.html",
@@ -276,6 +356,71 @@ def create_config_ui_router(
                 "error": error,
                 "success": error is None,
             },
+        )
+
+    # ---- MQTT broker users (XEDGE-454/455) ----
+    #
+    # A dedicated list/add/delete page rather than a generic-form field:
+    # see _SKIP_MQTT_BROKER_MANAGED_FIELDS above for why. Reads/writes
+    # mqtt_broker.users directly in the config file, same one write path
+    # (_save_full_config) as every other mutation in this module.
+
+    @router.get("/mqtt-broker/users", response_class=HTMLResponse)
+    def mqtt_broker_users_page(request: Request) -> Response:
+        redirect = require_read(request)
+        if redirect is not None:
+            return redirect
+        broker_config = _full_config(config_path).get("mqtt_broker", {})
+        usernames = [u.get("username") for u in broker_config.get("users", [])]
+        return render(
+            request, "mqtt_broker_users.html", {"usernames": usernames, "add_error": None}
+        )
+
+    @router.post("/mqtt-broker/users/new", response_class=HTMLResponse)
+    def mqtt_broker_users_create(
+        request: Request, username: str = Form(...), password: str = Form(...)
+    ) -> Response:
+        redirect = require_write(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        broker_config = current.setdefault("mqtt_broker", {})
+        users = broker_config.setdefault("users", [])
+        if any(u.get("username") == username for u in users):
+            return render(
+                request,
+                "mqtt_broker_users.html",
+                {
+                    "usernames": [u.get("username") for u in users],
+                    "add_error": f"A broker user named {username!r} already exists",
+                },
+            )
+        users.append({"username": username, "password": password})
+        error = _save_full_config(current, request)
+        if error is not None:
+            users.pop()
+            return render(
+                request,
+                "mqtt_broker_users.html",
+                {"usernames": [u.get("username") for u in users], "add_error": error},
+            )
+        return RedirectResponse(
+            "/ui/config/mqtt-broker/users", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @router.post("/mqtt-broker/users/{username}/delete")
+    def mqtt_broker_users_delete(request: Request, username: str) -> Response:
+        redirect = require_write(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        broker_config = current.setdefault("mqtt_broker", {})
+        broker_config["users"] = [
+            u for u in broker_config.get("users", []) if u.get("username") != username
+        ]
+        _save_full_config(current, request)
+        return RedirectResponse(
+            "/ui/config/mqtt-broker/users", status_code=status.HTTP_303_SEE_OTHER
         )
 
     # ---- Drivers: list / add / edit / delete ----
@@ -432,8 +577,31 @@ def create_config_ui_router(
         if redirect is not None:
             return redirect
         current = _full_config(config_path)
+        try:
+            entry = _find_driver(current, driver_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
         current["drivers"] = [d for d in current.get("drivers", []) if d.get("id") != driver_id]
-        _save_full_config(current, request)
+        error = _save_full_config(current, request)
+        if error is not None:
+            # Deletion was rejected (XEDGE-461: an asset still references
+            # one of this driver's tags) -- the file was left untouched,
+            # so re-render this still-existing driver's own edit page
+            # with the error instead of redirecting as if it had worked.
+            config_schema = driver_type_schema(entry["type"])["properties"]["config"]
+            fields = build_object_fields(config_schema, entry.get("config", {}))
+            return render(
+                request,
+                "driver_edit.html",
+                {
+                    "driver_id": driver_id,
+                    "driver_type": entry["type"],
+                    "enabled": entry.get("enabled", True),
+                    "fields": fields,
+                    "tag_groups": entry.get("tag_groups", []),
+                    "error": error,
+                },
+            )
         return RedirectResponse("/ui/config", status_code=status.HTTP_303_SEE_OTHER)
 
     # ---- Tag groups ----
@@ -636,8 +804,30 @@ def create_config_ui_router(
             entry = _find_driver(current, driver_id)
         except ConfigNotFoundError as exc:
             return render(request, "config_root.html", {"error": str(exc)})
-        entry["tag_groups"] = [g for g in entry.get("tag_groups", []) if g.get("id") != group_id]
-        _save_full_config(current, request)
+        original_tag_groups = entry.get("tag_groups", [])
+        entry["tag_groups"] = [g for g in original_tag_groups if g.get("id") != group_id]
+        error = _save_full_config(current, request)
+        if error is not None:
+            # XEDGE-461: an asset still references one of this group's
+            # tags -- nothing was written to disk, so undo the in-memory
+            # removal too (entry is mutated in place above) before
+            # re-rendering the driver's own page with the error, rather
+            # than showing the group as already gone.
+            entry["tag_groups"] = original_tag_groups
+            config_schema = driver_type_schema(entry["type"])["properties"]["config"]
+            fields = build_object_fields(config_schema, entry.get("config", {}))
+            return render(
+                request,
+                "driver_edit.html",
+                {
+                    "driver_id": driver_id,
+                    "driver_type": entry["type"],
+                    "enabled": entry.get("enabled", True),
+                    "fields": fields,
+                    "tag_groups": entry.get("tag_groups", []),
+                    "error": error,
+                },
+            )
         return RedirectResponse(
             f"/ui/config/drivers/{driver_id}", status_code=status.HTTP_303_SEE_OTHER
         )
@@ -765,11 +955,232 @@ def create_config_ui_router(
             group = _find_tag_group(entry, group_id)
         except ConfigNotFoundError as exc:
             return render(request, "config_root.html", {"error": str(exc)})
-        group["tags"] = [t for t in group.get("tags", []) if t.get("id") != tag_id]
-        _save_full_config(current, request)
+        original_tags = group.get("tags", [])
+        group["tags"] = [t for t in original_tags if t.get("id") != tag_id]
+        error = _save_full_config(current, request)
+        if error is not None:
+            # XEDGE-461: an asset still references this tag -- nothing was
+            # written to disk, so undo the in-memory removal too (group is
+            # mutated in place above) before re-rendering the group's own
+            # page with the error, rather than showing the tag as gone.
+            group["tags"] = original_tags
+            type_schema = driver_type_schema(entry["type"])
+            group_schema = type_schema["properties"]["tag_groups"]["items"]
+            fields = build_object_fields(group_schema, group, skip=_SKIP_ID_AND_TAGS)
+            return render(
+                request,
+                "tag_group_edit.html",
+                {
+                    "driver_id": driver_id,
+                    "group_id": group_id,
+                    "fields": fields,
+                    "tags": group.get("tags", []),
+                    "error": error,
+                },
+            )
         return RedirectResponse(
             f"/ui/config/drivers/{driver_id}/tag-groups/{group_id}",
             status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    # ---- Assets (Sprint C6, XEDGE-460..465; ADR-010) ----
+    #
+    # A metadata/grouping layer over the driver-first model above, per the
+    # project's own resolution of open item Q-3: parameters *reference*
+    # existing tags (a <select> of all_tag_refs()'s output, not free text)
+    # rather than an asset-first flow that also creates the backing
+    # driver/tag entries. Referential integrity beyond "does this option
+    # exist in the dropdown" is enforced regardless, in
+    # ConfigValidator.validate() (xedge.core.assets.validate_asset_references)
+    # -- the Advanced/raw-YAML editor bypasses the dropdown entirely, so
+    # that check must not depend on this form having been used.
+
+    asset_entry_schema = core_schema["properties"]["assets"]["items"]
+
+    @router.get("/assets/new", response_class=HTMLResponse)
+    def asset_new_form(request: Request) -> Response:
+        redirect = require_read(request)
+        if redirect is not None:
+            return redirect
+        return render(request, "asset_new.html", {"error": None, "id_value": "", "name_value": ""})
+
+    @router.post("/assets/new", response_class=HTMLResponse)
+    def asset_new_submit(request: Request, id: str = Form(...), name: str = Form(...)) -> Response:
+        redirect = require_write(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        assets = current.setdefault("assets", [])
+        if any(a.get("id") == id for a in assets):
+            return render(
+                request,
+                "asset_new.html",
+                {
+                    "error": f"An asset with id {id!r} already exists",
+                    "id_value": id,
+                    "name_value": name,
+                },
+            )
+        assets.append({"id": id, "name": name, "enabled": True, "parameters": []})
+        error = _save_full_config(current, request)
+        if error is not None:
+            assets.pop()
+            return render(
+                request, "asset_new.html", {"error": error, "id_value": id, "name_value": name}
+            )
+        return RedirectResponse(f"/ui/config/assets/{id}", status_code=status.HTTP_303_SEE_OTHER)
+
+    @router.get("/assets/{asset_id}", response_class=HTMLResponse)
+    def asset_form(request: Request, asset_id: str) -> Response:
+        redirect = require_read(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_asset(current, asset_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+        fields = build_object_fields(asset_entry_schema, entry, skip=_SKIP_ID_AND_PARAMETERS)
+        return render(
+            request,
+            "asset_edit.html",
+            {
+                "asset_id": asset_id,
+                "fields": fields,
+                "parameters": entry.get("parameters", []),
+            },
+        )
+
+    @router.post("/assets/{asset_id}", response_class=HTMLResponse)
+    async def asset_save(request: Request, asset_id: str) -> Response:
+        redirect = require_write(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_asset(current, asset_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+
+        raw_form = await request.form()
+        form_data: dict[str, str] = {k: v for k, v in raw_form.items() if isinstance(v, str)}
+        new_fields = unflatten(form_data, asset_entry_schema, skip=_SKIP_ID_AND_PARAMETERS)
+        _replace_editable_fields(entry, asset_entry_schema, new_fields, _SKIP_ID_AND_PARAMETERS)
+
+        error = _save_full_config(current, request)
+        fields = build_object_fields(asset_entry_schema, entry, skip=_SKIP_ID_AND_PARAMETERS)
+        return render(
+            request,
+            "asset_edit.html",
+            {
+                "asset_id": asset_id,
+                "fields": fields,
+                "parameters": entry.get("parameters", []),
+                "error": error,
+                "success": error is None,
+            },
+        )
+
+    @router.post("/assets/{asset_id}/delete")
+    def asset_delete(request: Request, asset_id: str) -> Response:
+        redirect = require_write(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        current["assets"] = [a for a in current.get("assets", []) if a.get("id") != asset_id]
+        _save_full_config(current, request)
+        return RedirectResponse("/ui/config", status_code=status.HTTP_303_SEE_OTHER)
+
+    @router.get("/assets/{asset_id}/parameters/new", response_class=HTMLResponse)
+    def asset_parameter_new_form(request: Request, asset_id: str) -> Response:
+        redirect = require_read(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_asset(current, asset_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+        already_referenced = {p.get("tag_ref") for p in entry.get("parameters", [])}
+        available_tag_refs = sorted(all_tag_refs(current.get("drivers", [])) - already_referenced)
+        return render(
+            request,
+            "asset_parameter_new.html",
+            {"asset_id": asset_id, "available_tag_refs": available_tag_refs, "error": None},
+        )
+
+    @router.post("/assets/{asset_id}/parameters/new", response_class=HTMLResponse)
+    async def asset_parameter_new_submit(request: Request, asset_id: str) -> Response:
+        redirect = require_write(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_asset(current, asset_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+
+        raw_form = await request.form()
+        form_data = {k: v for k, v in raw_form.items() if isinstance(v, str)}
+        tag_ref = form_data.get("tag_ref", "")
+        parameters = entry.setdefault("parameters", [])
+        if any(p.get("tag_ref") == tag_ref for p in parameters):
+            already_referenced = {p.get("tag_ref") for p in parameters}
+            available_tag_refs = sorted(
+                all_tag_refs(current.get("drivers", [])) - already_referenced
+            )
+            return render(
+                request,
+                "asset_parameter_new.html",
+                {
+                    "asset_id": asset_id,
+                    "available_tag_refs": available_tag_refs,
+                    "error": f"{tag_ref!r} is already a parameter of this asset",
+                },
+            )
+        parameter: dict[str, Any] = {"tag_ref": tag_ref, "store": "store" in form_data}
+        if form_data.get("alias"):
+            parameter["alias"] = form_data["alias"]
+        if form_data.get("unit"):
+            parameter["unit"] = form_data["unit"]
+        parameters.append(parameter)
+
+        error = _save_full_config(current, request)
+        if error is not None:
+            parameters.pop()
+            already_referenced = {p.get("tag_ref") for p in parameters}
+            available_tag_refs = sorted(
+                all_tag_refs(current.get("drivers", [])) - already_referenced
+            )
+            return render(
+                request,
+                "asset_parameter_new.html",
+                {
+                    "asset_id": asset_id,
+                    "available_tag_refs": available_tag_refs,
+                    "error": error,
+                },
+            )
+        return RedirectResponse(
+            f"/ui/config/assets/{asset_id}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @router.post("/assets/{asset_id}/parameters/{tag_ref:path}/delete")
+    def asset_parameter_delete(request: Request, asset_id: str, tag_ref: str) -> Response:
+        redirect = require_write(request)
+        if redirect is not None:
+            return redirect
+        current = _full_config(config_path)
+        try:
+            entry = _find_asset(current, asset_id)
+        except ConfigNotFoundError as exc:
+            return render(request, "config_root.html", {"error": str(exc)})
+        entry["parameters"] = [
+            p for p in entry.get("parameters", []) if p.get("tag_ref") != tag_ref
+        ]
+        _save_full_config(current, request)
+        return RedirectResponse(
+            f"/ui/config/assets/{asset_id}", status_code=status.HTTP_303_SEE_OTHER
         )
 
     # ---- Advanced: raw YAML (escape hatch) ----

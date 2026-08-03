@@ -13,7 +13,7 @@
 {% endblock %}
 {% block content %}
 <div class="xedge-config-layout">
-  {{ macros.config_tree(core_sections, drivers, active_path|default(none)) }}
+  {{ macros.config_tree(core_sections, drivers, active_path|default(none), assets|default([])) }}
   <div class="xedge-config-content">
     {% if success %}<p class="xedge-success">Saved. Hot-reload will apply it shortly.</p>{% endif %}
     {% if error %}<p class="xedge-error">{{ error }}</p>{% endif %}

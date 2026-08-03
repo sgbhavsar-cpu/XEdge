@@ -100,6 +100,7 @@ starts enforcing the full permission matrix below, with no password migration.
 | config:read | ✓ | ✓ | ✓ | ✗ |
 | config:write | ✓ | ✓ | ✗ | ✗ |
 | driver:restart | ✓ | ✓ | ✗ | ✗ |
+| northbound:publish | ✓ | ✓ | ✗ | ✗ |
 | security:manage | ✓ | ✗ | ✗ | ✗ |
 | user:manage | ✓ | ✗ | ✗ | ✗ |
 | audit:read | ✓ | ✗ | ✓ | ✗ |

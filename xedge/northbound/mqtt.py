@@ -7,9 +7,17 @@ that must block (connect, publish-with-confirmation) run via
 callback (fired from paho's thread) hands off to asyncio via
 `call_soon_threadsafe`.
 
-TLS/mTLS (SR-TS-001/002) and the exponential-backoff reconnect state machine
-(FR-NB-010) beyond a single connect attempt are Sprint 13 scope; this
-connector raises on connect failure and lets the caller (dispatcher) retry.
+TLS/mTLS (SR-TS-001/002, Sprint C4 XEDGE-441 — this shipped without it since
+Sprint 13's original target, a real, load-bearing gap: credentials crossed
+the wire in clear) is `tls_enabled`-gated below, verifying the broker
+against `tls_ca_certs_path` (the system trust store if unset) and
+optionally presenting a client certificate for the broker's own mTLS, if
+it requires one — independent of, and not necessarily using, this
+device's fleet-CA identity (XEDGE-440/442): a customer's MQTT broker is
+typically a separate trust domain from xEdge's own fleet PKI. The
+exponential-backoff reconnect state machine (FR-NB-010) beyond a single
+connect attempt remains out of scope; this connector raises on connect
+failure and lets the caller (dispatcher) retry.
 
 NCMD subscription (Sprint 31, XEDGE-223 write-back) is opt-in via the
 `write_router` constructor argument: if set, `connect()` also subscribes to
@@ -30,6 +38,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 import paho.mqtt.client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion
@@ -47,6 +56,7 @@ from xedge.northbound.sparkplug.payload import (
 )
 from xedge.northbound.sparkplug.session import SparkplugSession, build_topic
 from xedge.observability.logging import get_logger
+from xedge.security.tls_context import build_client_tls_context
 
 logger = get_logger(__name__)
 
@@ -72,6 +82,16 @@ class SparkplugConnectorConfig:
     qos: int = 1
     username: str | None = None
     password: str | None = None
+    tls_enabled: bool = False
+    tls_ca_certs_path: str | None = None
+    tls_certfile_path: str | None = None
+    tls_keyfile_path: str | None = None
+    # Disables broker *hostname* verification only (not certificate
+    # validity) — paho's own tls_insecure_set(), for brokers reachable only
+    # by an IP a certificate can't reasonably enumerate in advance. Matches
+    # the `verify_tls`-style escape hatch this codebase already uses for
+    # the fleet agent's own bootstrap connection.
+    tls_insecure: bool = False
 
 
 class MqttConnectorStateError(RuntimeError):
@@ -105,6 +125,21 @@ class MqttSparkplugConnector(NorthboundConnector):
         client = mqtt.Client(CallbackAPIVersion.VERSION2, client_id=self._config.client_id)
         if self._config.username:
             client.username_pw_set(self._config.username, self._config.password)
+        if self._config.tls_enabled:
+            context = build_client_tls_context(
+                ca_certs_path=(
+                    Path(self._config.tls_ca_certs_path) if self._config.tls_ca_certs_path else None
+                ),
+                certfile_path=(
+                    Path(self._config.tls_certfile_path) if self._config.tls_certfile_path else None
+                ),
+                keyfile_path=(
+                    Path(self._config.tls_keyfile_path) if self._config.tls_keyfile_path else None
+                ),
+            )
+            client.tls_set_context(context)
+            if self._config.tls_insecure:
+                client.tls_insecure_set(True)
 
         death_payload = encode_payload(
             timestamp_ms=_now_ms(),

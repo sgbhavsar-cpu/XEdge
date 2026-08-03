@@ -10,6 +10,7 @@ def test_admin_has_every_permission() -> None:
         "config:read",
         "config:write",
         "driver:restart",
+        "northbound:publish",
         "security:manage",
         "user:manage",
         "audit:read",
@@ -26,6 +27,7 @@ def test_operator_permissions_match_matrix() -> None:
         "config:read",
         "config:write",
         "driver:restart",
+        "northbound:publish",
         "diagnostics:run",
         "alarm:manage",
     }

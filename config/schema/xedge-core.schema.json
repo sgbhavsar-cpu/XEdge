@@ -118,6 +118,12 @@
           "required": ["host"],
           "additionalProperties": false,
           "properties": {
+            "publisher_type": {
+              "type": "string",
+              "enum": ["sparkplug_b", "generic_json"],
+              "default": "sparkplug_b",
+              "description": "Sprint C5, XEDGE-451 (CRD §4.10 'own payload structure'). 'sparkplug_b' (default, unchanged): MqttSparkplugConnector, birth/death/sequence-numbered protobuf. 'generic_json': GenericMqttPublisher, configurable plain-JSON topic/payload -- see the generic_json_* fields below, which that mode alone consumes."
+            },
             "host": { "type": "string", "minLength": 1 },
             "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 1883 },
             "group_id": { "type": "string", "minLength": 1, "default": "xedge" },
@@ -127,7 +133,45 @@
             "connect_timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "default": 10 },
             "qos": { "type": "integer", "enum": [0, 1, 2], "default": 1 },
             "username": { "type": "string" },
-            "password": { "type": "string", "x-secret": true }
+            "password": { "type": "string", "x-secret": true },
+            "tls_enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Sprint C4, XEDGE-441 (CRD §4.10; closes finding F-10 and SR 3.1 of the SL-1 gap analysis): connect to the broker over TLS instead of plaintext. Independent of the fleet agent's own certificate (XEDGE-442) -- a customer's MQTT broker is typically a separate trust domain from xEdge's fleet PKI."
+            },
+            "tls_ca_certs_path": {
+              "type": "string",
+              "description": "CA bundle verifying the broker's certificate. Omit to use the system trust store (a publicly-trusted broker certificate)."
+            },
+            "tls_certfile_path": {
+              "type": "string",
+              "description": "Client certificate for mTLS to the broker, if it requires one. Requires tls_keyfile_path unless this file contains both the certificate and key."
+            },
+            "tls_keyfile_path": { "type": "string" },
+            "tls_insecure": {
+              "type": "boolean",
+              "default": false,
+              "description": "Disables broker *hostname* verification only (not certificate validity) -- for a broker reachable only by an IP its certificate can't reasonably enumerate in advance."
+            },
+            "generic_json_topic_template": {
+              "type": "string",
+              "default": "xedge/{tag_id}",
+              "description": "publisher_type: generic_json only. {tag_id} is substituted per message in 'per_tag' mode; must not appear in 'batch' mode, where every batch publishes to this one fixed topic."
+            },
+            "generic_json_payload_mode": {
+              "type": "string",
+              "enum": ["per_tag", "batch"],
+              "default": "per_tag",
+              "description": "publisher_type: generic_json only. 'per_tag': one MQTT message per tag. 'batch': one message containing a JSON array of every tag in the batch."
+            },
+            "generic_json_retain": { "type": "boolean", "default": false, "description": "publisher_type: generic_json only." },
+            "generic_json_include_timestamp": { "type": "boolean", "default": true, "description": "publisher_type: generic_json only." },
+            "generic_json_include_quality": { "type": "boolean", "default": true, "description": "publisher_type: generic_json only." },
+            "generic_json_field_names": {
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "description": "publisher_type: generic_json only. Renames output JSON keys, e.g. {\"tag_id\": \"name\", \"value\": \"val\"}. Keys not overridden here keep their default name (tag_id, value, timestamp, quality)."
+            }
           }
         }
       }
@@ -307,26 +351,146 @@
         }
       }
     },
+    "assets": {
+      "type": "array",
+      "description": "Asset Management (Sprint C6, XEDGE-460; ADR-010): a metadata and grouping layer over the existing driver-first model -- an asset's parameters *reference* existing tags (instance_id/tag_id, via parameters[].tag_ref); they never define new ones. Referential integrity (every tag_ref must resolve to a real driver/tag) is checked beyond what this schema alone expresses, on every config apply -- see xedge.core.assets.validate_asset_references. Defaults to an empty list; a deployment with no assets behaves exactly as it did before this section existed.",
+      "items": {
+        "type": "object",
+        "required": ["id", "name"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Presentational only (ADR-010 §4): suppresses this asset from asset-scoped views/reports. Does NOT stop the backing driver instances, which may also back parameters on other assets -- stopping data collection remains a driver-level operation (POST /api/v1/drivers/{id}/disable)."
+          },
+          "serial_number": { "type": "string" },
+          "asset_type": { "type": "string" },
+          "make": { "type": "string" },
+          "model": { "type": "string" },
+          "firmware_version": { "type": "string" },
+          "description": { "type": "string" },
+          "gateway_id": {
+            "type": "string",
+            "description": "Optional, soft reference to a Fleet Manager device id (ADR-010 §4) -- never validated locally against the fleet registry, which is a separate system this device may have no connection to at all (fleet.enabled: false is fully supported)."
+          },
+          "parameters": {
+            "type": "array",
+            "default": [],
+            "items": {
+              "type": "object",
+              "required": ["tag_ref"],
+              "additionalProperties": false,
+              "properties": {
+                "tag_ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "instance_id/tag_id of an existing tag under drivers[] -- a reference, never a new tag definition. Checked for referential integrity on every config apply."
+                },
+                "alias": { "type": "string" },
+                "unit": { "type": "string" },
+                "store": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "ADR-010 §3: false suppresses this tag from cold-store spill (RAM-tier/live visibility is unaffected). If the same tag_ref is also referenced elsewhere (this or another asset) with store: true, that wins."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "smtp": {
+      "type": "object",
+      "description": "SMTP client (Sprint C6, XEDGE-466; CRD §4.7/FR-SC-002): email notifications on alarm transitions, plus periodic summary reports. Wired directly to the Alarm Engine v2 (Sprint 31) rather than behind a generic notification-channel interface -- SMTP is the only channel this delivery's CRD calls for. Defaults off.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "host": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 587 },
+        "tls_mode": {
+          "type": "string",
+          "enum": ["none", "starttls", "smtps"],
+          "default": "starttls",
+          "description": "\"starttls\" upgrades a plaintext connection (the common port-587 case); \"smtps\" is TLS from the first byte (port 465) -- two different protocols on the wire, not one feature with an on/off switch."
+        },
+        "tls_ca_certs_path": {
+          "type": "string",
+          "description": "CA bundle verifying the server's certificate, for starttls and smtps alike. Omit to use the system trust store (a publicly-trusted mail relay); set for a self-signed or private-CA internal relay."
+        },
+        "username": { "type": "string" },
+        "password": { "type": "string", "x-secret": true },
+        "from_address": { "type": "string" },
+        "connect_timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "default": 10.0 },
+        "alarm_notifications": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "One email per alarm raise or clear (an ACTIVE -> ACTIVE_ACKED ack alone sends nothing -- the recipient already knows). A shelved alarm (xedge.core.alarms.AlarmEngine.shelve) never notifies either, for as long as it's shelved.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "recipients": { "type": "array", "items": { "type": "string" }, "default": [] }
+          }
+        },
+        "scheduled_reports": {
+          "type": "array",
+          "description": "Each entry gets its own independent task/schedule -- one report firing on its interval never blocks or waits on another. A report's alarm summary is a live snapshot of currently-active alarms at send time, not a historical digest of everything that transitioned since the last report.",
+          "items": {
+            "type": "object",
+            "required": ["id"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "enabled": { "type": "boolean", "default": true },
+              "recipients": { "type": "array", "items": { "type": "string" }, "default": [] },
+              "interval_seconds": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "default": 86400,
+                "description": "Default once per day."
+              },
+              "include_tag_ids": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": [],
+                "description": "Fully-qualified tag ids, e.g. 'modbus_tcp_01/temperature_01'."
+              },
+              "include_asset_ids": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": [],
+                "description": "Resolves to every one of that asset's parameters' tag_ref at send time -- not a snapshot taken when the report was configured, so it stays current as an asset's parameters change."
+              }
+            }
+          }
+        }
+      }
+    },
     "fleet": {
       "type": "object",
-      "description": "Fleet agent (Sprint 29, XEDGE-210/213 — partial scope, see ADR-009): periodic heartbeat to a separate Fleet Manager service, and pull-based config push (this device applies a pending config through the existing hot-reload file-write path, then reports the result on the next heartbeat). Defaults off. Device-to-manager auth is a shared bearer token issued at registration (ADR-009 interim posture) — mTLS (XEDGE-214) is deferred.",
+      "description": "Fleet agent (Sprint 29, XEDGE-210/213; reworked Sprint C4, XEDGE-442, ADR-013 §3): periodic heartbeat to a separate Fleet Manager service, and pull-based config push (this device applies a pending config through the existing hot-reload file-write path, then reports the result on the next heartbeat). Defaults off. Enrollment (one-time, over manager_url) exchanges a single-use join token and a locally-generated CSR for a CA-signed device certificate; heartbeat/config-pull (over device_manager_url) then authenticate with that certificate plus a device token, both persisted locally alongside the never-transmitted private key.",
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean", "default": false },
         "manager_url": {
           "type": "string",
-          "description": "Base URL of the Fleet Manager service, e.g. https://fleet-manager.local:8090."
+          "description": "Base URL of the Fleet Manager's enrollment/admin port, e.g. https://fleet-manager.local:8090. Used once, for /enroll."
+        },
+        "device_manager_url": {
+          "type": "string",
+          "description": "Base URL of the Fleet Manager's mTLS device port, e.g. https://fleet-manager.local:8091. Used for every heartbeat after enrollment; required when fleet.enabled is true."
         },
         "device_id": {
           "type": "string",
           "minLength": 1,
-          "description": "Stable identity this device registers under; required when fleet.enabled is true."
+          "description": "Stable identity this device enrolls under; required when fleet.enabled is true."
         },
         "display_name": { "type": "string" },
         "join_token": {
           "type": "string",
           "x-secret": true,
-          "description": "Pre-shared token proving this device is allowed to register with the Fleet Manager. Only used once — the manager issues a per-device token in response, persisted locally alongside session_key/server_cert.pem."
+          "description": "Single-use, time-limited token an operator provisioned for this specific device_id (Fleet Manager admin API: POST /api/v1/fleet/join-tokens). Consumed by /enroll; the manager then issues a device certificate and device token, persisted locally alongside the device's own private key."
         },
         "heartbeat_interval_seconds": {
           "type": "number",
@@ -337,7 +501,132 @@
         "verify_tls": {
           "type": "boolean",
           "default": true,
-          "description": "Set false to accept a self-signed Fleet Manager certificate (matches xedge-cli's --insecure posture for local/dev deployments)."
+          "description": "Governs only the one-time enrollment call to manager_url, before this device has any knowledge of the fleet CA. Set false to accept a self-signed/unverified Fleet Manager certificate at that step (matches xedge-cli's --insecure posture for local/dev deployments). The device_manager_url connection is always verified against the fleet CA certificate enrollment returned, regardless of this setting."
+        },
+        "cert_rotation_threshold_days": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 30,
+          "description": "ADR-013 §3/XEDGE-443: the agent re-keys once its certificate has fewer than this many days left before expiry, checked once per heartbeat. Default gives a 90-day-validity certificate (the Fleet Manager's own --cert-validity-days default) 60 days of retry margin -- well clear of the Web UI's 14-day 'expires soon' warning, which should not normally fire at all."
+        }
+      }
+    },
+    "mqtt_broker": {
+      "type": "object",
+      "description": "Embedded MQTT broker (Sprint C5, XEDGE-453/454; ADR-012 §3): a listening service other MQTT clients (SCADA, cloud integrations) connect to -- the reverse of northbound.mqtt above, which is an outbound client connecting to an *external* broker. Defaults off. See xedge.northbound.mqtt_broker module docstring for why mTLS is not offered as an access-control option here (amqtt's cafile always sets CERT_OPTIONAL, never CERT_REQUIRED) -- username/password plus topic ACLs is the supported model instead.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "host": {
+          "type": "string",
+          "default": "0.0.0.0",
+          "description": "A broker must accept connections from other devices/clients on the network, unlike the loopback-only REST API default."
+        },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 1883 },
+        "tls_enabled": { "type": "boolean", "default": false },
+        "tls_certfile_path": {
+          "type": "string",
+          "description": "Required when tls_enabled is true."
+        },
+        "tls_keyfile_path": {
+          "type": "string",
+          "description": "Required when tls_enabled is true."
+        },
+        "allow_anonymous": {
+          "type": "boolean",
+          "default": false,
+          "description": "XEDGE-454: off by default. When false, every connecting client must authenticate as one of `users` below."
+        },
+        "users": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": ["username", "password"],
+            "additionalProperties": false,
+            "properties": {
+              "username": { "type": "string", "minLength": 1 },
+              "password": { "type": "string", "x-secret": true }
+            }
+          },
+          "description": "Consulted only when allow_anonymous is false. Hashed (sha512_crypt via passlib) into a generated password file on startup, never persisted in plaintext by xEdge itself -- but this config value is, same as fleet.join_token above."
+        },
+        "publish_acl": {
+          "type": "object",
+          "additionalProperties": { "type": "array", "items": { "type": "string" } },
+          "description": "username -> allowed publish topic patterns (ordinary MQTT +/# wildcards), e.g. {\"sensor01\": [\"telemetry/sensor01/#\"]}. Left empty (default) while subscribe_acl is also empty, no ACL plugin loads at all and any authenticated user may publish anywhere. IMPORTANT (verified against amqtt's own topic_checking plugin source, not documented by amqtt itself): the moment EITHER this or subscribe_acl is non-empty, the ACL plugin loads for both directions -- and unlike publish, subscribe has no 'empty means unrestricted' carve-out. Setting only publish_acl denies every subscribe from every user. If you only want to restrict publishing, list every legitimate subscriber in subscribe_acl too (a [\"#\"] entry grants that user unrestricted subscribe access)."
+        },
+        "subscribe_acl": {
+          "type": "object",
+          "additionalProperties": { "type": "array", "items": { "type": "string" } },
+          "description": "username -> allowed subscribe topic patterns, same wildcard syntax as publish_acl. Left empty while publish_acl is also empty, unrestricted (see publish_acl's description above for the asymmetry once either dict is non-empty: an empty subscribe_acl at that point means zero subscribe access for everyone, not unrestricted)."
+        }
+      }
+    },
+    "snmp_agent": {
+      "type": "object",
+      "description": "SNMP agent (Sprint C8, XEDGE-482; ADR-012 §2): xEdge itself pollable by the customer's NMS -- the reverse of a snmp_client driver instance, which polls an external device. Defaults off. Exposes standard MIB-II plus a live driver-status table and alarm-state counts under a placeholder OID subtree -- see xedge.northbound.snmp_agent's module docstring for why (no IANA-registered Private Enterprise Number exists for xEdge yet; XEDGE-DR-001 Q-8).",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "host": {
+          "type": "string",
+          "default": "0.0.0.0",
+          "description": "An agent must accept polls from the customer's NMS on the network, unlike the loopback-only REST API default."
+        },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 161 },
+        "community": {
+          "type": "string",
+          "default": "public",
+          "x-secret": true,
+          "description": "SNMPv1/v2c community string this agent accepts. Read-only: this agent never accepts SNMP SET from the network (XEDGE-DR-001 Q-9) -- the community only gates GET/GETNEXT/GETBULK."
+        }
+      }
+    },
+    "snmp_notify": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "SNMP TRAP/INFORM originator (Sprint C8, XEDGE-483), wired to the Alarm Engine: one notification per alarm raise or clear, same ack/shelve suppression rules as smtp.alarm_notifications (an ACTIVE -> ACTIVE_ACKED ack alone sends nothing; a shelved alarm never notifies while shelved). See xedge.core.snmp_notify's module docstring for the placeholder-PEN OIDs this sends under, and for why notify_type: trap can only ever report 'sent', never 'delivered' (RFC 1905 fire-and-forget UDP, no acknowledgement) -- use notify_type: inform wherever delivery confirmation actually matters.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "destinations": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": ["host", "version"],
+            "additionalProperties": false,
+            "properties": {
+              "host": { "type": "string", "minLength": 1 },
+              "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 162 },
+              "version": { "type": "string", "enum": ["v1", "v2c", "v3"] },
+              "community": {
+                "type": "string",
+                "x-secret": true,
+                "description": "Required for version v1/v2c."
+              },
+              "v3_username": { "type": "string", "description": "Required for version v3." },
+              "v3_auth_protocol": {
+                "type": "string",
+                "enum": ["none", "md5", "sha", "sha224", "sha256", "sha384", "sha512"],
+                "default": "none"
+              },
+              "v3_auth_password": { "type": "string", "x-secret": true },
+              "v3_priv_protocol": {
+                "type": "string",
+                "enum": ["none", "des", "3des", "aes128", "aes192", "aes256"],
+                "default": "none",
+                "description": "Requires v3_auth_protocol != 'none', same RFC 3414 rule as the snmp_client driver's identical field."
+              },
+              "v3_priv_password": { "type": "string", "x-secret": true },
+              "notify_type": {
+                "type": "string",
+                "enum": ["trap", "inform"],
+                "default": "trap",
+                "description": "trap: fire-and-forget, no delivery confirmation possible even in principle. inform: the sender waits for a real acknowledgement, so a send failure here means an unreachable/non-responding destination, not just 'we transmitted a packet'."
+              }
+            }
+          }
         }
       }
     }

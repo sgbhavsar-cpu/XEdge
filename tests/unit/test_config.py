@@ -7,6 +7,7 @@ import pytest
 from xedge.core.config import (
     ConfigEngine,
     ConfigValidationError,
+    ConfigValidator,
     ConfigVersionHistory,
     SecretResolutionError,
     SecretsResolver,
@@ -46,6 +47,46 @@ def test_secrets_resolver_from_file(tmp_path: Path) -> None:
     (secrets_dir / "api_key").write_text("s3cr3t\n", encoding="utf-8")
     resolver = SecretsResolver(secrets_dir=secrets_dir)
     assert resolver.resolve("${SECRET:api_key}") == "s3cr3t"
+
+
+class TestConfigValidatorAssetReferences:
+    """XEDGE-461/ADR-010: referential integrity isn't expressible in a
+    JSON Schema alone (it's a cross-section check, assets[] against
+    drivers[]), so ConfigValidator.validate() folds it in as a second
+    pass after the schema check. Proves the *wiring* — the underlying
+    xedge.core.assets.validate_asset_references function itself is
+    covered in depth by tests/unit/test_assets.py."""
+
+    _schema = {
+        "type": "object",
+        "properties": {"drivers": {"type": "array"}, "assets": {"type": "array"}},
+    }
+
+    def test_passes_with_a_resolvable_tag_ref(self) -> None:
+        validator = ConfigValidator(self._schema)
+        validator.validate(
+            {
+                "drivers": [{"id": "d1", "tag_groups": [{"tags": [{"id": "t1"}]}]}],
+                "assets": [{"id": "a1", "name": "A1", "parameters": [{"tag_ref": "d1/t1"}]}],
+            }
+        )  # no raise
+
+    def test_raises_on_a_dangling_tag_ref(self) -> None:
+        validator = ConfigValidator(self._schema)
+        with pytest.raises(ConfigValidationError, match="tag_ref"):
+            validator.validate(
+                {
+                    "drivers": [],
+                    "assets": [{"id": "a1", "name": "A1", "parameters": [{"tag_ref": "no/such"}]}],
+                }
+            )
+
+    def test_a_payload_with_no_assets_key_is_unaffected(self) -> None:
+        """Every driver-type schema's own validator instance validates a
+        {"config": ..., "tag_groups": ...} payload with no "assets" key
+        at all — this must stay a pure no-op for that shape, not error."""
+        validator = ConfigValidator({"type": "object"})
+        validator.validate({"config": {}, "tag_groups": []})  # no raise
 
 
 def test_secrets_resolver_unresolvable_raises() -> None:

@@ -1,47 +1,86 @@
-"""Fleet agent (Sprint 29, XEDGE-210/213 — partial scope, see ADR-009):
-device-side counterpart to `xedge.fleet.manager_app`. Runs as one more
-asyncio task inside `xedge.core.main.async_main`, the same shape as
+"""Fleet agent (Sprint 29, XEDGE-210/213; reworked Sprint C4, XEDGE-442 —
+see ADR-013 §3): device-side counterpart to `xedge.fleet.manager_app` /
+`xedge.fleet.manager_device_app`. Runs as one more asyncio task inside
+`xedge.core.main.async_main`, the same shape as
 `system_tag_publish_loop`/`purge_loop`.
 
-Pull, not push (deliberate deviation from the sprint story's "push" title —
-see ADR-009): the agent calls the manager on a heartbeat interval, and any
-config an operator queued for this device rides along in that response.
-This avoids the manager needing inbound network reachability to every
-device (many are behind NAT/firewalls with no public address at all),
-consistent with `xedge.core.hot_reload`'s existing poll-based config
-model. Applying a pending config reuses the exact same file-write path
-`xedge.api.server.put_config` already uses — hot-reload's own poll loop
-does the actual restart, so this module never touches `DriverSupervisor`
-directly.
+Enrollment happens once: this device generates its own keypair locally
+(`xedge.security.csr.generate_key_and_csr`) and submits only the CSR and a
+join token to `manager_app`'s `/enroll` — the private key never leaves this
+process. Everything after that (heartbeat, config pull) talks to
+`manager_device_app` instead, over a client presenting the certificate
+`/enroll` returned, on a *different port* than enrollment used (ADR-013 §3
++ `xedge.fleet.manager_cli`'s two-port split).
+
+Pull, not push (deliberate deviation from the original sprint story's
+"push" title — see ADR-009): the agent calls the manager on a heartbeat
+interval, and any config an operator queued for this device rides along in
+that response. This avoids the manager needing inbound network
+reachability to every device (many are behind NAT/firewalls with no public
+address at all), consistent with `xedge.core.hot_reload`'s existing
+poll-based config model. Applying a pending config reuses the exact same
+file-write path `xedge.api.server.put_config` already uses — hot-reload's
+own poll loop does the actual restart, so this module never touches
+`DriverSupervisor` directly.
 """
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import httpx
 import yaml
+from cryptography import x509
 
 from xedge import __version__
 from xedge.core.config import ConfigValidationError, ConfigValidator
 from xedge.core.supervisor import DriverSupervisor
+from xedge.fleet.registry import GatewayConnectionState, classify_connection_state
 from xedge.observability.logging import get_logger
+from xedge.security.csr import generate_key_and_csr
+from xedge.security.tls_context import build_mtls_client_context
 
 logger = get_logger(__name__)
+
+_ENROLLMENT_RETRY_BACKOFF_SECONDS = 5.0
 
 
 @dataclass(slots=True)
 class FleetAgentConfig:
     manager_url: str
+    device_manager_url: str
     device_id: str
     join_token: str
     display_name: str | None = None
     heartbeat_interval_seconds: float = 60
     verify_tls: bool = True
+    cert_rotation_threshold_days: float = 30
+    """Carried from Sprint C4 into C5 (ADR-013 §3, XEDGE-443's endpoint had
+    no caller until now): re-key once this many days remain before
+    `device-cert.pem` expires, checked once per heartbeat -- no separate
+    timer, since the heartbeat interval is already far shorter than any
+    sane threshold. Default gives a 90-day-validity device (the manager's
+    own --cert-validity-days default) a full 60 days of retry margin
+    before actual expiry, well clear of the Web UI's own 14-day
+    "expires soon" warning threshold (xedge-ui.js CERT_EXPIRY_WARNING_DAYS)
+    -- under normal operation that warning should never fire at all."""
+
+
+@dataclass(slots=True, frozen=True)
+class FleetAgentPaths:
+    """Where this device's own enrollment artifacts live —
+    `xedge.core.main.DataPaths.fleet` is the shared root. `device_key`
+    holds a private key and never travels anywhere; the other three are
+    exchanged with the manager during enrollment/rotation."""
+
+    device_token: Path
+    device_cert: Path
+    device_key: Path
+    ca_certificate: Path
 
 
 @dataclass(slots=True)
@@ -56,62 +95,124 @@ class FleetAgentStatus:
     manager_url: str | None = None
     device_id: str | None = None
     registered: bool = False
+    heartbeat_interval_seconds: float = 60
     last_heartbeat_at: datetime | None = None
     last_heartbeat_ok: bool | None = None
     last_error: str | None = None
     last_config_apply: dict[str, Any] | None = None
+    cert_not_after: datetime | None = None
+
+    @property
+    def connection_state(self) -> GatewayConnectionState:
+        """Sprint C4, XEDGE-447 — the device-local Web UI's fleet status
+        card shows this device's *own* view of its connectivity, using the
+        same four-state vocabulary the manager computes for its view of
+        this same device (`xedge.fleet.registry.DeviceRecord.
+        connection_state`) — same classification function, applied to
+        "when did *my* last heartbeat succeed" instead of "when did the
+        *manager* last hear from this device." The two can disagree
+        briefly (e.g. right after a heartbeat the manager hasn't received
+        yet) without either being wrong."""
+        return classify_connection_state(self.last_heartbeat_at, self.heartbeat_interval_seconds)
 
 
-def _read_persisted_token(token_path: Path) -> str | None:
-    if not token_path.is_file():
+def _read_text_if_present(path: Path) -> str | None:
+    if not path.is_file():
         return None
-    existing = token_path.read_text(encoding="utf-8").strip()
+    existing = path.read_text(encoding="utf-8").strip()
     return existing or None
 
 
-def _persist_token(token_path: Path, token: str) -> None:
-    token_path.parent.mkdir(parents=True, exist_ok=True)
-    token_path.write_text(token, encoding="utf-8")
+def _write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
 
 
-async def _ensure_registered(
-    client: httpx.AsyncClient, token_path: Path, config: FleetAgentConfig
-) -> str:
-    """Return this device's persisted device_token, registering with the
-    manager on first run (or if the token file is missing/empty — e.g. a
-    fresh /data volume, mirroring how `xedge.api.auth.load_or_create_secret_key`
-    treats an absent file as "first boot," not an error)."""
-    existing = _read_persisted_token(token_path)
-    if existing is not None:
-        return existing
+def _already_enrolled(paths: FleetAgentPaths) -> bool:
+    return (
+        paths.device_token.is_file()
+        and paths.device_cert.is_file()
+        and paths.device_key.is_file()
+        and paths.ca_certificate.is_file()
+    )
+
+
+async def _enroll(
+    client: httpx.AsyncClient, paths: FleetAgentPaths, config: FleetAgentConfig
+) -> None:
+    """One-shot: generate a keypair, submit its CSR with the (single-use)
+    join token, and persist everything `/enroll` returns. Not idempotent by
+    itself — call only when `_already_enrolled` is false. A join token that
+    fails here (wrong device_id, expired, already consumed) cannot succeed
+    by retrying the same token; the retry loop in `fleet_heartbeat_loop`
+    exists for the transient case (manager not reachable yet), not this
+    one — see that loop's warning-vs-error log levels."""
+    private_key_pem, csr_pem = generate_key_and_csr(config.device_id)
     response = await client.post(
-        "/api/v1/fleet/register",
+        "/api/v1/fleet/enroll",
         json={
             "device_id": config.device_id,
+            "join_token": config.join_token,
+            "csr_pem": csr_pem.decode("ascii"),
             "display_name": config.display_name,
             "agent_version": __version__,
             "heartbeat_interval_seconds": config.heartbeat_interval_seconds,
-            "join_token": config.join_token,
         },
     )
     response.raise_for_status()
-    token: str = response.json()["device_token"]
-    _persist_token(token_path, token)
-    return token
+    body = response.json()
+    _write_text(paths.device_key, private_key_pem.decode("ascii"))
+    _write_text(paths.device_cert, body["certificate_pem"])
+    _write_text(paths.ca_certificate, body["ca_certificate_pem"])
+    _write_text(paths.device_token, body["device_token"])
+
+
+async def _ensure_enrolled(paths: FleetAgentPaths, config: FleetAgentConfig) -> None:
+    """Retries with a fixed backoff until enrollment succeeds — appropriate
+    for the expected failure mode at this stage (the manager isn't up yet,
+    e.g. both containers starting together in compose/k8s with no ordering
+    guarantee), logged at WARNING. An auth-shaped failure (bad/expired/
+    used join token) is logged at ERROR on every attempt instead, since no
+    amount of retrying fixes it without an operator issuing a fresh token —
+    but this function still doesn't give up, both because it can't tell
+    "manager rejected the token" apart from "manager not up yet enough to
+    say so," and because a human fixing it (issuing a new token) shouldn't
+    also have to restart the device's process for the retry to notice."""
+    if _already_enrolled(paths):
+        return
+    # limits=... : same keep-alive race as fleet_heartbeat_loop's client
+    # (see its comment) -- not currently reachable here since a retry only
+    # happens after a failed attempt (nothing pooled to go stale), but kept
+    # consistent so a future change to this loop doesn't silently reopen it.
+    async with httpx.AsyncClient(
+        base_url=config.manager_url,
+        verify=config.verify_tls,
+        limits=httpx.Limits(max_keepalive_connections=0),
+    ) as client:
+        while True:
+            try:
+                await _enroll(client, paths, config)
+                return
+            except httpx.HTTPStatusError as exc:
+                logger.error("fleet.enroll_rejected", status_code=exc.response.status_code)
+            except (httpx.HTTPError, OSError) as exc:
+                logger.warning("fleet.enroll_unreachable", error=str(exc))
+            await asyncio.sleep(_ENROLLMENT_RETRY_BACKOFF_SECONDS)
 
 
 async def fleet_heartbeat_loop(
     config: FleetAgentConfig,
-    token_path: Path,
+    paths: FleetAgentPaths,
     supervisor: DriverSupervisor,
     config_path: Path,
     validator: ConfigValidator,
     started_at: datetime,
     status: FleetAgentStatus,
 ) -> None:
-    """Registers once (persisting the resulting token to `token_path`),
-    then heartbeats every `config.heartbeat_interval_seconds` forever.
-    Never raises — a Fleet Manager that's unreachable degrades to
+    """Enrolls once (retrying as described in `_ensure_enrolled`), then
+    heartbeats every `config.heartbeat_interval_seconds` forever over a
+    client presenting the certificate enrollment returned. Never raises
+    once past enrollment — a Fleet Manager that's unreachable degrades to
     `status.last_heartbeat_ok = False` (mirrors every other best-effort
     background loop in this codebase: driver polling, northbound
     publishing, hot-reload all keep running independently of one
@@ -119,21 +220,67 @@ async def fleet_heartbeat_loop(
     status.enabled = True
     status.manager_url = config.manager_url
     status.device_id = config.device_id
+    status.heartbeat_interval_seconds = config.heartbeat_interval_seconds
+
+    await _ensure_enrolled(paths, config)
+    status.registered = True
+    device_token = _read_text_if_present(paths.device_token)
+    if device_token is None:
+        raise RuntimeError("enrollment just completed but left no device_token")
+    status.cert_not_after = x509.load_pem_x509_certificate(
+        paths.device_cert.read_bytes()
+    ).not_valid_after_utc
 
     # Result of the *previous* heartbeat's pending-config application,
     # reported on the *next* heartbeat (XEDGE-213's "reports result") —
     # None until this device has ever applied a pushed config.
     pending_report: dict[str, Any] | None = None
 
-    async with httpx.AsyncClient(base_url=config.manager_url, verify=config.verify_tls) as client:
-        while True:
+    # Always verified against *this device's own* fleet CA copy, not
+    # `config.verify_tls` — that flag only covers the bootstrap trust gap
+    # during enrollment (no CA knowledge exists yet); once enrolled, the
+    # real CA is sitting on disk and skipping verification against it would
+    # be a pure downgrade with no corresponding benefit.
+    #
+    # A mutable local, not a `with`-bound constant: certificate rotation
+    # (below) writes a new cert/key to the same paths mid-loop, and an
+    # `ssl.SSLContext` can't be told to start trusting a different
+    # cert/key pair after construction — the only way to pick up a
+    # rotated identity is to build a fresh context (and, since it's baked
+    # into the client at construction too, a fresh `AsyncClient`) from it.
+    mtls_context = build_mtls_client_context(
+        paths.device_cert, paths.device_key, paths.ca_certificate
+    )
+    while True:
+        # Rebuilt every iteration rather than once outside the loop: the
+        # only way for a certificate rotation to actually take effect (see
+        # `mtls_context` above). `max_keepalive_connections=0` already
+        # meant no connection was ever reused *within* the old single
+        # long-lived client either, so this costs nothing that wasn't
+        # already being paid per request.
+        async with httpx.AsyncClient(
+            base_url=config.device_manager_url,
+            verify=mtls_context,
+            # No connection reuse (Sprint C4, XEDGE-442 -- found by running
+            # this for real, not by any automated test): uvicorn's default
+            # timeout_keep_alive is 5s, and heartbeat_interval_seconds is
+            # commonly >= that (60s by default) -- httpx's pool would try to
+            # reuse a connection the server has *already* closed server-side,
+            # surfacing as "Server disconnected without sending a response"
+            # on roughly every heartbeat past the first. httpx correctly
+            # refuses to silently retry a POST across that race (it can't
+            # know whether the server processed a prior attempt before
+            # closing), so this must be avoided rather than caught. A
+            # heartbeat is infrequent enough that a fresh TCP+TLS handshake
+            # every time costs nothing worth optimizing for.
+            limits=httpx.Limits(max_keepalive_connections=0),
+        ) as client:
+            heartbeat_ok = False
             try:
-                token = await _ensure_registered(client, token_path, config)
-                status.registered = True
                 all_status = supervisor.all_status()
                 response = await client.post(
                     f"/api/v1/fleet/devices/{config.device_id}/heartbeat",
-                    headers={"Authorization": f"Bearer {token}"},
+                    headers={"Authorization": f"Bearer {device_token}"},
                     json={
                         "agent_version": __version__,
                         "driver_count": len(all_status),
@@ -146,6 +293,7 @@ async def fleet_heartbeat_loop(
                 status.last_heartbeat_at = datetime.now(UTC)
                 status.last_heartbeat_ok = True
                 status.last_error = None
+                heartbeat_ok = True
 
                 body = response.json()
                 pending_config = body.get("pending_config")
@@ -159,7 +307,73 @@ async def fleet_heartbeat_loop(
                 status.last_error = str(exc)
                 logger.warning("fleet.heartbeat_failed", error=str(exc))
 
-            await asyncio.sleep(config.heartbeat_interval_seconds)
+            # Gated on this iteration's heartbeat having actually reached
+            # the manager: if the connection is down, a rotation attempt
+            # over the same client would just fail the same way and log a
+            # second, redundant warning every cycle for the duration of an
+            # outage. The next heartbeat that *does* succeed re-checks.
+            if (
+                heartbeat_ok
+                and status.cert_not_after is not None
+                and _cert_needs_rotation(status.cert_not_after, config.cert_rotation_threshold_days)
+            ):
+                try:
+                    status.cert_not_after = await _rotate_certificate(
+                        client, paths, config, device_token
+                    )
+                    mtls_context = build_mtls_client_context(
+                        paths.device_cert, paths.device_key, paths.ca_certificate
+                    )
+                    logger.info("fleet.certificate_rotated", cert_not_after=status.cert_not_after)
+                except (httpx.HTTPError, OSError) as exc:
+                    # Left as-is on failure: the *old* cert/key on disk are
+                    # untouched (see _rotate_certificate), still valid, and
+                    # still what `mtls_context` points at -- the next
+                    # heartbeat's rotation check simply tries again.
+                    logger.warning("fleet.cert_rotation_failed", error=str(exc))
+
+        await asyncio.sleep(config.heartbeat_interval_seconds)
+
+
+def _cert_needs_rotation(cert_not_after: datetime, threshold_days: float) -> bool:
+    return (cert_not_after - datetime.now(UTC)) < timedelta(days=threshold_days)
+
+
+async def _rotate_certificate(
+    client: httpx.AsyncClient,
+    paths: FleetAgentPaths,
+    config: FleetAgentConfig,
+    device_token: str,
+) -> datetime:
+    """XEDGE-443/ADR-013 §3: re-key over the *current*, still-valid mTLS
+    session, well before the certificate on disk actually expires (see the
+    caller's rotation check). Deliberately a fresh keypair each time
+    (`generate_key_and_csr`, the same call `_enroll` makes), not a
+    re-signed copy of the existing one — a device that already holds a
+    connection this CA vouches for is exactly as trustworthy as one
+    presenting a fresh join token, so there is no reason to prefer key
+    reuse's smaller blast radius on compromise over a clean rotation.
+
+    Writes key then cert, matching `_enroll`'s own order — if this process
+    is killed between the two writes, the pair on disk is mismatched and
+    `build_mtls_client_context` will fail on the next start with a clear
+    SSL error, not a silent one; low-probability enough (a crash inside
+    two sequential local file writes) not to warrant a two-phase-commit
+    scheme for it."""
+    private_key_pem, csr_pem = generate_key_and_csr(config.device_id)
+    response = await client.post(
+        f"/api/v1/fleet/devices/{config.device_id}/rotate-certificate",
+        headers={"Authorization": f"Bearer {device_token}"},
+        json={"csr_pem": csr_pem.decode("ascii")},
+    )
+    response.raise_for_status()
+    certificate_pem = response.json()["certificate_pem"]
+    _write_text(paths.device_key, private_key_pem.decode("ascii"))
+    _write_text(paths.device_cert, certificate_pem)
+    not_after: datetime = x509.load_pem_x509_certificate(
+        certificate_pem.encode("ascii")
+    ).not_valid_after_utc
+    return not_after
 
 
 def _apply_pending_config(

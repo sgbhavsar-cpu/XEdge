@@ -82,6 +82,27 @@ async def test_dispatcher_reconnects_after_publish_failure() -> None:
         await asyncio.gather(task, return_exceptions=True)
 
 
+async def test_trigger_publish_wakes_the_loop_before_the_interval_elapses() -> None:
+    connector = FakeConnector()
+    buffers = RingBufferManager()
+    # A long interval that would fail this test if trigger_publish() didn't
+    # actually wake the loop early -- the test's own timeout is much shorter.
+    dispatcher = NorthboundDispatcher(connector, buffers, publish_interval_seconds=30.0)
+
+    task = asyncio.create_task(dispatcher.run())
+    try:
+        await asyncio.wait_for(_wait_until(lambda: connector.connected), timeout=2.0)
+        buffers.push("d1", _tag(7))
+
+        dispatcher.trigger_publish()
+
+        await asyncio.wait_for(_wait_until(lambda: connector.published_batches), timeout=2.0)
+        assert connector.published_batches[0][0].value == 7
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_dispatcher_stop_disconnects_when_connected() -> None:
     connector = FakeConnector()
     buffers = RingBufferManager()

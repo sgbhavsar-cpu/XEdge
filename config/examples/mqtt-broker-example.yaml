@@ -1,0 +1,68 @@
+# Embedded MQTT Broker (Sprint C5, XEDGE-453/454; ADR-012 §3): a listening
+# service other MQTT clients (SCADA, cloud integrations, xEdge's own
+# mqtt_subscriber driver or generic_json northbound publisher if pointed at
+# localhost) connect *to* -- the reverse of, and unrelated to, the outbound
+# client under `northbound.mqtt` or the `mqtt_subscriber` driver type (see
+# mqtt-subscriber-example.yaml), which both connect *out* to someone else's
+# broker.
+#
+# allow_anonymous defaults to false: anonymous access is opt-in, not
+# opt-out. See xedge.northbound.mqtt_broker's module docstring before
+# setting publish_acl/subscribe_acl -- the two directions are not
+# independently "off by default" once either one is non-empty (an operator
+# who only wants to restrict publishing must still list every legitimate
+# subscriber in subscribe_acl too).
+schema_version: "0.1"
+
+data_dir: /data
+
+logging:
+  level: INFO
+
+watchdog:
+  enabled: true
+  interval_seconds: 15
+
+drivers: []
+
+mqtt_broker:
+  enabled: true
+  host: 0.0.0.0
+  port: 1883
+  allow_anonymous: false
+  users:
+    - username: scada01
+      password: "${SECRET:mqtt_broker_scada01_password}"
+    - username: cloud_gateway
+      password: "${SECRET:mqtt_broker_cloud_gateway_password}"
+  # Left unset (both empty) here: any authenticated user may publish and
+  # subscribe anywhere, same as a broker with no ACL configured at all.
+  # Uncomment to restrict -- remember subscribe_acl must then list every
+  # legitimate subscriber explicitly, per the module docstring note above.
+  # publish_acl:
+  #   scada01: ["telemetry/scada01/#"]
+  # subscribe_acl:
+  #   scada01: ["#"]
+  #   cloud_gateway: ["#"]
+  # TLS: uncomment and point at a real certificate/key pair. amqtt cannot
+  # enforce mandatory client certificates (mTLS) regardless of what's
+  # configured here -- see the module docstring -- so username/password
+  # plus the ACLs above are the actual access-control story.
+  # tls_enabled: true
+  # tls_certfile_path: /data/mqtt-broker/broker-cert.pem
+  # tls_keyfile_path: /data/mqtt-broker/broker-key.pem
+
+store:
+  ram_max_depth: 10000
+  retention_duration_seconds: 604800 # 7 days
+  purge_interval_seconds: 3600
+
+config_management:
+  hot_reload_enabled: true
+  poll_interval_seconds: 2.0
+  max_versions: 10
+
+api:
+  enabled: true
+  host: 127.0.0.1
+  port: 8080

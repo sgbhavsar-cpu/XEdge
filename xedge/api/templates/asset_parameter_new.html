@@ -1,0 +1,41 @@
+{% extends "config_layout.html" %}
+{% block title %}xEdge — Add Parameter{% endblock %}
+{% block config_content %}
+<div class="xedge-card">
+  <h1>Add parameter to {{ asset_id }}</h1>
+  {% if error %}<p class="xedge-error">{{ error }}</p>{% endif %}
+  <form method="post" action="/ui/config/assets/{{ asset_id }}/parameters/new">
+    <div class="xedge-field">
+      <label for="tag_ref">Tag</label>
+      {% if available_tag_refs %}
+      <select id="tag_ref" name="tag_ref" required autofocus>
+        {% for ref in available_tag_refs %}
+        <option value="{{ ref }}">{{ ref }}</option>
+        {% endfor %}
+      </select>
+      {% else %}
+      <p class="xedge-error">No unreferenced tags available — every configured tag is already a parameter of this asset, or no drivers/tags are configured yet.</p>
+      {% endif %}
+      <p class="xedge-field-help">A reference to an existing tag — this never creates a new one.</p>
+    </div>
+    <div class="xedge-field">
+      <label for="alias">Alias</label>
+      <input type="text" id="alias" name="alias">
+      <p class="xedge-field-help">Optional display name for this parameter, e.g. "Discharge Pressure".</p>
+    </div>
+    <div class="xedge-field">
+      <label for="unit">Unit</label>
+      <input type="text" id="unit" name="unit">
+    </div>
+    <div class="xedge-field">
+      <label for="store">Stored</label>
+      <input type="checkbox" id="store" name="store" checked>
+      <p class="xedge-field-help">Unchecking suppresses this tag from cold-store spill (ADR-010 §3) — live/RAM-tier visibility is unaffected. If another asset parameter references the same tag with this checked, that wins.</p>
+    </div>
+    <div class="xedge-form-actions">
+      <button type="submit"{% if not available_tag_refs %} disabled{% endif %}>Add</button>
+      <a href="/ui/config/assets/{{ asset_id }}" class="xedge-button-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

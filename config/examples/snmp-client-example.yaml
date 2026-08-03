@@ -1,0 +1,107 @@
+# SNMP manager polling an environmental sensor at 192.168.1.80 (v2c) plus
+# writing a setpoint back to it. Built on pysnmp (BSD-2-Clause, ADR-012 §2
+# "buy" decision). One driver instance polls one device, matching every
+# other driver type's convention -- configure a second snmp_client instance
+# for a second device.
+schema_version: "0.1"
+
+data_dir: /data
+
+logging:
+  level: INFO
+
+watchdog:
+  enabled: true
+  interval_seconds: 15
+
+drivers:
+  - id: snmp_env_sensor
+    type: snmp_client
+    enabled: true
+    config:
+      host: 192.168.1.80
+      port: 161
+      version: v2c
+      community: public
+      timeout_seconds: 1
+      retries: 3
+    tag_groups:
+      - id: environmental
+        scan_rate_ms: 5000
+        # No use_bulk here: temperature/humidity are known exact scalar
+        # OIDs, and GETBULK's "next N values after this OID" semantics
+        # would silently answer a different question, not just batch
+        # these two GETs faster. Two exact OIDs already batch into one
+        # GET request without it.
+        tags:
+          - id: temperature
+            oid: "1.3.6.1.4.1.12345.1.1.0" # vendor-specific enterprise OID
+            scaling:
+              scale: 0.1
+              offset: 0.0
+            engineering_unit: "°C"
+          - id: humidity
+            oid: "1.3.6.1.4.1.12345.1.2.0"
+            scaling:
+              scale: 0.1
+              offset: 0.0
+            engineering_unit: "%RH"
+      - id: system_info
+        scan_rate_ms: 60000
+        tags:
+          - id: sys_uptime
+            oid: "1.3.6.1.2.1.1.3.0" # standard MIB-II sysUpTime.0
+            access: read_only
+      - id: fan_table_first_row
+        scan_rate_ms: 30000
+        use_bulk: true # GETBULK: correct here because operation is get_next
+        tags:
+          - id: first_fan_status
+            oid: "1.3.6.1.4.1.12345.3.1" # walks into the table's first instance
+            operation: get_next
+            access: read_only
+      - id: setpoint_write
+        scan_rate_ms: 60000
+        tags:
+          - id: fan_speed_setpoint
+            oid: "1.3.6.1.4.1.12345.2.1.0"
+            data_type: integer # required for SET; ignored for reads
+            access: write_only # excluded from this group's poll, writable via the API
+
+  # A second device, reachable only via SNMPv3 with authentication and
+  # privacy -- the "deciding factor" ADR-012 §2 named for buying rather
+  # than building this protocol stack.
+  - id: snmp_secure_gateway
+    type: snmp_client
+    enabled: false
+    config:
+      host: 192.168.1.81
+      port: 161
+      version: v3
+      v3_username: xedge-operator
+      v3_auth_protocol: sha256
+      v3_auth_password: "change-me-auth-password"
+      v3_priv_protocol: aes128
+      v3_priv_password: "change-me-priv-password"
+    tag_groups:
+      - id: status
+        scan_rate_ms: 5000
+        tags:
+          - id: sys_descr
+            oid: "1.3.6.1.2.1.1.1.0"
+            access: read_only
+
+store:
+  ram_max_depth: 10000
+  retention_duration_seconds: 604800 # 7 days
+  purge_interval_seconds: 3600
+
+config_management:
+  hot_reload_enabled: true
+  poll_interval_seconds: 2.0
+  max_versions: 10
+
+api:
+  enabled: true
+  host: 127.0.0.1 # loopback-only until the API has auth (FR-CM-003)
+  port: 8080

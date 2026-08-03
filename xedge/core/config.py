@@ -19,6 +19,8 @@ from typing import Any
 import jsonschema
 import yaml
 
+from xedge.core.assets import validate_asset_references
+
 _SECRET_PATTERN = re.compile(r"\$\{SECRET:([A-Za-z0-9_.\-/]+)\}")
 
 ChangeListener = Callable[["ConfigStore"], None]
@@ -46,9 +48,18 @@ class ConfigValidator:
 
     def validate(self, config: Mapping[str, Any]) -> None:
         errors = sorted(self._validator.iter_errors(config), key=lambda e: e.path)
-        if not errors:
-            return
         messages = [_format_error(e) for e in errors]
+        # Asset referential integrity (XEDGE-461/ADR-010) is not expressible
+        # in JSON Schema alone — it's a cross-section check (assets[]
+        # against drivers[]) — so it runs here, after the schema check,
+        # rather than as a second call every caller would have to remember
+        # to make. `validate_asset_references` itself no-ops on a payload
+        # with no "assets" key (every driver-type schema's own payload
+        # shape), so this is safe to call unconditionally regardless of
+        # which schema this particular ConfigValidator instance wraps.
+        messages.extend(validate_asset_references(config))
+        if not messages:
+            return
         raise ConfigValidationError(
             f"Configuration failed validation ({len(messages)} error(s)):\n"
             + "\n".join(f"  - {m}" for m in messages)

@@ -1,30 +1,52 @@
-# Fleet Manager deployment (Sprint 29, XEDGE-215) — a separate service from
-# any individual xEdge device (ADR-009, Sprint 32's documented split), built
-# from the same image as the device's own Dockerfile since the fleet code
-# ships inside the same `xedge` wheel (just a different console-script
-# entrypoint). SQLite-backed (ADR-009 §4) — no separate database container.
+# Fleet Manager deployment (Sprint 29, XEDGE-215; reworked Sprint C4,
+# XEDGE-440/442/443) — a separate service from any individual xEdge device
+# (ADR-009, Sprint 32's documented split), built from the same image as the
+# device's own Dockerfile since the fleet code ships inside the same
+# `xedge` wheel (just a different console-script entrypoint). SQLite-backed
+# (ADR-009 §4) — no separate database container.
 #
 # Usage: docker compose -f deploy/docker/docker-compose.fleet.yml up
 #
-# join_token/admin_token are auto-generated on first run and persisted into
-# the `fleet-manager-data` volume if not supplied via environment — see
-# xedge/fleet/manager_cli.py. Retrieve them for enrolling a device /
-# scripting the admin API with:
+# Serves two ports (ADR-013 §3/§4; xedge/fleet/manager_cli.py):
+#   - 8090: join-token provisioning, device enrollment, and admin calls.
+#     Server-TLS only, using a certificate the manager's own fleet CA
+#     issues to itself on first run.
+#   - 8091: heartbeat and certificate rotation for already-enrolled
+#     devices. mTLS — the TLS handshake itself rejects any connection not
+#     presenting a certificate the fleet CA issued.
+#
+# admin_token is auto-generated on first run and persisted into the
+# `fleet-manager-data` volume if not supplied via environment. There is no
+# manager-wide join_token anymore: join tokens are single-use and scoped to
+# one device_id, created through the admin API. To enroll a device:
 #   docker compose -f deploy/docker/docker-compose.fleet.yml exec \
-#     fleet-manager cat /data/join_token
+#     fleet-manager cat /data/admin_token
+#   curl -sk -X POST https://localhost:8090/api/v1/fleet/join-tokens \
+#     -H "Authorization: Bearer <admin_token>" \
+#     -H "Content-Type: application/json" \
+#     -d '{"device_id": "<device_id>"}'
+# The device's own fleet.join_token config field takes the resulting
+# one-time token; xedge/fleet/agent.py handles the CSR/enrollment exchange.
 services:
   fleet-manager:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
     entrypoint: ["xedge-fleet-manager"]
-    command: ["--data-dir", "/data", "--host", "0.0.0.0", "--port", "8090"]
+    command:
+      [
+        "--data-dir", "/data",
+        "--host", "0.0.0.0",
+        "--port", "8090",
+        "--device-port", "8091",
+      ]
     ports:
       - "8090:8090"
+      - "8091:8091"
     volumes:
       - fleet-manager-data:/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=5)"]
+      test: ["CMD", "python", "-c", "import ssl, urllib.request; urllib.request.urlopen('https://127.0.0.1:8090/health', timeout=5, context=ssl._create_unverified_context())"]
       interval: 30s
       timeout: 5s
       start_period: 10s

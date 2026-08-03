@@ -1,0 +1,78 @@
+# EtherNet/IP (CIP) scanner reading from a CompactLogix PLC at 192.168.1.70.
+# Built on pycomm3 (MIT, ADR-012 §1 "buy" decision) -- explicit (acyclic)
+# messaging polled at scan_rate_ms, not CIP Class 1 implicit I/O: no
+# mainstream Python CIP library implements that (XEDGE-DR-001 Q-7,
+# accepted 2026-07-28). Symbolic tag names only for this MVP -- no runtime
+# tag discovery or L5X import (crd-delivery-plan.md §5 scope-cut candidate
+# 4); a tag_name must be typed in exactly as it exists in the controller.
+schema_version: "0.1"
+
+# Root for all persistent state (Sprint 0, XEDGE-402). Every other
+# persistent path defaults to a subdirectory of this one.
+data_dir: /data
+
+logging:
+  level: INFO
+
+watchdog:
+  enabled: true
+  interval_seconds: 15
+
+drivers:
+  - id: ethernet_ip_line3_plc
+    type: ethernet_ip
+    enabled: true
+    config:
+      host: 192.168.1.70
+      port: 44818 # EtherNet/IP standard; almost never anything else
+      slot: 0 # backplane slot of the CPU module -- 0 for most CompactLogix
+      connect_timeout_seconds: 5
+    tag_groups:
+      - id: line3_process_values
+        scan_rate_ms: 500
+        deadband:
+          type: percentage
+          value: 0.5
+        tags:
+          - id: extruder_temperature
+            tag_name: "Program:MainProgram.ExtruderTemp"
+            engineering_unit: "°C"
+          - id: line_speed_raw
+            tag_name: "LineSpeedRaw"
+            scaling:
+              scale: 0.1
+              offset: 0.0
+            engineering_unit: "m/min"
+      - id: line3_status
+        scan_rate_ms: 1000
+        tags:
+          - id: line_running
+            tag_name: "LineRunning"
+            access: read_only
+          - id: fault_code
+            tag_name: "Program:MainProgram.FaultCode"
+            access: read_only
+      - id: line3_commands
+        scan_rate_ms: 1000
+        tags:
+          - id: line_start_command
+            tag_name: "LineStartCmd"
+            access: write_only
+
+store:
+  # directory: defaults to <data_dir>/store; set it only to split
+  # telemetry onto a different volume from the rest of the state.
+  ram_max_depth: 10000
+  retention_duration_seconds: 604800 # 7 days
+  purge_interval_seconds: 3600
+
+config_management:
+  hot_reload_enabled: true
+  poll_interval_seconds: 2.0
+  # history_directory: defaults to <data_dir>/config-history
+  max_versions: 10
+
+api:
+  enabled: true
+  host: 127.0.0.1 # loopback-only until the API has auth (FR-CM-003)
+  port: 8080

@@ -12,10 +12,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
+import pytest
 from paho.mqtt.enums import CallbackAPIVersion
 from pysparkplug._payload import NBirth, NData
 
 from tests.fixtures.fake_driver import FakeDriver
+from tests.fixtures.mqtt_broker import MtlsBrokerAddress, TlsBrokerAddress
+from xedge.api.tls import load_or_create_server_certificate
 from xedge.core.pipeline import UnifiedTag
 from xedge.core.supervisor import DriverConfig, DriverRegistry, DriverSupervisor
 from xedge.core.write_router import WriteRouter
@@ -161,6 +164,85 @@ async def test_reconnect_advances_bd_seq(mqtt_broker: tuple[str, int]) -> None:
     first_bd_seq = NBirth.decode(births[0][1]).metrics[0].value
     second_bd_seq = NBirth.decode(births[1][1]).metrics[0].value
     assert second_bd_seq == first_bd_seq + 1
+
+
+async def test_connect_over_tls_publishes_nbirth(mqtt_broker_tls: TlsBrokerAddress) -> None:
+    """XEDGE-441: server-TLS only, verified against the broker's own
+    (self-signed) certificate -- the common "broker has a real
+    certificate, no client cert required" case."""
+    connector = MqttSparkplugConnector(
+        SparkplugConnectorConfig(
+            host=mqtt_broker_tls.host,
+            port=mqtt_broker_tls.port,
+            tls_enabled=True,
+            tls_ca_certs_path=str(mqtt_broker_tls.ca_cert_path),
+        )
+    )
+    try:
+        await connector.connect()
+        assert connector.is_alive()
+    finally:
+        await connector.disconnect()
+
+
+async def test_connect_over_tls_without_the_right_ca_is_rejected(
+    mqtt_broker_tls: TlsBrokerAddress, tmp_path: Path
+) -> None:
+    """Proves the CA verification is real, not a no-op -- a *different*
+    self-signed cert must not be trusted for this broker."""
+    wrong_cert_path = tmp_path / "wrong-cert.pem"
+    load_or_create_server_certificate(wrong_cert_path, tmp_path / "wrong-key.pem", "127.0.0.1", 90)
+
+    connector = MqttSparkplugConnector(
+        SparkplugConnectorConfig(
+            host=mqtt_broker_tls.host,
+            port=mqtt_broker_tls.port,
+            tls_enabled=True,
+            tls_ca_certs_path=str(wrong_cert_path),
+            connect_timeout_seconds=3.0,
+        )
+    )
+    with pytest.raises(Exception):  # noqa: B017,PT011 — TLS failure surfaces as ssl.SSLError via paho
+        await connector.connect()
+
+
+async def test_connect_over_mtls_with_client_certificate(
+    mqtt_broker_mtls: MtlsBrokerAddress,
+) -> None:
+    """XEDGE-441: the connector can present a client certificate for the
+    broker's own mTLS, independent of the fleet's own CA (XEDGE-440) -- a
+    customer broker's PKI and xEdge's fleet PKI are different trust
+    domains, so this must work with *any* client cert, not specifically a
+    fleet-CA-issued one.
+
+    This only proves the connector can successfully complete an mTLS
+    handshake and get *accepted* with a valid cert -- not that omitting
+    one is rejected. amqtt's broker (the version this test suite is
+    pinned to) always sets `ssl.CERT_OPTIONAL` for a listener with
+    `cafile` configured, never `CERT_REQUIRED` (confirmed by reading
+    amqtt/broker.py directly) -- it cannot actually enforce "client
+    certificate mandatory," so there is no broker behavior available here
+    to write a rejection test against. A real broker requiring client
+    certificates (Mosquitto's `require_certificate true`, EMQX, HiveMQ)
+    enforces that at the TLS layer the same way `manager_device_app`'s
+    `ssl_cert_reqs=CERT_REQUIRED` does in tests/integration/
+    test_fleet_agent.py -- this connector's job is just to present a cert
+    when configured to, which is what this test actually verifies."""
+    connector = MqttSparkplugConnector(
+        SparkplugConnectorConfig(
+            host=mqtt_broker_mtls.host,
+            port=mqtt_broker_mtls.port,
+            tls_enabled=True,
+            tls_ca_certs_path=str(mqtt_broker_mtls.ca_cert_path),
+            tls_certfile_path=str(mqtt_broker_mtls.client_cert_path),
+            tls_keyfile_path=str(mqtt_broker_mtls.client_key_path),
+        )
+    )
+    try:
+        await connector.connect()
+        assert connector.is_alive()
+    finally:
+        await connector.disconnect()
 
 
 async def test_publish_metrics_tracked(mqtt_broker: tuple[str, int]) -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -265,6 +265,31 @@ def test_fleet_status_endpoint_reports_live_agent_state(
     assert body["registered"] is True
     assert body["device_id"] == "dev1"
     assert body["last_heartbeat_ok"] is True
+    assert body["connection_state"] == "inactive"  # no last_heartbeat_at recorded yet
+    assert body["cert_not_after"] is None
+
+
+def test_fleet_status_endpoint_reports_connection_state_and_cert_expiry(
+    tmp_path: Path, core_schema_path: Path
+) -> None:
+    now = datetime.now(UTC)
+    status = FleetAgentStatus(
+        enabled=True,
+        registered=True,
+        heartbeat_interval_seconds=60,
+        last_heartbeat_at=now,
+        last_heartbeat_ok=True,
+        cert_not_after=now + timedelta(days=90),
+    )
+    app = _build_app(tmp_path, core_schema_path, fleet_status=status)
+    client = TestClient(app)
+    client.post(
+        "/ui/setup", data={"password": "correct-password", "confirm_password": "correct-password"}
+    )
+    response = client.get("/api/v1/fleet/status")
+    body = response.json()
+    assert body["connection_state"] == "active"
+    assert body["cert_not_after"] == status.cert_not_after.isoformat()
 
 
 def test_dashboard_omits_sntp_card_when_sntp_disabled(

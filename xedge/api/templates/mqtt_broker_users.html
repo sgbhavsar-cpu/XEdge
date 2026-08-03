@@ -1,0 +1,50 @@
+{% extends "config_layout.html" %}
+{% block title %}xEdge — MQTT Broker Users{% endblock %}
+{% block config_content %}
+<div class="xedge-card">
+  <h1>MQTT Broker Users</h1>
+  <p class="xedge-hint">
+    Credentials for clients connecting to the embedded MQTT broker (the
+    listener under MQTT Broker settings). Unrelated to Web UI accounts
+    under Users, and unrelated to any broker xEdge itself connects
+    <em>out</em> to (Northbound (MQTT), or an mqtt_subscriber driver).
+  </p>
+  <table class="xedge-table">
+    <thead><tr><th>Username</th><th></th></tr></thead>
+    <tbody>
+      {% for username in usernames %}
+      <tr>
+        <td>{{ username }}</td>
+        <td>
+          <form method="post" action="/ui/config/mqtt-broker/users/{{ username }}/delete"
+                onsubmit="return confirm('Delete broker user {{ username }}?');">
+            <button type="submit" class="xedge-button-danger">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="2">No broker users yet — allow_anonymous is the only way in until one is added.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="xedge-card">
+  <h1>Add a broker user</h1>
+  {% if add_error %}<p class="xedge-error">{{ add_error }}</p>{% endif %}
+  <form method="post" action="/ui/config/mqtt-broker/users/new">
+    <div class="xedge-field">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" required autofocus>
+    </div>
+    <div class="xedge-field">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" required autocomplete="new-password">
+    </div>
+    <div class="xedge-form-actions">
+      <button type="submit">Add user</button>
+      <a href="/ui/config/core/mqtt_broker" class="xedge-button-secondary">Back to broker settings</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

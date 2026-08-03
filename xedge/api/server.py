@@ -49,9 +49,11 @@ from xedge.api.permissions import ROLE_PERMISSIONS, has_permission
 from xedge.api.rate_limit import RateLimitMiddleware
 from xedge.api.ui import create_ui_router
 from xedge.core.alarms import AlarmEngine
+from xedge.core.assets import Asset, derive_asset_connection_state, parse_assets
 from xedge.core.config import ConfigValidationError, ConfigValidator, ConfigVersionHistory
 from xedge.core.connectivity import ConnectivityState
 from xedge.core.driver_config import build_driver_config
+from xedge.core.smtp import SmtpStatus
 from xedge.core.sntp import SntpSyncStatus
 from xedge.core.supervisor import DriverState, DriverSupervisor
 from xedge.core.write_router import WriteRouter
@@ -136,6 +138,7 @@ def create_app(
     fleet_status: FleetAgentStatus | None = None,
     alarm_engine: AlarmEngine | None = None,
     sntp_status: SntpSyncStatus | None = None,
+    smtp_status: SmtpStatus | None = None,
 ) -> FastAPI:
     app = FastAPI(title="xEdge API", version=__version__)
     started_at = datetime.now(UTC)
@@ -258,6 +261,22 @@ def create_app(
             "northbound_connected": dispatcher.connected if dispatcher is not None else None,
         }
 
+    @app.post("/api/v1/northbound/republish")
+    def republish_northbound(
+        user: str = Depends(require_permission("northbound:publish")),
+    ) -> dict[str, Any]:
+        """Sprint C5, XEDGE-452 (CRD §4.10 "manual republish"): wakes the
+        dispatcher immediately rather than waiting out the rest of
+        `publish_interval_seconds` — see `NorthboundDispatcher.
+        trigger_publish()`. Does not publish synchronously itself, and
+        `queued` reflects only whether a dispatcher exists to signal, not
+        whether the following publish actually succeeds."""
+        if dispatcher is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Northbound is not configured")
+        dispatcher.trigger_publish()
+        audit_log.append(user, "northbound.republish_triggered")
+        return {"queued": True}
+
     @app.get("/api/v1/drivers")
     def get_drivers(_user: str = Depends(require_permission("tag:read"))) -> list[dict[str, Any]]:
         return [
@@ -309,6 +328,71 @@ def create_app(
                     }
                 )
         return {"tags": tags, "system": system}
+
+    def _current_assets() -> list[Asset]:
+        """Latest saved config version (ConfigVersionHistory), same
+        source `GET /api/v1/config` already reads — not `store.data`
+        directly, since server.py holds no live ConfigStore reference."""
+        versions = version_history.list_versions()
+        if not versions:
+            return []
+        assets_config = version_history.load_version(versions[-1]).get("assets", [])
+        return parse_assets(assets_config)
+
+    def _asset_connection_state(asset: Asset) -> ConnectivityState:
+        driver_connectivity = {
+            instance_id: s.connectivity_state for instance_id, s in supervisor.all_status().items()
+        }
+        return derive_asset_connection_state(asset, driver_connectivity)
+
+    def _asset_summary(asset: Asset) -> dict[str, Any]:
+        return {
+            "id": asset.id,
+            "name": asset.name,
+            "enabled": asset.enabled,
+            "serial_number": asset.serial_number,
+            "asset_type": asset.asset_type,
+            "make": asset.make,
+            "model": asset.model,
+            "firmware_version": asset.firmware_version,
+            "description": asset.description,
+            "gateway_id": asset.gateway_id,
+            "parameter_count": len(asset.parameters),
+            "connection_state": _asset_connection_state(asset).value,
+        }
+
+    @app.get("/api/v1/assets")
+    def list_assets(_user: str = Depends(require_permission("tag:read"))) -> list[dict[str, Any]]:
+        """ADR-010: read-only, derived from the current `assets` config
+        section plus each backing driver's *live* connectivity — nothing
+        here is stored. See config_ui.py for asset create/edit/delete
+        (Web UI form routes, matching every other config-mutation path in
+        this codebase)."""
+        return [_asset_summary(asset) for asset in _current_assets()]
+
+    @app.get("/api/v1/assets/{asset_id}")
+    def get_asset(
+        asset_id: str, _user: str = Depends(require_permission("tag:read"))
+    ) -> dict[str, Any]:
+        assets = {asset.id: asset for asset in _current_assets()}
+        asset = assets.get(asset_id)
+        if asset is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"No asset {asset_id!r}")
+        parameters = []
+        for parameter in asset.parameters:
+            tag = latest_values.get(parameter.tag_ref)
+            parameters.append(
+                {
+                    "tag_ref": parameter.tag_ref,
+                    "alias": parameter.alias,
+                    "unit": parameter.unit,
+                    "store": parameter.store,
+                    "value": tag.value if tag is not None else None,
+                    "quality": tag.quality.value if tag is not None else None,
+                    "timestamp": tag.timestamp.isoformat() if tag is not None else None,
+                }
+            )
+        return {**_asset_summary(asset), "parameters": parameters}
 
     @app.post("/api/v1/drivers/{instance_id}/tags/{tag_name}/write")
     async def write_tag(
@@ -595,6 +679,10 @@ def create_app(
             "last_heartbeat_ok": fleet_status.last_heartbeat_ok,
             "last_error": fleet_status.last_error,
             "last_config_apply": fleet_status.last_config_apply,
+            "connection_state": fleet_status.connection_state.value,
+            "cert_not_after": (
+                fleet_status.cert_not_after.isoformat() if fleet_status.cert_not_after else None
+            ),
         }
 
     @app.get("/api/v1/sntp/status")
@@ -619,6 +707,23 @@ def create_app(
             "consecutive_failures": sntp_status.consecutive_failures,
             "last_error": sntp_status.last_error,
             "stale": sntp_status.is_stale,
+        }
+
+    @app.get("/api/v1/smtp/status")
+    def get_smtp_status(_user: str = Depends(require_permission("tag:read"))) -> dict[str, Any]:
+        """XEDGE-466 (CRD §4.7): whether the last attempted email (an
+        alarm notification or a scheduled report -- this doesn't
+        distinguish which) actually went out."""
+        if smtp_status is None:
+            return {"enabled": False}
+        return {
+            "enabled": smtp_status.enabled,
+            "last_send_at": (
+                smtp_status.last_send_at.isoformat() if smtp_status.last_send_at else None
+            ),
+            "last_send_ok": smtp_status.last_send_ok,
+            "last_error": smtp_status.last_error,
+            "emails_sent": smtp_status.emails_sent,
         }
 
     @app.get("/api/v1/alarms")

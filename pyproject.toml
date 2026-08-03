@@ -65,6 +65,27 @@ dependencies = [
     # was previously only declared under the `test` extra (an existing gap,
     # unrelated to fleet work, found while adding a second real consumer).
     "httpx>=0.27",
+    # Embedded MQTT broker (Sprint C5, XEDGE-453; ADR-012 §3). Explicitly
+    # promoted from test-only, reversing that prior decision in the open —
+    # see docs/planning/license-audit.md §4 item 6 for the license/
+    # maintenance/ARM-footprint re-verification (prerequisite P-5) this
+    # promotion required first. Still also the test-only broker fixture's
+    # dependency (ADR-006) — that role is unaffected, just no longer the
+    # only reason this package is installed.
+    "amqtt>=0.11",
+    # EtherNet/IP (CIP) scanner runtime (Sprint C7, XEDGE-471; ADR-012 §1):
+    # MIT-licensed, zero runtime dependencies of its own — see
+    # docs/planning/license-audit.md §4 item 7 for the license/maintenance
+    # verification this integration required first (prerequisite P-1),
+    # including its "no longer actively developed" PyPI notice.
+    "pycomm3>=1.2",
+    # SNMP manager runtime (Sprint C8, XEDGE-481; ADR-012 §2): BSD-2-Clause,
+    # one dependency of its own (pyasn1, also BSD-2-Clause) — see
+    # docs/planning/license-audit.md §4 item 8 for the license/maintenance/
+    # agent-role verification this integration required first
+    # (prerequisites P-3/P-4), including the PyPI naming-fragmentation
+    # finding (pysnmp-lextudio is deprecated in favor of plain pysnmp).
+    "pysnmp>=7.1",
 ]
 
 [project.optional-dependencies]
@@ -98,11 +119,21 @@ test = [
     # imported by xedge itself, never read as reference implementations,
     # not shipped in any edition.
     "pymodbus>=3.6",
-    "amqtt>=0.11",
+    # amqtt itself moved to the main runtime dependencies list above
+    # (Sprint C5, XEDGE-453) -- it's still used as the test-only broker
+    # fixture too (tests/fixtures/mqtt_broker.py), just no longer *only*
+    # that, so it no longer belongs exclusively under this extra.
     # pysparkplug is installed separately with --no-deps (see CI workflow /
     # README): its own pin of paho-mqtt<2 conflicts with our real paho-mqtt
     # 2.x dependency above, but we only use its payload decode classes,
     # which don't touch its MQTT client at all.
+    #
+    # aiosmtpd (Sprint C6, XEDGE-466): real local SMTP server for
+    # xedge.core.smtp's tests -- the same test-oracle role pymodbus/amqtt
+    # play, needed because Python 3.12 removed the stdlib `smtpd` module
+    # this would otherwise have used. Apache-2.0; deps attrs (MIT) and
+    # atpublic (Apache-2.0) both checked too.
+    "aiosmtpd>=1.4",
 ]
 
 [project.scripts]
@@ -163,4 +194,17 @@ ignore_missing_imports = true
 # itself stays strictly typed, only the third-party surface is untyped.
 [[tool.mypy.overrides]]
 module = "bacpypes3.*"
+ignore_missing_imports = true
+
+# amqtt (embedded MQTT broker, Sprint C5/XEDGE-453) and passlib (its password
+# hashing dependency, used directly for the broker's password file) ship no
+# py.typed marker either. Same treatment as above.
+[[tool.mypy.overrides]]
+module = ["amqtt.*", "passlib.*"]
+ignore_missing_imports = true
+
+# pysnmp (SNMP manager, Sprint C8/XEDGE-481) ships no py.typed marker either
+# (confirmed: no py.typed file in the installed package). Same treatment.
+[[tool.mypy.overrides]]
+module = "pysnmp.*"
 ignore_missing_imports = true

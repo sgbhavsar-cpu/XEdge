@@ -1,0 +1,67 @@
+# Generic MQTT Subscriber (Sprint C5, XEDGE-450; CRD §4.10): subscribes to
+# an external broker and maps incoming messages into tags. Independent of,
+# and unrelated to, the northbound Sparkplug B publisher/NCMD write-back
+# path under `northbound.mqtt` — this is southbound data acquisition, the
+# same job every other driver does, just speaking MQTT instead of
+# Modbus/BACnet/OPC UA.
+schema_version: "0.1"
+
+data_dir: /data
+
+logging:
+  level: INFO
+
+watchdog:
+  enabled: true
+  interval_seconds: 15
+
+drivers:
+  - id: mqtt_sub_01
+    type: mqtt_subscriber
+    enabled: true
+    config:
+      host: broker.example.com
+      port: 1883
+      client_id: xedge-mqtt-sub-01
+      # username: scada-reader
+      # password: "${SECRET:mqtt_subscriber_password}"
+      tls_enabled: false
+      # tls_ca_certs_path: /data/certs/broker-ca.pem
+    tag_groups:
+      - id: sensor_readings
+        tags:
+          # Plain-text payload, e.g. a sensor publishing "23.5" directly —
+          # auto-coerced to bool/int/float/string, no payload_format needed.
+          - id: room1_temperature
+            topic: "sensors/room1/temperature"
+            engineering_unit: "°C"
+          # Wildcard subscription: every concrete topic matching this
+          # filter updates the *same* tag (last-value-wins) — there is no
+          # per-topic fan-out into dynamically created tags.
+          - id: any_room_humidity
+            topic: "sensors/+/humidity"
+          # JSON payload with a nested field extracted by dot-path, e.g.
+          # {"reading": {"value": 42.7, "unit": "C"}}
+          - id: line1_pressure
+            topic: "line1/data"
+            payload_format: json
+            json_path: "reading.value"
+            scaling:
+              scale: 1.0
+              offset: 0.0
+            engineering_unit: "kPa"
+
+store:
+  ram_max_depth: 10000
+  retention_duration_seconds: 604800 # 7 days
+  purge_interval_seconds: 3600
+
+config_management:
+  hot_reload_enabled: true
+  poll_interval_seconds: 2.0
+  max_versions: 10
+
+api:
+  enabled: true
+  host: 127.0.0.1
+  port: 8080
