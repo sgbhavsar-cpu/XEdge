@@ -62,6 +62,22 @@ gate is passed):
 | ruff, mypy, bandit, pytest | dev/test tooling only | MIT / Apache-2.0 | N/A — not shipped | |
 | hatchling | build backend | MIT | N/A — not shipped | |
 
+### 3.1 Candidates introduced by XEDGE-CRD-001 (ADR-012)
+
+**None of these may be merged until its license is verified from the
+distributed package metadata and this table is updated** (ADR-012 §0,
+XEDGE-DR-001 D-12). Entries below record the *candidate* and the
+*verification owed*, not a cleared decision.
+
+| Library | Proposed use | License (claimed) | Verification status | Notes |
+|---|---|---|---|---|
+| amqtt | **Promotion from test-only to runtime** — embedded MQTT broker (ADR-012 §3) | MIT | ⏳ Re-verify in sprint C4 (prerequisite P-5) | Reverses the prior "test-only, not shipped in any edition" decision recorded in `pyproject.toml`. Also needs a maintenance-status and ARM-footprint assessment — a test fixture and a network-listening production service warrant different scrutiny |
+| pycomm3 | EtherNet/IP CIP originator (ADR-012 §1) | MIT | ⏳ Verify in sprint C6 (prerequisite P-1) | **Explicit messaging only — does not implement CIP Class 1 implicit (cyclic) I/O.** See ADR-012 §1 and open item Q-7 before committing to sprint C7 |
+| cpppo | EtherNet/IP fallback | ⚠ Unverified — understood to be copyleft with a commercial option | ⏳ Verify before considering | Not currently cleared for the commercial edition. Do not adopt without a license purchase decision |
+| pysnmp (lineage) | SNMP manager + agent + notification originator/receiver (ADR-012 §2) | ⚠ Unverified | ⏳ Verify in sprint C7 (prerequisites P-3, P-4) | Project changed stewardship and PyPI naming is fragmented across forks — verify the exact package identity, license and maintenance status, **and confirm it supports the agent role**, not just manager |
+| psycopg (or equivalent) | Fleet Manager Postgres driver (ADR-013 §5) | LGPL-3.0 (psycopg2) / Apache-2.0 (psycopg3) | ⏳ Verify at Delivery 2 planning | Central server only — never shipped on a gateway. Prefer psycopg3 for the permissive license |
+| React, Vite, TypeScript + transitive npm tree | Fleet Manager SPA dashboard (ADR-013 §6) | MIT (direct deps) | ⏳ Full tree audit required at Delivery 2 | **Central server only — not shipped on a gateway.** The device UI keeps ADR-007's no-npm posture. An npm SBOM and CI dependency audit are in scope for that sprint (risk R-11) |
+
 ## 4. Open items
 
 1. **asyncua legal review** — the MVP ships asyncua directly as the OPC UA
@@ -76,7 +92,18 @@ gate is passed):
    on the ADR-006 go/no-go gate.
 4. **libiec61850 commercial license** — procure before Sprint 27.
 5. **DLMS decision** — gurux vs. in-house build decided at Phase 4 close
-   (before Sprint 28).
+   (now Delivery 2, P10).
+6. **amqtt runtime promotion** (ADR-012 P-5) — re-verify license and
+   maintenance; assess ARM footprint against ADR-007's 1 GB target; define
+   broker TLS/auth/ACL scope. Due sprint C4.
+7. **pycomm3 verification** (ADR-012 P-1) — license and maintenance from
+   package metadata. Due sprint C6. **Blocked behind open item Q-7**
+   (whether CIP implicit I/O is required), which decides whether a library
+   is sufficient at all.
+8. **SNMP library verification** (ADR-012 P-3, P-4) — package identity,
+   license, maintenance, and **agent-role support**. Due sprint C7.
+   Fallback if none clears: v1/v2c in-house, v3 escalated to the customer
+   as a scope question.
 
 ## 5. Provenance record template (per in-house driver)
 

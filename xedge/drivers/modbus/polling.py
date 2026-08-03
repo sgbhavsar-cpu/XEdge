@@ -111,6 +111,14 @@ ACCESS_READ_WRITE = "read_write"
 ACCESS_READ_ONLY = "read_only"
 ACCESS_WRITE_ONLY = "write_only"
 
+# Tag-group `polling_mode` values (XEDGE-435; ADR-011 Part 2 — "submission
+# policies, not loop rewrites"). `continuous` is the default and every
+# group's behavior before this field existed: read on a fixed period,
+# forever.
+POLLING_MODE_CONTINUOUS = "continuous"
+POLLING_MODE_ON_CONNECT = "on_connect"
+POLLING_MODE_ON_DEMAND = "on_demand"
+
 
 def _tag_access(tag: dict[str, Any]) -> str:
     return tag.get("access", ACCESS_READ_WRITE)  # type: ignore[no-any-return]
@@ -147,7 +155,30 @@ class BaseModbusPollingDriver(BaseDriver):
         self._tags_by_id: dict[str, dict[str, Any]] = {}
         self._blocks_by_group: dict[str, list[planner.ReadBlock]] = {}
         self._connectivity = ConnectivityTracker()
-        self._scheduler = RequestScheduler()
+        # One Event per on_demand tag group (XEDGE-435), created in
+        # configure() rather than lazily inside _poll_group() so poll_now()
+        # can never race the group's own task for who creates it first.
+        self._on_demand_triggers: dict[str, asyncio.Event] = {}
+        # A private scheduler, correct by default for a transport where each
+        # instance owns its own connection (TCP, RTU-over-TCP). Left unused
+        # and harmless (no task ever spawned — RequestScheduler.start() is
+        # never called) for a transport that overrides `_scheduler` below.
+        self._own_scheduler = RequestScheduler()
+
+    @property
+    def _scheduler(self) -> RequestScheduler:
+        """The scheduler this instance submits reads/writes through.
+
+        Overridden by `ModbusRtuSerialDriver` (Sprint C3, XEDGE-431) to
+        return its `SerialBusManager`'s *shared* scheduler instead of this
+        private one: several driver instances (several slaves) on one
+        RS-485 bus must serialize and priority-order through **one**
+        scheduler, not one each — a private per-instance scheduler is the
+        right granularity for TCP, where it happens to coincide with "one
+        scheduler per connection," and the wrong one for a shared bus, where
+        it would not (ADR-011 Part 1).
+        """
+        return self._own_scheduler
 
     def _require_config(self) -> DriverConfig:
         if self._config is None:
@@ -170,6 +201,11 @@ class BaseModbusPollingDriver(BaseDriver):
         # of config, and a config change arrives as a driver restart
         # (hot-reload, XEDGE-184) rather than in-place mutation.
         self._blocks_by_group = {}
+        self._on_demand_triggers = {
+            group["id"]: asyncio.Event()
+            for group in config.tag_groups
+            if group.get("polling_mode", POLLING_MODE_CONTINUOUS) == POLLING_MODE_ON_DEMAND
+        }
         for group in config.tag_groups:
             # write_only tags exist to be written, never polled (XEDGE-422) —
             # excluded here so they never enter a read request at all, not
@@ -194,25 +230,31 @@ class BaseModbusPollingDriver(BaseDriver):
 
     async def connect(self) -> None:
         await self._connect_transport()
-        # Started only once the transport is actually up — a failed
-        # `_connect_transport()` raises before this line, so no scheduler is
-        # ever left running with nothing behind it.
-        self._scheduler.start()
 
     async def disconnect(self) -> None:
-        # Stop accepting/serving new work before tearing down the transport
-        # it depends on, not after.
-        await self._scheduler.stop()
         await self._disconnect_transport()
 
     async def _connect_transport(self) -> None:
-        """Transport hook: establish the underlying connection."""
+        """Transport hook: establish the underlying connection, and start
+        whichever `_scheduler` this instance uses.
+
+        Scheduler start/stop moved here from a fixed base-class
+        implementation in Sprint C3 (XEDGE-431): TCP/RTU-over-TCP start
+        their own private scheduler exactly once, right after their own
+        connection opens. `ModbusRtuSerialDriver` overrides this hook
+        instead to acquire a *shared* `SerialBusManager`, whose own
+        acquire()/release() reference-counts the scheduler's start/stop
+        across every instance on that bus — a fixed "this hook always
+        starts `self._scheduler`" base implementation could not express
+        that difference.
+        """
         raise NotImplementedError
 
     async def _disconnect_transport(self) -> None:
-        """Transport hook: release the underlying connection. Must be safe
-        to call even if `_connect_transport()` never succeeded — same
-        contract `BaseDriver.disconnect()` documents."""
+        """Transport hook: stop whichever `_scheduler` this instance uses,
+        then release the underlying connection. Must be safe to call even
+        if `_connect_transport()` never succeeded — same contract
+        `BaseDriver.disconnect()` documents."""
         raise NotImplementedError
 
     async def run(self, output: asyncio.Queue[TagUpdate]) -> None:
@@ -333,6 +375,68 @@ class BaseModbusPollingDriver(BaseDriver):
         raise NotImplementedError
 
     async def _poll_group(self, group: dict[str, Any], output: asyncio.Queue[TagUpdate]) -> None:
+        """Dispatch `group` to the loop shape its `polling_mode` needs
+        (XEDGE-435; ADR-011 Part 2 — "submission policies, not loop
+        rewrites"). `continuous` (default) is `_poll_continuously` below,
+        unchanged since Sprint C1 (XEDGE-410)."""
+        polling_mode = group.get("polling_mode", POLLING_MODE_CONTINUOUS)
+        instance_id = self._config.instance_id if self._config else "modbus"
+        blocks = self._blocks_by_group.get(group["id"], [])
+
+        if polling_mode == POLLING_MODE_ON_CONNECT:
+            # Read once, then this group's task simply returns — no further
+            # polling, matching "read-once-then-idle" exactly: an idle task
+            # holds no connection/scheduler slot open, it just ends.
+            await self._read_and_publish(instance_id, blocks, output)
+            return
+
+        if polling_mode == POLLING_MODE_ON_DEMAND:
+            # Ends only via task cancellation, same as the continuous loop
+            # below — waiting on a cleared Event costs nothing while idle,
+            # unlike a poll interval, so there is no "sleep" step here at all.
+            trigger = self._on_demand_triggers[group["id"]]
+            while True:
+                await trigger.wait()
+                trigger.clear()
+                await self._read_and_publish(instance_id, blocks, output)
+
+        await self._poll_continuously(group, blocks, instance_id, output)
+
+    async def _read_and_publish(
+        self,
+        instance_id: str,
+        blocks: list[planner.ReadBlock],
+        output: asyncio.Queue[TagUpdate],
+    ) -> None:
+        for block in blocks:
+            for update in await self._read_one_block(instance_id, block):
+                await output.put(update)
+
+    async def poll_now(self, group_id: str) -> bool:
+        """Trigger an immediate read of an `on_demand` tag group (XEDGE-435),
+        e.g. from `POST /api/v1/drivers/{id}/tag-groups/{group_id}/poll`.
+
+        Returns False if `group_id` isn't a currently-configured `on_demand`
+        group — nothing to trigger — rather than raising, since "no such
+        on-demand group" is an ordinary, expected outcome for a caller
+        (a stale UI, a typo'd id), not a driver malfunction. The actual read
+        happens on the group's own task, same as every other read; this
+        method only sets the event it's waiting on and returns immediately,
+        it does not wait for the read to complete.
+        """
+        trigger = self._on_demand_triggers.get(group_id)
+        if trigger is None:
+            return False
+        trigger.set()
+        return True
+
+    async def _poll_continuously(
+        self,
+        group: dict[str, Any],
+        blocks: list[planner.ReadBlock],
+        instance_id: str,
+        output: asyncio.Queue[TagUpdate],
+    ) -> None:
         """Read `group` on a fixed period (XEDGE-410).
 
         The deadline advances by exactly `scan_rate_ms` each cycle rather than
@@ -348,16 +452,12 @@ class BaseModbusPollingDriver(BaseDriver):
         is the best available answer once the configured rate is unreachable.
         """
         interval_seconds = group["scan_rate_ms"] / 1000
-        instance_id = self._config.instance_id if self._config else "modbus"
-        blocks = self._blocks_by_group.get(group["id"], [])
         overrunning = False
         last_overrun_log = 0.0
 
         next_due = time.monotonic()
         while True:
-            for block in blocks:
-                for update in await self._read_one_block(instance_id, block):
-                    await output.put(update)
+            await self._read_and_publish(instance_id, blocks, output)
 
             next_due += interval_seconds
             now = time.monotonic()

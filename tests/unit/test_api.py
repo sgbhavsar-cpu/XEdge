@@ -4,6 +4,7 @@ import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -15,7 +16,7 @@ from xedge.api.server import create_app
 from xedge.core.alarms import AlarmEngine, AlarmRule
 from xedge.core.config import ConfigVersionHistory
 from xedge.core.pipeline import UnifiedTag
-from xedge.core.supervisor import DriverConfig, DriverRegistry, DriverSupervisor
+from xedge.core.supervisor import DriverConfig, DriverRegistry, DriverState, DriverSupervisor
 from xedge.drivers.base import Quality, TagUpdate
 from xedge.northbound.dispatcher import NorthboundDispatcher
 from xedge.observability.audit_log import AuditLog
@@ -1111,3 +1112,190 @@ class TestPrometheusMetricsEndpoint:
         assert response.status_code == 200
         assert "# HELP" in response.text
         assert "# TYPE" in response.text
+
+
+class TestSerialPortsEndpoint:
+    """XEDGE-434: backs the modbus_rtu_serial driver form's `port` field
+    suggestions (schema `x-suggestions-endpoint`, see test_schema_forms.py)."""
+
+    def test_returns_detected_ports_sorted(
+        self, tmp_path: Path, core_schema_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import xedge.api.server as server_module
+
+        class _FakePortInfo:
+            def __init__(self, device: str) -> None:
+                self.device = device
+
+        monkeypatch.setattr(
+            server_module.list_ports,
+            "comports",
+            lambda: [_FakePortInfo("/dev/ttyUSB1"), _FakePortInfo("/dev/ttyUSB0")],
+        )
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.get("/api/v1/serial-ports")
+
+        assert response.status_code == 200
+        assert response.json() == ["/dev/ttyUSB0", "/dev/ttyUSB1"]
+
+    def test_empty_when_nothing_detected(
+        self, tmp_path: Path, core_schema_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import xedge.api.server as server_module
+
+        monkeypatch.setattr(server_module.list_ports, "comports", lambda: [])
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        assert client.get("/api/v1/serial-ports").json() == []
+
+    def test_requires_authentication(self, tmp_path: Path, core_schema_path: Path) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        anonymous_client = TestClient(app)
+
+        assert anonymous_client.get("/api/v1/serial-ports").status_code == 401
+
+
+class _PollableFakeDriver(FakeDriver):
+    """FakeDriver + `poll_now`, standing in for a real on_demand-capable
+    Modbus driver instance. The on_demand/on_connect polling loop itself
+    (dispatch inside `_poll_group`, the Event-based trigger) is covered
+    against the real driver in tests/integration/test_modbus_polling_modes.py;
+    this fake only needs to prove the REST endpoint calls through to
+    whatever `poll_now` the live driver instance happens to expose.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(emit_interval_seconds=1000)
+        self.polled: list[str] = []
+
+    async def poll_now(self, group_id: str) -> bool:
+        if group_id != "ondemand_group":
+            return False
+        self.polled.append(group_id)
+        return True
+
+
+async def _start_driver(instance_id: str, driver: FakeDriver) -> DriverSupervisor:
+    """Starts `driver` and waits for it to reach RUNNING, same shape as
+    `_running_supervisor()` above generalized to an arbitrary driver double.
+    Called `supervisor.start()` directly (never through the `/enable` HTTP
+    endpoint) and waited on with `await asyncio.sleep()` in the *same* event
+    loop, exactly like `_running_supervisor()` — TestClient's ASGI dispatch
+    runs on its own loop/thread and offers no guarantee of interleaving a
+    background task's progress with a synchronous `.post()` call, so
+    starting through HTTP and immediately polling `health` for "running" is
+    not reliable here (confirmed: it isn't, that's what this replaced).
+    The `modbus_tcp` type name is arbitrary — these tests bypass config-file
+    schema validation entirely by calling `start()` directly, so nothing
+    reads it as anything other than a registry key.
+    """
+    registry = DriverRegistry()
+    registry.register("modbus_tcp", lambda: driver)
+    supervisor = DriverSupervisor(registry, asyncio.Queue(maxsize=100))
+    supervisor.start(
+        DriverConfig(instance_id=instance_id, driver_type="modbus_tcp", config={}, tag_groups=[])
+    )
+    for _ in range(300):
+        if supervisor.status(instance_id).state == DriverState.RUNNING:
+            return supervisor
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"{instance_id!r} never reached the running state")
+
+
+class TestPollTagGroupEndpoint:
+    """XEDGE-435 (ADR-011 Part 2) — REST side of `poll_now()`. Covers only
+    the endpoint's routing/permission/error contract; the on_demand/
+    on_connect polling-loop behavior itself is covered against a real
+    driver in tests/integration/test_modbus_polling_modes.py.
+    """
+
+    async def test_unknown_driver_instance_returns_404(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.post("/api/v1/drivers/nope/tag-groups/g1/poll")
+
+        assert response.status_code == 404
+
+    async def test_driver_not_running_returns_409(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = await _start_driver("pollable_01", _PollableFakeDriver())
+        await supervisor.disable("pollable_01")
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.post("/api/v1/drivers/pollable_01/tag-groups/ondemand_group/poll")
+
+        assert response.status_code == 409
+        assert "disabled" in response.json()["detail"]
+
+    async def test_driver_without_poll_now_support_returns_400(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = await _start_driver("fake_01", FakeDriver(emit_interval_seconds=1000))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.post("/api/v1/drivers/fake_01/tag-groups/g1/poll")
+
+        assert response.status_code == 400
+        await supervisor.stop_all()
+
+    async def test_unknown_tag_group_returns_404(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        supervisor = await _start_driver("pollable_01", _PollableFakeDriver())
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.post("/api/v1/drivers/pollable_01/tag-groups/no_such_group/poll")
+
+        assert response.status_code == 404
+        await supervisor.stop_all()
+
+    async def test_successful_trigger_returns_200_and_reaches_the_driver(
+        self, tmp_path: Path, core_schema_path: Path
+    ) -> None:
+        driver = _PollableFakeDriver()
+        supervisor = await _start_driver("pollable_01", driver)
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        client = _authenticated_client(app)
+
+        response = client.post("/api/v1/drivers/pollable_01/tag-groups/ondemand_group/poll")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "instance_id": "pollable_01",
+            "tag_group": "ondemand_group",
+            "triggered": True,
+        }
+        assert driver.polled == ["ondemand_group"]
+        await supervisor.stop_all()
+
+    async def test_requires_authentication(self, tmp_path: Path, core_schema_path: Path) -> None:
+        supervisor = DriverSupervisor(DriverRegistry(), asyncio.Queue(maxsize=1))
+        history = ConfigVersionHistory(tmp_path)
+        app = _build_app(supervisor, history, tmp_path, core_schema_path)
+        anonymous_client = TestClient(app)
+
+        response = anonymous_client.post("/api/v1/drivers/x/tag-groups/g/poll")
+
+        assert response.status_code == 401

@@ -27,6 +27,21 @@ def _entry(instance_id: str, scan_rate_ms: int = 1000) -> dict:
     }
 
 
+def _serial_entry(instance_id: str, port: str, unit_id: int) -> dict:
+    return {
+        "id": instance_id,
+        "type": "modbus_rtu_serial",
+        "config": {"port": port, "unit_id": unit_id},
+        "tag_groups": [
+            {
+                "id": "g1",
+                "scan_rate_ms": 1000,
+                "tags": [{"id": "t1", "function_code": "read_holding_registers", "address": 0}],
+            }
+        ],
+    }
+
+
 @pytest.fixture
 def registry_and_supervisor():  # type: ignore[no-untyped-def]
     queue: asyncio.Queue[TagUpdate] = asyncio.Queue(maxsize=100)
@@ -165,6 +180,65 @@ class TestApplyDriverChanges:
         # still recognized as "changed" and retried.
         assert supervisor.status("d1").state != DriverState.STOPPED
         assert updated["d1"] == good_entry
+        await supervisor.stop_all()
+
+    async def test_a_slave_id_conflict_starts_neither_instance(
+        self, registry_and_supervisor
+    ) -> None:  # type: ignore[no-untyped-def]
+        """XEDGE-433: two modbus_rtu_serial entries claiming the same
+        (port, unit_id) must both be refused — the schema on either one in
+        isolation has no way to see the other."""
+        registry, supervisor = registry_and_supervisor
+        registry.register("modbus_rtu_serial", lambda: FakeDriver(emit_interval_seconds=100.0))
+        conflicting_a = _serial_entry("a", "/dev/ttyUSB0", 5)
+        conflicting_b = _serial_entry("b", "/dev/ttyUSB0", 5)
+
+        updated = await apply_driver_changes(
+            [conflicting_a, conflicting_b], {}, registry, supervisor
+        )
+
+        assert "a" not in updated
+        assert "b" not in updated
+        with pytest.raises(KeyError):
+            supervisor.status("a")
+        with pytest.raises(KeyError):
+            supervisor.status("b")
+        await supervisor.stop_all()
+
+    async def test_different_unit_ids_on_one_port_both_start(self, registry_and_supervisor) -> None:  # type: ignore[no-untyped-def]
+        """The multi-drop case this whole feature exists to support must
+        not be mistaken for a conflict."""
+        registry, supervisor = registry_and_supervisor
+        registry.register("modbus_rtu_serial", lambda: FakeDriver(emit_interval_seconds=100.0))
+        entry_a = _serial_entry("a", "/dev/ttyUSB0", 1)
+        entry_b = _serial_entry("b", "/dev/ttyUSB0", 2)
+
+        updated = await apply_driver_changes([entry_a, entry_b], {}, registry, supervisor)
+
+        assert {"a", "b"} <= updated.keys()
+        assert supervisor.status("a") is not None
+        assert supervisor.status("b") is not None
+        await supervisor.stop_all()
+
+    async def test_conflict_introduced_by_an_edit_reverts_to_prior_config(
+        self, registry_and_supervisor
+    ) -> None:  # type: ignore[no-untyped-def]
+        """An instance running peacefully must not be torn down just
+        because a *different* instance's edit now collides with it — the
+        existing "prior config keeps running" rule (FR-CM-005) applies to
+        a newly-introduced conflict exactly as it does to a schema
+        failure."""
+        registry, supervisor = registry_and_supervisor
+        registry.register("modbus_rtu_serial", lambda: FakeDriver(emit_interval_seconds=100.0))
+        original_a = _serial_entry("a", "/dev/ttyUSB0", 1)
+        current = await apply_driver_changes([original_a], {}, registry, supervisor)
+
+        edited_a = _serial_entry("a", "/dev/ttyUSB0", 5)  # now collides with b
+        entry_b = _serial_entry("b", "/dev/ttyUSB0", 5)
+        updated = await apply_driver_changes([edited_a, entry_b], current, registry, supervisor)
+
+        assert updated["a"] == original_a, "must revert to the last-known-good entry"
+        assert "b" not in updated
         await supervisor.stop_all()
 
 

@@ -233,5 +233,78 @@ const xedgeUi = (() => {
     setInterval(pollFleetStatusOnce, POLL_INTERVAL_MS);
   }
 
-  return { pollDashboard, pollDriverTags, startLogTail, pollFleetStatus };
+  function formatSntpTimestamp(iso) {
+    return iso ? new Date(iso).toLocaleString() : "never";
+  }
+
+  async function pollSntpStatusOnce() {
+    try {
+      const response = await fetch("/api/v1/sntp/status");
+      if (response.status === 401) {
+        window.location.href = "/ui/login";
+        return;
+      }
+      const data = await response.json();
+      const staleCell = document.getElementById("sntp-stale");
+      if (staleCell) staleCell.textContent = data.stale ? "stale" : "synced";
+      const serverCell = document.getElementById("sntp-last-server");
+      if (serverCell) serverCell.textContent = data.last_sync_server || "none yet";
+      const lastSyncCell = document.getElementById("sntp-last-sync-at");
+      if (lastSyncCell) lastSyncCell.textContent = formatSntpTimestamp(data.last_sync_at);
+      const offsetCell = document.getElementById("sntp-offset");
+      if (offsetCell) {
+        offsetCell.textContent =
+          data.offset_seconds === null || data.offset_seconds === undefined
+            ? ""
+            : `${data.offset_seconds.toFixed(3)}s`;
+      }
+      const failuresCell = document.getElementById("sntp-consecutive-failures");
+      if (failuresCell) failuresCell.textContent = data.consecutive_failures;
+    } catch (err) {
+      // Network hiccups shouldn't spam the console on every poll tick.
+    }
+  }
+
+  function pollSntpStatus() {
+    pollSntpStatusOnce();
+    setInterval(pollSntpStatusOnce, POLL_INTERVAL_MS);
+  }
+
+  // XEDGE-434: fetches each `data-suggestions-endpoint` input's live value
+  // list once and fills its linked <datalist> — e.g. a modbus_rtu_serial
+  // driver's "port" field suggesting detected serial ports without forcing
+  // the operator to pick only from what was detected (see
+  // _form_macros.html and schema_forms.FieldDescriptor.suggestions_endpoint
+  // for why this is a <datalist>, not a rigid <select>). Safe to call on
+  // every page — a no-op wherever no such field was rendered.
+  async function populateSuggestions() {
+    const inputs = document.querySelectorAll("[data-suggestions-endpoint]");
+    for (const input of inputs) {
+      const datalist = document.getElementById(input.getAttribute("list"));
+      if (!datalist) continue;
+      try {
+        const response = await fetch(input.dataset.suggestionsEndpoint);
+        if (!response.ok) continue;
+        const values = await response.json();
+        datalist.textContent = "";
+        for (const value of values) {
+          const option = document.createElement("option");
+          option.value = value;
+          datalist.appendChild(option);
+        }
+      } catch (err) {
+        // A missing/unreachable detection source shouldn't block the form -
+        // the field stays a plain, freely-editable text input either way.
+      }
+    }
+  }
+
+  return {
+    pollDashboard,
+    pollDriverTags,
+    startLogTail,
+    pollFleetStatus,
+    pollSntpStatus,
+    populateSuggestions,
+  };
 })();

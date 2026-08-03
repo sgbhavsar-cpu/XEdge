@@ -45,8 +45,15 @@ class ModbusRtuOverTcpDriver(BaseModbusPollingDriver):
             asyncio.open_connection(cfg["host"], cfg.get("port", 502)),
             timeout=cfg.get("connect_timeout_seconds", _DEFAULT_CONNECT_TIMEOUT_SECONDS),
         )
+        # Started only once the connection is actually up — a failed
+        # open_connection() raises before this line, so the scheduler is
+        # never left running with nothing behind it.
+        self._scheduler.start()
 
     async def _disconnect_transport(self) -> None:
+        # Stop accepting/serving new work before tearing down the
+        # connection it depends on, not after.
+        await self._scheduler.stop()
         if self._writer is not None:
             self._writer.close()
             try:

@@ -35,6 +35,7 @@ from xedge.api.auth import (
 from xedge.api.permissions import ROLE_PERMISSIONS, has_permission
 from xedge.core.alarms import AlarmEngine
 from xedge.core.config import ConfigVersionHistory
+from xedge.core.sntp import SntpSyncStatus
 from xedge.core.supervisor import DriverSupervisor
 from xedge.fleet.agent import FleetAgentStatus
 from xedge.northbound.dispatcher import NorthboundDispatcher
@@ -88,6 +89,7 @@ def create_ui_router(
     dashboard_url: str | None = None,
     fleet_status: FleetAgentStatus | None = None,
     alarm_engine: AlarmEngine | None = None,
+    sntp_status: SntpSyncStatus | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/ui")
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
@@ -211,6 +213,7 @@ def create_ui_router(
                 "drivers": drivers,
                 "northbound_connected": (dispatcher.connected if dispatcher is not None else None),
                 "fleet_enabled": fleet_status.enabled if fleet_status is not None else False,
+                "sntp_enabled": sntp_status.enabled if sntp_status is not None else False,
                 "authenticated": True,
                 **nav_permissions(request),
             },

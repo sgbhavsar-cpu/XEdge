@@ -22,6 +22,11 @@ dependencies = [
     "jsonschema>=4.21",
     "structlog>=24.1",
     "pyserial-asyncio>=0.6",
+    # Already present as a transitive dependency of pyserial-asyncio above;
+    # declared explicitly since Sprint C3 (XEDGE-434) — xedge.api.server's
+    # serial-port auto-detection endpoint imports serial.tools.list_ports
+    # directly.
+    "pyserial>=3.5",
     "paho-mqtt>=2.1",
     # MVP OPC UA runtime (ADR-006 §7 amendment) — GPL edition only until
     # LGPL-3.0 obligations are reviewed for the commercial edition; the
@@ -75,11 +80,20 @@ dev = [
     "bandit==1.9.4",
     "types-PyYAML==6.0.12.20260724",
     "types-jsonschema==4.26.0.20260518",
+    "types-pyserial==3.5.0.20260712",
 ]
 test = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
+    # A hung test is otherwise a hung CI job with no traceback (see the
+    # XEDGE-CRD-001 Delivery 1 merge notes for two real incidents this
+    # would have caught immediately instead of costing hours of Docker
+    # reproduction each) — one slow/stuck test should fail loudly, not
+    # block every other test behind it. `timeout` in [tool.pytest.ini_options]
+    # is generous relative to this suite's actual per-test cost (a small
+    # fraction of a second; the full suite runs in ~2.5 minutes).
+    "pytest-timeout>=2.3",
     # Black-box test oracles / test-only infrastructure (ADR-006) — never
     # imported by xedge itself, never read as reference implementations,
     # not shipped in any edition.
@@ -109,6 +123,11 @@ packages = ["xedge"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Method is left unset: pytest-timeout defaults to "signal" on Linux/macOS
+# (raises inside whatever is actually stuck, with a real traceback through
+# the await chain) and falls back to "thread" automatically on Windows
+# (no SIGALRM there), where this suite is also run locally.
+timeout = 60
 
 [tool.coverage.run]
 source = ["xedge"]

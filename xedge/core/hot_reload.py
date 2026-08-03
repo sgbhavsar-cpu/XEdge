@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from xedge.core.config import ConfigEngine, ConfigStore, ConfigValidationError
-from xedge.core.driver_config import build_driver_config
+from xedge.core.driver_config import build_driver_config, conflicting_serial_instance_ids
 from xedge.core.supervisor import DriverRegistry, DriverSupervisor
 from xedge.observability.logging import get_logger
 
@@ -50,6 +50,10 @@ async def apply_driver_changes(
     enabled_by_id = {entry["id"]: entry for entry in new_drivers if entry.get("enabled", True)}
     disabled_by_id = {entry["id"]: entry for entry in new_drivers if not entry.get("enabled", True)}
     all_present_ids = enabled_by_id.keys() | disabled_by_id.keys()
+    # XEDGE-433: computed once over the whole incoming list, same as at
+    # startup — a config change that introduces a slave-ID collision must
+    # be refused for both conflicting instances, not raced onto the bus.
+    conflicting_ids = conflicting_serial_instance_ids(new_drivers)
 
     for instance_id in list(current):
         if instance_id not in all_present_ids:
@@ -67,6 +71,22 @@ async def apply_driver_changes(
     for instance_id, entry in enabled_by_id.items():
         if current.get(instance_id) == entry:
             continue  # unchanged: leave it running
+        if instance_id in conflicting_ids:
+            # Same "the prior config keeps running, this one instance is
+            # rejected" handling as the ConfigValidationError branch below —
+            # a slave-ID collision is a per-instance-shaped rejection too,
+            # it just can't be detected by that instance's own schema.
+            logger.error(
+                "driver.slave_id_conflict",
+                instance_id=instance_id,
+                port=entry.get("config", {}).get("port"),
+                unit_id=entry.get("config", {}).get("unit_id"),
+            )
+            if instance_id in current:
+                result[instance_id] = current[instance_id]
+            else:
+                del result[instance_id]
+            continue
         try:
             driver_config = build_driver_config(entry)
         except ConfigValidationError as exc:

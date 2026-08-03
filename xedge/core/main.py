@@ -25,7 +25,7 @@ from xedge.api.tls import load_or_create_server_certificate
 from xedge.core.alarms import ALARM_STREAM_KEY_SUFFIX, AlarmEngine, build_alarm_rules
 from xedge.core.config import ConfigEngine, ConfigStore, ConfigValidator, ConfigVersionHistory
 from xedge.core.connectivity import ConnectivityState
-from xedge.core.driver_config import build_driver_config
+from xedge.core.driver_config import build_driver_config, conflicting_serial_instance_ids
 from xedge.core.hot_reload import config_watch_loop
 from xedge.core.pipeline import (
     DeadbandFilter,
@@ -34,6 +34,7 @@ from xedge.core.pipeline import (
     build_tag_pipeline_configs,
     normalize,
 )
+from xedge.core.sntp import SntpConfig, SntpSyncStatus, sntp_sync_loop
 from xedge.core.supervisor import DriverRegistry, DriverSupervisor
 from xedge.core.system_tags import SYSTEM_TAG_NAMES, system_tag_id, system_tag_publish_loop
 from xedge.core.watchdog import watchdog_loop
@@ -167,8 +168,23 @@ def _build_registry() -> DriverRegistry:
 def _start_configured_drivers(
     store: ConfigStore, registry: DriverRegistry, supervisor: DriverSupervisor
 ) -> None:
-    for entry in store.get_section("drivers", []):
+    drivers = store.get_section("drivers", [])
+    # XEDGE-433: computed once over the whole list before starting anything,
+    # so a slave-ID conflict is refused instead of the two colliding
+    # instances racing for the same physical port at startup exactly the
+    # way ADR-011's SerialBusManager exists to prevent once they're both
+    # already running.
+    conflicting_ids = conflicting_serial_instance_ids(drivers)
+    for entry in drivers:
         if not entry.get("enabled", True):
+            continue
+        if entry["id"] in conflicting_ids:
+            logger.error(
+                "driver.slave_id_conflict",
+                instance_id=entry["id"],
+                port=entry.get("config", {}).get("port"),
+                unit_id=entry.get("config", {}).get("unit_id"),
+            )
             continue
         driver_config = build_driver_config(entry)
         supervisor.start(driver_config)
@@ -590,6 +606,25 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
         else None
     )
 
+    sntp_config_section = store.get_section("sntp", {})
+    sntp_status = SntpSyncStatus()
+    sntp_task = (
+        asyncio.create_task(
+            sntp_sync_loop(
+                SntpConfig(
+                    servers=sntp_config_section.get("servers", ["pool.ntp.org"]),
+                    sync_interval_seconds=sntp_config_section.get("sync_interval_seconds", 3600),
+                    timeout_seconds=sntp_config_section.get("timeout_seconds", 5.0),
+                    timezone=sntp_config_section.get("timezone", "UTC"),
+                    stale_after_seconds=sntp_config_section.get("stale_after_seconds", 7200),
+                ),
+                sntp_status,
+            )
+        )
+        if sntp_config_section.get("enabled", False)
+        else None
+    )
+
     metrics_config = store.get_section("metrics", {})
     if metrics_config.get("enabled", True):
         configure_metrics(supervisor, dispatcher, ring_buffers, __version__)
@@ -638,6 +673,7 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
             requests_per_minute=rate_limit_config.get("requests_per_minute", 100),
             fleet_status=fleet_status,
             alarm_engine=alarm_engine,
+            sntp_status=sntp_status,
         )
         api_server = uvicorn.Server(
             uvicorn.Config(
@@ -673,6 +709,9 @@ async def async_main(config_path: Path, schema_path: Path) -> int:
         if fleet_task is not None:
             fleet_task.cancel()
             tasks_to_await.append(fleet_task)
+        if sntp_task is not None:
+            sntp_task.cancel()
+            tasks_to_await.append(sntp_task)
         if api_server is not None and api_task is not None:
             api_server.should_exit = True
             tasks_to_await.append(api_task)

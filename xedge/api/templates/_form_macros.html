@@ -27,7 +27,10 @@
   <input type="password" id="{{ f.name }}" name="{{ f.name }}" value="" autocomplete="new-password">
   {% else %}
   <input type="text" id="{{ f.name }}" name="{{ f.name }}"
-         value="{{ f.value if f.value is not none else '' }}"{% if f.required %} required{% endif %}>
+         value="{{ f.value if f.value is not none else '' }}"
+         {% if f.suggestions_endpoint %}list="{{ f.name }}-suggestions" data-suggestions-endpoint="{{ f.suggestions_endpoint }}"{% endif %}
+         {% if f.required %} required{% endif %}>
+  {% if f.suggestions_endpoint %}<datalist id="{{ f.name }}-suggestions"></datalist>{% endif %}
   {% endif %}
   {% if f.description %}<p class="xedge-field-help">{{ f.description }}</p>{% endif %}
 </div>

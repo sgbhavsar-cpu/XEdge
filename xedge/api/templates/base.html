@@ -6,6 +6,7 @@
 <title>{% block title %}xEdge{% endblock %}</title>
 <link rel="icon" type="image/svg+xml" href="/ui-static/favicon.svg">
 <link rel="stylesheet" href="/ui-static/xedge-ui.css">
+<script src="/ui-static/xedge-ui.js"></script>
 </head>
 <body>
 <header class="xedge-header">
@@ -25,5 +26,14 @@
   <a href="{{ dashboard_url }}" target="_blank" rel="noopener">Tracing / Metrics Dashboard</a>
 </footer>
 {% endif %}
+<script>
+  // XEDGE-434: populates any `<input list="...">` a schema field declared
+  // via `x-suggestions-endpoint` (see _form_macros.html) — e.g. detected
+  // serial ports for a modbus_rtu_serial driver's `port` field. Safe to
+  // call unconditionally on every page: a no-op wherever no such field was
+  // rendered, so no per-template wiring is needed for this or any future
+  // field using the same mechanism.
+  xedgeUi.populateSuggestions();
+</script>
 </body>
 </html>
