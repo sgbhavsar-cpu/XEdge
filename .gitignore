@@ -11,3 +11,12 @@ dist/
 coverage.xml
 htmlcov/
 config/local.yaml
+
+# Sprint P3 (ADR-013 §6): the frontend's build output. Built directly
+# into xedge/fleet/static/dashboard/ (see frontend/vite.config.ts) so a
+# non-editable `pip install .` picks it up via hatchling's default
+# package-data inclusion -- a build artifact either way, not meant to be
+# committed, same as coverage.xml/htmlcov/ above.
+xedge/fleet/static/dashboard/
+frontend/node_modules/
+frontend/dist/
