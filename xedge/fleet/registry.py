@@ -55,7 +55,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from xedge.fleet._device_auth import hash_token
-from xedge.fleet.db_models import Device, JoinToken, Tenant
+from xedge.fleet.db_models import (
+    Device,
+    DeviceCertificateHistory,
+    DeviceConfigHistory,
+    JoinToken,
+    Tenant,
+)
 
 # A device is considered "offline" once this many missed heartbeat
 # intervals have elapsed with no contact — matches the same "N x interval"
@@ -202,6 +208,53 @@ def _row_to_record(device: Device) -> DeviceRecord:
     )
 
 
+@dataclass(slots=True, frozen=True)
+class JoinTokenRecord:
+    """`id` is the row's `token_hash` -- the only per-row identifier a
+    list view can expose, since the raw token itself is never persisted
+    (see the module docstring) and can't be shown again after issuance."""
+
+    id: str
+    device_id: str
+    created_at: datetime
+    expires_at: datetime
+    consumed_at: datetime | None
+    revoked_at: datetime | None
+    revoked_by: str | None
+
+    @property
+    def status(self) -> str:
+        if self.revoked_at is not None:
+            return "revoked"
+        if self.consumed_at is not None:
+            return "consumed"
+        if self.expires_at < datetime.now(UTC):
+            return "expired"
+        return "active"
+
+
+@dataclass(slots=True, frozen=True)
+class ConfigHistoryRecord:
+    id: int
+    config_version: int
+    config: dict[str, Any]
+    pushed_at: datetime
+    pushed_by: str
+    applied_at: datetime | None
+    apply_success: bool | None
+    apply_error: str | None
+
+
+@dataclass(slots=True, frozen=True)
+class CertificateHistoryRecord:
+    id: int
+    serial_number: str
+    not_before: datetime
+    not_after: datetime
+    issued_at: datetime
+    reason: str
+
+
 class DeviceAlreadyRegisteredError(Exception):
     """Raised when `register` is called for a device_id that already has a
     token and the caller didn't ask to reuse it."""
@@ -312,18 +365,57 @@ class DeviceRegistry:
             device.uptime_seconds = uptime_seconds
             if last_config_apply is not None:
                 device.last_config_apply_json = last_config_apply
+                # Sprint P3, XEDGE-512: match this report against the
+                # config-history row `queue_config` created for the
+                # version it names (`xedge.fleet.agent._apply_pending_
+                # config`'s `{"version", "success", "error"}` shape) --
+                # a version this device never reports back on (replaced
+                # by a newer push first, or the device is decommissioned)
+                # simply leaves that row's applied_at/apply_success NULL
+                # forever, which is itself meaningful, not a bug.
+                version = last_config_apply.get("version")
+                if version is not None:
+                    history_result = await session.execute(
+                        select(DeviceConfigHistory).where(
+                            DeviceConfigHistory.device_id == device_id,
+                            DeviceConfigHistory.config_version == version,
+                        )
+                    )
+                    history_row = history_result.scalar_one_or_none()
+                    if history_row is not None:
+                        history_row.applied_at = datetime.now(UTC)
+                        history_row.apply_success = last_config_apply.get("success")
+                        history_row.apply_error = last_config_apply.get("error")
 
-    async def queue_config(self, tenant_id: str, device_id: str, config: dict[str, Any]) -> int:
+    async def queue_config(
+        self, tenant_id: str, device_id: str, config: dict[str, Any], pushed_by: str
+    ) -> int:
         """Queue `config` for delivery on this device's next heartbeat.
         Returns the new pending_config_version the device is expected to
-        report back once applied."""
+        report back once applied. `pushed_by` (Sprint P3, XEDGE-512) is
+        the operator username, recorded on the new `DeviceConfigHistory`
+        row this also inserts -- the append-only record a dashboard's
+        config-history view reads, distinct from `pending_config_json`/
+        `last_config_apply_json` above, which only ever hold the current
+        queue/latest report."""
         tenant_uuid = uuid.UUID(tenant_id)
+        now = datetime.now(UTC)
         async with self._sessionmaker() as session, session.begin():
             device = await session.get(Device, device_id)
             if device is None or device.tenant_id != tenant_uuid:
                 raise KeyError(f"No such device: {device_id!r}")
             device.pending_config_json = config
             device.pending_config_version += 1
+            session.add(
+                DeviceConfigHistory(
+                    tenant_id=tenant_uuid,
+                    device_id=device_id,
+                    config_version=device.pending_config_version,
+                    config_json=config,
+                    pushed_at=now,
+                    pushed_by=pushed_by,
+                )
+            )
             return device.pending_config_version
 
     async def take_pending_config(self, device_id: str) -> tuple[dict[str, Any], int] | None:
@@ -372,15 +464,19 @@ class DeviceRegistry:
         """Redeem a join token for `device_id`, atomically marking it
         consumed on success. Returns `None` — never raises — for every
         failure reason (unknown token, wrong device_id, expired, already
-        consumed): none of those should be distinguishable to whoever is
-        presenting the token, or the response itself becomes an oracle for
-        guessing valid device_ids. On success, returns the `tenant_id` the
-        token was provisioned under (`xedge.fleet.manager_app.enroll`
-        registers the new device into that tenant — the device never
-        asserts its own tenant)."""
+        consumed or revoked): none of those should be distinguishable to
+        whoever is presenting the token, or the response itself becomes
+        an oracle for guessing valid device_ids. On success, returns the
+        `tenant_id` the token was provisioned under
+        (`xedge.fleet.manager_app.enroll` registers the new device into
+        that tenant — the device never asserts its own tenant)."""
         async with self._sessionmaker() as session, session.begin():
             join_token = await session.get(JoinToken, hash_token(token))
-            if join_token is None or join_token.consumed_at is not None:
+            if (
+                join_token is None
+                or join_token.consumed_at is not None
+                or join_token.revoked_at is not None
+            ):
                 return None
             if not hmac.compare_digest(join_token.device_id, device_id):
                 return None
@@ -389,20 +485,143 @@ class DeviceRegistry:
             join_token.consumed_at = datetime.now(UTC)
             return str(join_token.tenant_id)
 
+    async def list_join_tokens(self, tenant_id: str) -> list[JoinTokenRecord]:
+        """Sprint P3, XEDGE-513: an operator's view of every join token
+        they've provisioned. The raw token itself was never persisted
+        (see the module docstring), so `JoinTokenRecord.id` -- the row's
+        `token_hash` -- is the only thing a caller can identify a token
+        by after issuance; `revoke_join_token` below takes that same id
+        back."""
+        tenant_uuid = uuid.UUID(tenant_id)
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(JoinToken)
+                .where(JoinToken.tenant_id == tenant_uuid)
+                .order_by(JoinToken.created_at.desc())
+            )
+            return [
+                JoinTokenRecord(
+                    id=t.token_hash,
+                    device_id=t.device_id,
+                    created_at=t.created_at,
+                    expires_at=t.expires_at,
+                    consumed_at=t.consumed_at,
+                    revoked_at=t.revoked_at,
+                    revoked_by=t.revoked_by,
+                )
+                for t in result.scalars().all()
+            ]
+
+    async def revoke_join_token(self, tenant_id: str, token_id: str, revoked_by: str) -> bool:
+        """Sprint P3, XEDGE-513: an operator-initiated kill, distinct
+        from `consumed_at` (device-initiated redemption) -- see
+        `xedge.fleet.db_models.JoinToken.revoked_at`'s docstring for why
+        those stay separate columns. Idempotent: revoking an
+        already-revoked (or already-consumed, or already-expired) token
+        still succeeds, since the end state -- this token no longer
+        works -- is the same either way; `consume_join_token` above is
+        what actually enforces that. Returns `False` only if no such
+        token exists in this tenant."""
+        tenant_uuid = uuid.UUID(tenant_id)
+        async with self._sessionmaker() as session, session.begin():
+            join_token = await session.get(JoinToken, token_id)
+            if join_token is None or join_token.tenant_id != tenant_uuid:
+                return False
+            join_token.revoked_at = datetime.now(UTC)
+            join_token.revoked_by = revoked_by
+            return True
+
     async def record_certificate_issued(
-        self, device_id: str, serial_number: int, not_after: datetime
-    ) -> None:
+        self,
+        device_id: str,
+        serial_number: int,
+        not_before: datetime,
+        not_after: datetime,
+        reason: str,
+    ) -> str | None:
         """Called after `xedge.security.ca.CertificateAuthority.sign_csr`
-        succeeds, for both initial enrollment (XEDGE-442) and rotation
-        (XEDGE-443) — the registry only ever stores the serial number and
-        expiry it needs to show cert status (XEDGE-447) and decide rotation
-        is due, never the certificate or key material itself."""
+        succeeds, for both initial enrollment (XEDGE-442, `reason=
+        "enrollment"`) and rotation (XEDGE-443, `reason="rotation"`) —
+        updates the device's current-certificate snapshot columns (used
+        for cert status, XEDGE-447, and deciding rotation is due) and, as
+        of Sprint P3 (XEDGE-512), also appends a `DeviceCertificateHistory`
+        row — the append-only record a dashboard's certificate-history
+        view reads, since the snapshot columns are overwritten on every
+        call. Returns the device's `tenant_id` (or `None` if no such
+        device exists) so a caller with no tenant context of its own —
+        `xedge.fleet.manager_device_app`'s rotate-certificate route,
+        unlike `enroll`, which already has it from consuming the join
+        token — can still audit-log the event without a second query."""
         async with self._sessionmaker() as session, session.begin():
             device = await session.get(Device, device_id)
             if device is None:
-                return
+                return None
             device.cert_serial_number = str(serial_number)
             device.cert_not_after = not_after
+            session.add(
+                DeviceCertificateHistory(
+                    tenant_id=device.tenant_id,
+                    device_id=device_id,
+                    serial_number=str(serial_number),
+                    not_before=not_before,
+                    not_after=not_after,
+                    issued_at=datetime.now(UTC),
+                    reason=reason,
+                )
+            )
+            return str(device.tenant_id)
+
+    async def list_config_history(
+        self, tenant_id: str, device_id: str
+    ) -> list[ConfigHistoryRecord]:
+        tenant_uuid = uuid.UUID(tenant_id)
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(DeviceConfigHistory)
+                .where(
+                    DeviceConfigHistory.tenant_id == tenant_uuid,
+                    DeviceConfigHistory.device_id == device_id,
+                )
+                .order_by(DeviceConfigHistory.config_version.desc())
+            )
+            return [
+                ConfigHistoryRecord(
+                    id=h.id,
+                    config_version=h.config_version,
+                    config=h.config_json,
+                    pushed_at=h.pushed_at,
+                    pushed_by=h.pushed_by,
+                    applied_at=h.applied_at,
+                    apply_success=h.apply_success,
+                    apply_error=h.apply_error,
+                )
+                for h in result.scalars().all()
+            ]
+
+    async def list_certificate_history(
+        self, tenant_id: str, device_id: str
+    ) -> list[CertificateHistoryRecord]:
+        tenant_uuid = uuid.UUID(tenant_id)
+        async with self._sessionmaker() as session:
+            result = await session.execute(
+                select(DeviceCertificateHistory)
+                .where(
+                    DeviceCertificateHistory.tenant_id == tenant_uuid,
+                    DeviceCertificateHistory.device_id == device_id,
+                )
+                .order_by(DeviceCertificateHistory.issued_at.desc())
+            )
+            return [
+                CertificateHistoryRecord(
+                    id=h.id,
+                    serial_number=h.serial_number,
+                    not_before=h.not_before,
+                    not_after=h.not_after,
+                    issued_at=h.issued_at,
+                    reason=h.reason,
+                )
+                for h in result.scalars().all()
+            ]
 
     async def update_metadata(
         self, tenant_id: str, device_id: str, fields: dict[str, str | None]

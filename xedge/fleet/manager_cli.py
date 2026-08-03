@@ -196,7 +196,9 @@ async def _serve(
         cert_validity_days=cert_validity_days,
         config_validator=config_validator,
     )
-    device_app = create_fleet_device_app(registry, ca, cert_validity_days=cert_validity_days)
+    device_app = create_fleet_device_app(
+        registry, ca, audit_log, cert_validity_days=cert_validity_days
+    )
 
     public_server = uvicorn.Server(
         uvicorn.Config(

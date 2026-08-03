@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from xedge import __version__
 from xedge.fleet._device_auth import bearer_value
+from xedge.fleet.audit import FleetAuditLog
 from xedge.fleet.registry import DeviceRegistry
 from xedge.security.ca import CertificateAuthority, InvalidCsrError
 
@@ -45,7 +46,11 @@ class _RotateCertificateBody(BaseModel):
 
 
 def create_fleet_device_app(
-    registry: DeviceRegistry, ca: CertificateAuthority, *, cert_validity_days: int
+    registry: DeviceRegistry,
+    ca: CertificateAuthority,
+    audit_log: FleetAuditLog,
+    *,
+    cert_validity_days: int,
 ) -> FastAPI:
     app = FastAPI(title="xEdge Fleet Manager (device)", version=__version__)
 
@@ -84,7 +89,13 @@ def create_fleet_device_app(
         current certificate expires. Deliberately the same signing call as
         initial enrollment (`ca.sign_csr`) — a device that already holds a
         connection this CA vouches for, and can prove its own device_token,
-        is exactly as trustworthy as one presenting a fresh join token."""
+        is exactly as trustworthy as one presenting a fresh join token.
+
+        Unlike enrollment (not audit-logged — no operator session is
+        involved), a rotation happening on an *already-enrolled* device is
+        audit-logged (Sprint P3, XEDGE-512): `record_certificate_issued`
+        returns the device's `tenant_id` since this app has no operator
+        session of its own to have gotten it from otherwise."""
         try:
             certificate_pem = ca.sign_csr(
                 body.csr_pem.encode("ascii"),
@@ -95,9 +106,20 @@ def create_fleet_device_app(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid CSR: {exc}") from exc
 
         certificate = x509.load_pem_x509_certificate(certificate_pem)
-        await registry.record_certificate_issued(
-            device_id, certificate.serial_number, certificate.not_valid_after_utc
+        tenant_id = await registry.record_certificate_issued(
+            device_id,
+            certificate.serial_number,
+            certificate.not_valid_before_utc,
+            certificate.not_valid_after_utc,
+            reason="rotation",
         )
+        if tenant_id is not None:
+            await audit_log.record(
+                tenant_id,
+                device_id,
+                "cert.rotated",
+                {"serial_number": str(certificate.serial_number)},
+            )
         return {"certificate_pem": certificate_pem.decode("ascii")}
 
     return app
