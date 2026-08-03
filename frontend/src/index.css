@@ -1,0 +1,5 @@
+/* MUI's CssBaseline (see main.tsx) handles the global reset -- this file
+   is intentionally close to empty. */
+#root {
+  min-height: 100vh;
+}

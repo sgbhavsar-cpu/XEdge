@@ -2,6 +2,23 @@
 # Multi-arch build (amd64, arm64, armv7) via `docker buildx build --platform ...`.
 # Non-root, read-only-rootfs friendly (NFR-C-004, system-architecture.md §6.2).
 
+# Sprint P3 (ADR-013 §6): the React fleet dashboard, built here and copied
+# into the Python builder stage below before `pip install` runs, so
+# hatchling picks up xedge/fleet/static/dashboard/ as ordinary package
+# data -- it's already inside the `xedge` package tree, unlike
+# config/schema/ below, which needs its own pyproject.toml
+# force-include entry because it isn't. `--platform=$BUILDPLATFORM`:
+# this stage's output (static HTML/JS/CSS) has no CPU architecture of
+# its own, so it must run on the *build* machine's native platform, not
+# be redundantly re-emulated under QEMU once per target platform like
+# the actual Python/C-extension stages below need to be.
+FROM --platform=$BUILDPLATFORM node:22-slim AS frontend-builder
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend ./
+RUN npm run build
+
 FROM python:3.11-slim AS builder
 
 # armv7 has no prebuilt wheel for cffi (a transitive dependency of
@@ -18,6 +35,7 @@ WORKDIR /build
 COPY pyproject.toml README.md ./
 COPY xedge ./xedge
 COPY config/schema ./config/schema
+COPY --from=frontend-builder /build/xedge/fleet/static/dashboard ./xedge/fleet/static/dashboard
 
 RUN pip install --no-cache-dir --prefix=/install .
 

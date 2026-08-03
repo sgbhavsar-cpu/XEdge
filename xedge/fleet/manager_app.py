@@ -40,10 +40,13 @@ Auth here: three distinct bearer tokens, never the same value.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from cryptography import x509
 from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from xedge import __version__
@@ -62,6 +65,15 @@ from xedge.fleet.registry import DeviceRegistry, DeviceTenantConflictError
 from xedge.security.ca import CertificateAuthority, InvalidCsrError
 
 _DEFAULT_JOIN_TOKEN_TTL_SECONDS = 3600.0
+# Sprint P3, XEDGE-510 (ADR-013 §6): `frontend/`'s Vite build writes
+# straight into this directory (frontend/vite.config.ts's `build.outDir`)
+# -- already inside the `xedge` package tree, so a non-editable `pip
+# install .` picks it up via hatchling's default package-data inclusion,
+# unlike `config/schema/` (outside `xedge/`, needs its own
+# `force-include` entry in pyproject.toml). Absent entirely on a fresh
+# checkout that hasn't run `npm run build` yet -- a supported dev mode,
+# not an error; see `_mount_dashboard` below.
+_DASHBOARD_DIR = Path(__file__).parent / "static" / "dashboard"
 
 
 class _LoginBody(BaseModel):
@@ -578,4 +590,45 @@ def create_fleet_manager_app(
             for h in await registry.list_certificate_history(session.tenant_id, device_id)
         ]
 
+    _mount_dashboard(app)
     return app
+
+
+def _mount_dashboard(app: FastAPI) -> None:
+    """Sprint P3, XEDGE-510: serve the built React SPA from the same
+    origin as the API it consumes (ADR-013 §6). Registered last, after
+    every `/api/v1/fleet/*` route above -- FastAPI matches routes in
+    registration order, so those explicit routes are always checked
+    first regardless of what's mounted here.
+
+    A no-op if `_DASHBOARD_DIR` doesn't exist (no `npm run build` has
+    ever run against this checkout): the manager still serves its JSON
+    API on its own, exactly as it did before this sprint. This is the
+    normal case for the Python test suite, which doesn't build the
+    frontend first."""
+    if not _DASHBOARD_DIR.is_dir():
+        return
+
+    app.mount(
+        "/assets", StaticFiles(directory=str(_DASHBOARD_DIR / "assets")), name="dashboard-assets"
+    )
+
+    dashboard_root = _DASHBOARD_DIR.resolve()
+
+    @app.get("/{full_path:path}")
+    async def serve_dashboard(full_path: str) -> FileResponse:
+        """Any path that isn't one of the API routes above (already
+        matched first, by registration order) is either a static file
+        this build produced (e.g. `favicon.svg`) or a client-side route
+        React Router owns (e.g. `/devices/dev1`) -- serve `index.html`
+        for the latter and let the SPA's own router take over.
+
+        `StaticFiles` above guards `/assets/*` against a `full_path`
+        containing `..` sequences on its own; this handwritten route
+        needs the same guard applied explicitly -- resolve first, then
+        require the result stay under `dashboard_root`, before ever
+        treating a request as an in-tree file."""
+        requested = (_DASHBOARD_DIR / full_path).resolve()
+        if requested.is_relative_to(dashboard_root) and requested.is_file():
+            return FileResponse(requested)
+        return FileResponse(_DASHBOARD_DIR / "index.html")
