@@ -1,14 +1,16 @@
 """End-to-end fleet management test (Sprint 29; reworked Sprint C4,
-XEDGE-440/442/443): two real Fleet Manager ports (uvicorn, real TLS —
-server-only on the enrollment port, mTLS on the device port) and a real
-`fleet_heartbeat_loop` agent talking to them — enrollment (CSR + join
-token in, certificate + device token out), heartbeat, config push
-delivered on the next heartbeat, and the apply result reported back on the
-one after that. Also exercises certificate rotation directly over a
-manually-built mTLS client, since the FastAPI `TestClient` used by
-tests/unit/test_fleet_device_app.py never negotiates real TLS and so can't
-prove the mTLS listener itself (`ssl_cert_reqs=CERT_REQUIRED`) actually
-rejects connections without a CA-issued client certificate.
+XEDGE-440/442/443; Postgres migration Sprint P1, XEDGE-500): two real
+Fleet Manager ports (uvicorn, real TLS — server-only on the enrollment
+port, mTLS on the device port) and a real `fleet_heartbeat_loop` agent
+talking to them — enrollment (CSR + join token in, certificate + device
+token out), heartbeat, config push delivered on the next heartbeat, and
+the apply result reported back on the one after that. Also exercises
+certificate rotation directly over a manually-built mTLS client, since
+the FastAPI `TestClient`-equivalent (`httpx.AsyncClient` over
+`ASGITransport`, per tests/unit/test_fleet_device_app.py) never
+negotiates real TLS and so can't prove the mTLS listener itself
+(`ssl_cert_reqs=CERT_REQUIRED`) actually rejects connections without a
+CA-issued client certificate.
 """
 
 from __future__ import annotations
@@ -52,9 +54,18 @@ def _free_port() -> int:
 
 
 async def _wait_until(predicate, timeout_seconds: float = 5.0) -> None:  # type: ignore[no-untyped-def]
+    """`predicate` may be an ordinary sync callable (returns `bool`
+    directly) or return a not-yet-awaited coroutine (e.g. `lambda: some_
+    async_check()`) — the registry is async as of Sprint P1, so several
+    callers below need to poll it. Each call to `predicate()` in the loop
+    below produces a fresh coroutine when it's async, which is required
+    anyway since a coroutine object can only be awaited once."""
     deadline = asyncio.get_event_loop().time() + timeout_seconds
     while asyncio.get_event_loop().time() < deadline:
-        if predicate():
+        result = predicate()
+        if asyncio.iscoroutine(result):
+            result = await result
+        if result:
             return
         await asyncio.sleep(0.02)
     pytest.fail("condition never became true within timeout")
@@ -63,11 +74,17 @@ async def _wait_until(predicate, timeout_seconds: float = 5.0) -> None:  # type:
 class _FleetManagerFixture:
     """Bootstraps a fleet CA + manager identity and serves both real ports
     exactly as `xedge.fleet.manager_cli.run` does, but keeping server
-    handles so the test can shut them down cleanly."""
+    handles so the test can shut them down cleanly. `registry`/
+    `default_tenant_id` come from the shared `fleet_registry`/
+    `fleet_default_tenant_id` fixtures (real Postgres, Sprint P1) rather
+    than being constructed here — this class never owns the registry's
+    lifecycle, only the two uvicorn servers built on top of it."""
 
     def __init__(
         self,
         tmp_path: Path,
+        registry: DeviceRegistry,
+        default_tenant_id: str,
         *,
         device_keep_alive_timeout: int = 5,
         device_cert_validity_days: int = _CERT_VALIDITY_DAYS,
@@ -77,7 +94,8 @@ class _FleetManagerFixture:
         self.public_url = f"https://127.0.0.1:{self.public_port}"
         self.device_url = f"https://127.0.0.1:{self.device_port}"
 
-        self.registry = DeviceRegistry(tmp_path / "manager" / "devices.db")
+        self.registry = registry
+        self.tenant_id = default_tenant_id
         self.ca_cert_path = tmp_path / "manager" / "ca.pem"
         self.ca = load_or_create_ca(
             self.ca_cert_path, tmp_path / "manager" / "ca.key", "test-fleet-ca", 3650
@@ -96,6 +114,7 @@ class _FleetManagerFixture:
             self.registry,
             self.ca,
             admin_token=_ADMIN_TOKEN,
+            default_tenant_id=default_tenant_id,
             cert_validity_days=device_cert_validity_days,
         )
         device_app = create_fleet_device_app(
@@ -152,7 +171,6 @@ class _FleetManagerFixture:
         self.public_server.should_exit = True
         self.device_server.should_exit = True
         await asyncio.gather(self._public_task, self._device_task, return_exceptions=True)
-        self.registry.close()
 
     async def create_join_token(self, device_id: str) -> str:
         # Deliberately the async client, not the synchronous httpx.post
@@ -173,10 +191,24 @@ class _FleetManagerFixture:
         token: str = response.json()["join_token"]
         return token
 
+    async def is_online(self, device_id: str) -> bool:
+        record = await self.registry.get(self.tenant_id, device_id)
+        return record is not None and record.status == "online"
+
+    async def last_config_apply_succeeded(self, device_id: str) -> bool:
+        record = await self.registry.get(self.tenant_id, device_id)
+        return record is not None and (record.last_config_apply or {}).get("success") is True
+
+    async def last_config_apply_failed(self, device_id: str) -> bool:
+        record = await self.registry.get(self.tenant_id, device_id)
+        return record is not None and (record.last_config_apply or {}).get("success") is False
+
 
 @pytest.fixture
-async def fleet_manager(tmp_path: Path):  # type: ignore[no-untyped-def]
-    manager = _FleetManagerFixture(tmp_path)
+async def fleet_manager(  # type: ignore[no-untyped-def]
+    tmp_path: Path, fleet_registry: DeviceRegistry, fleet_default_tenant_id: str
+):
+    manager = _FleetManagerFixture(tmp_path, fleet_registry, fleet_default_tenant_id)
     await manager.start()
     try:
         yield manager
@@ -231,13 +263,8 @@ async def test_agent_enrolls_heartbeats_and_applies_pushed_config(
         # could have ended up even transiently on that side.
         assert "PRIVATE KEY" not in fleet_manager.ca_cert_path.read_text(encoding="utf-8")
 
-        await _wait_until(
-            lambda: (
-                fleet_manager.registry.get("test-device-1") is not None
-                and fleet_manager.registry.get("test-device-1").status == "online"
-            )
-        )
-        record = fleet_manager.registry.get("test-device-1")
+        await _wait_until(lambda: fleet_manager.is_online("test-device-1"))
+        record = await fleet_manager.registry.get(fleet_manager.tenant_id, "test-device-1")
         assert record.cert_serial_number
 
         async with httpx.AsyncClient(verify=False) as admin_client:
@@ -249,15 +276,8 @@ async def test_agent_enrolls_heartbeats_and_applies_pushed_config(
             assert push.status_code == 202
 
             await _wait_until(lambda: "level: DEBUG" in config_path.read_text(encoding="utf-8"))
-            await _wait_until(
-                lambda: (
-                    (fleet_manager.registry.get("test-device-1").last_config_apply or {}).get(
-                        "success"
-                    )
-                    is True
-                )
-            )
-            record = fleet_manager.registry.get("test-device-1")
+            await _wait_until(lambda: fleet_manager.last_config_apply_succeeded("test-device-1"))
+            record = await fleet_manager.registry.get(fleet_manager.tenant_id, "test-device-1")
             assert record.last_config_apply == {"version": 1, "success": True, "error": None}
             assert record.has_pending_config is False
     finally:
@@ -309,15 +329,8 @@ async def test_agent_reports_a_rejected_config_without_writing_it(
             )
             assert push.status_code == 202
 
-            await _wait_until(
-                lambda: (
-                    (fleet_manager.registry.get("test-device-2").last_config_apply or {}).get(
-                        "success"
-                    )
-                    is False
-                )
-            )
-            record = fleet_manager.registry.get("test-device-2")
+            await _wait_until(lambda: fleet_manager.last_config_apply_failed("test-device-2"))
+            record = await fleet_manager.registry.get(fleet_manager.tenant_id, "test-device-2")
             assert record.last_config_apply["error"]
             assert config_path.read_text(encoding="utf-8") == original_contents
     finally:
@@ -326,7 +339,10 @@ async def test_agent_reports_a_rejected_config_without_writing_it(
 
 
 async def test_heartbeat_survives_the_servers_keep_alive_timeout(
-    tmp_path: Path, core_schema_path: Path
+    tmp_path: Path,
+    core_schema_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_default_tenant_id: str,
 ) -> None:
     """Regression test for a bug found by manually running the agent
     against a real Fleet Manager, not by any existing automated test:
@@ -342,7 +358,12 @@ async def test_heartbeat_survives_the_servers_keep_alive_timeout(
     server-side keep-alive rather than waiting out the real 5s default."""
     device_keep_alive_timeout = 1
     heartbeat_interval_seconds = 1.5  # comfortably longer than the above
-    manager = _FleetManagerFixture(tmp_path, device_keep_alive_timeout=device_keep_alive_timeout)
+    manager = _FleetManagerFixture(
+        tmp_path,
+        fleet_registry,
+        fleet_default_tenant_id,
+        device_keep_alive_timeout=device_keep_alive_timeout,
+    )
     await manager.start()
     try:
         join_token = await manager.create_join_token("keep-alive-test-device")
@@ -441,7 +462,10 @@ async def test_rotate_certificate_over_a_real_mtls_connection(
 
 
 async def test_agent_proactively_rotates_a_certificate_nearing_expiry(
-    tmp_path: Path, core_schema_path: Path
+    tmp_path: Path,
+    core_schema_path: Path,
+    fleet_registry: DeviceRegistry,
+    fleet_default_tenant_id: str,
 ) -> None:
     """Carried from Sprint C4 into C5: XEDGE-443's rotate-certificate
     endpoint had no caller on the device side until now. Uses a
@@ -456,7 +480,12 @@ async def test_agent_proactively_rotates_a_certificate_nearing_expiry(
     afterward*, proving the mTLS client was really rebuilt with the new
     identity rather than only appearing to rotate."""
     device_cert_validity_days = 1
-    manager = _FleetManagerFixture(tmp_path, device_cert_validity_days=device_cert_validity_days)
+    manager = _FleetManagerFixture(
+        tmp_path,
+        fleet_registry,
+        fleet_default_tenant_id,
+        device_cert_validity_days=device_cert_validity_days,
+    )
     await manager.start()
     try:
         join_token = await manager.create_join_token("rotation-test-device")
@@ -531,7 +560,7 @@ async def test_agent_proactively_rotates_a_certificate_nearing_expiry(
                 )
             )
 
-            record = manager.registry.get("rotation-test-device")
+            record = await manager.registry.get(manager.tenant_id, "rotation-test-device")
             assert record is not None
             assert record.cert_not_after == new_cert.not_valid_after_utc
         finally:

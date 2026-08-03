@@ -17,6 +17,12 @@ from tests.fixtures.mqtt_broker import (  # noqa: F401 — re-exported fixtures
     mqtt_broker_tls,
 )
 from tests.fixtures.opcua_server import opcua_test_server  # noqa: F401 — re-exported fixture
+from tests.fixtures.postgres import (  # noqa: F401 — re-exported fixtures
+    _fleet_postgres_url,
+    fleet_default_tenant_id,
+    fleet_registry,
+    other_tenant_id,
+)
 from tests.fixtures.smtp_server import (  # noqa: F401 — re-exported fixtures
     smtp_server,
     smtp_server_requiring_auth,

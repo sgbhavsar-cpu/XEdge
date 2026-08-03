@@ -21,6 +21,13 @@ def test_parse_args_defaults() -> None:
     assert args.device_port == 8091
     assert args.schema_path is None
     assert args.identity_hostname == "xedge-fleet-manager"
+    assert args.database_url == "postgresql+asyncpg://xedge:xedge@localhost:5432/xedge_fleet"
+
+
+def test_parse_args_database_url_override() -> None:
+    args = parse_args(["--database-url", "postgresql+asyncpg://u:p@db-host:5432/mydb"])
+
+    assert args.database_url == "postgresql+asyncpg://u:p@db-host:5432/mydb"
 
 
 def test_parse_args_schema_path_override() -> None:

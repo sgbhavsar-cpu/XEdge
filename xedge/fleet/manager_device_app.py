@@ -49,8 +49,8 @@ def create_fleet_device_app(
 ) -> FastAPI:
     app = FastAPI(title="xEdge Fleet Manager (device)", version=__version__)
 
-    def require_device_token(device_id: str, authorization: str = Header(default="")) -> None:
-        if not registry.verify_token(device_id, bearer_value(authorization)):
+    async def require_device_token(device_id: str, authorization: str = Header(default="")) -> None:
+        if not await registry.verify_token(device_id, bearer_value(authorization)):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing device token")
 
     @app.get("/health")
@@ -58,24 +58,24 @@ def create_fleet_device_app(
         return {"status": "ok"}
 
     @app.post("/api/v1/fleet/devices/{device_id}/heartbeat")
-    def heartbeat(
+    async def heartbeat(
         device_id: str, body: _HeartbeatBody, _auth: None = Depends(require_device_token)
     ) -> dict[str, Any]:
-        registry.heartbeat(
+        await registry.heartbeat(
             device_id,
             body.agent_version,
             body.driver_count,
             body.uptime_seconds,
             body.last_config_apply,
         )
-        pending = registry.take_pending_config(device_id)
+        pending = await registry.take_pending_config(device_id)
         if pending is None:
             return {"pending_config": None, "pending_config_version": None}
         config, version = pending
         return {"pending_config": config, "pending_config_version": version}
 
     @app.post("/api/v1/fleet/devices/{device_id}/rotate-certificate")
-    def rotate_certificate(
+    async def rotate_certificate(
         device_id: str,
         body: _RotateCertificateBody,
         _auth: None = Depends(require_device_token),
@@ -95,7 +95,7 @@ def create_fleet_device_app(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid CSR: {exc}") from exc
 
         certificate = x509.load_pem_x509_certificate(certificate_pem)
-        registry.record_certificate_issued(
+        await registry.record_certificate_issued(
             device_id, certificate.serial_number, certificate.not_valid_after_utc
         )
         return {"certificate_pem": certificate_pem.decode("ascii")}

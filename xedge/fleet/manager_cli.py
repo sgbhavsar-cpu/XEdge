@@ -47,14 +47,17 @@ import uvicorn
 
 from xedge import __version__
 from xedge.core.config import ConfigValidator
+from xedge.fleet.db_models import create_engine
 from xedge.fleet.manager_app import create_fleet_manager_app
 from xedge.fleet.manager_device_app import create_fleet_device_app
+from xedge.fleet.migrate import run_migrations
 from xedge.fleet.registry import DeviceRegistry
-from xedge.security.ca import load_or_create_ca
+from xedge.security.ca import CertificateAuthority, load_or_create_ca
 
 _CA_COMMON_NAME = "xedge-fleet-ca"
 _MANAGER_IDENTITY_COMMON_NAME = "xedge-fleet-manager"
 _SCHEMA_FILENAME = "xedge-core.schema.json"
+_DEFAULT_DATABASE_URL = "postgresql+asyncpg://xedge:xedge@localhost:5432/xedge_fleet"
 
 
 def _default_schema_path() -> Path:
@@ -88,7 +91,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--data-dir",
         type=Path,
         default=Path("/data/fleet-manager"),
-        help="Directory for the device registry database, fleet CA, and auto-generated tokens",
+        help="Directory for the fleet CA and auto-generated tokens "
+        "(Sprint P1, XEDGE-500: no longer holds the device registry database — see --database-url)",
+    )
+    parser.add_argument(
+        "--database-url",
+        default=_DEFAULT_DATABASE_URL,
+        help="Async SQLAlchemy URL for the device registry's Postgres database (Sprint P1, "
+        "XEDGE-500 — supersedes the pre-P1 SQLite devices.db under --data-dir). Matches "
+        "deploy/docker/docker-compose.fleet.yml's postgres service by default.",
     )
     # nosec B104 — a fleet manager must be reachable from every enrolled
     # device's network, unlike the per-device loopback-only REST API.
@@ -138,9 +149,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 async def _serve(
-    public_app: object,
-    device_app: object,
+    registry: DeviceRegistry,
+    ca: CertificateAuthority,
     *,
+    admin_token: str,
+    cert_validity_days: int,
+    config_validator: ConfigValidator,
     host: str,
     port: int,
     device_port: int,
@@ -148,9 +162,31 @@ async def _serve(
     key_path: Path,
     ca_cert_path: Path,
 ) -> None:
+    """Builds both apps and bootstraps the default tenant *here*, inside
+    the one `asyncio.run()` call that also serves them — not in `run()`
+    beforehand. `DeviceRegistry`'s asyncpg connection pool is bound to
+    whichever event loop first uses it; an earlier, separate `asyncio.
+    run(registry.ensure_default_tenant())` call in `run()` created and
+    tore down its own loop, and the pooled connection it left behind then
+    failed with "attached to a different loop" the first time a real
+    request here tried to reuse it (found by actually running the
+    docker-compose stack end-to-end, not by the test suite -- pytest-
+    asyncio keeps one loop per test, which this bug needs *two* separate
+    `asyncio.run()` calls to reproduce)."""
+    default_tenant_id = await registry.ensure_default_tenant()
+    public_app = create_fleet_manager_app(
+        registry,
+        ca,
+        admin_token=admin_token,
+        default_tenant_id=default_tenant_id,
+        cert_validity_days=cert_validity_days,
+        config_validator=config_validator,
+    )
+    device_app = create_fleet_device_app(registry, ca, cert_validity_days=cert_validity_days)
+
     public_server = uvicorn.Server(
         uvicorn.Config(
-            public_app,  # type: ignore[arg-type]
+            public_app,
             host=host,
             port=port,
             log_config=None,
@@ -160,7 +196,7 @@ async def _serve(
     )
     device_server = uvicorn.Server(
         uvicorn.Config(
-            device_app,  # type: ignore[arg-type]
+            device_app,
             host=host,
             port=device_port,
             log_config=None,
@@ -177,7 +213,10 @@ def run(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     args.data_dir.mkdir(parents=True, exist_ok=True)
     admin_token = args.admin_token or _load_or_create_token(args.data_dir / "admin_token")
-    registry = DeviceRegistry(args.data_dir / "devices.db")
+
+    run_migrations(args.database_url)
+    engine = create_engine(args.database_url)
+    registry = DeviceRegistry(engine)
 
     ca_cert_path = args.data_dir / "ca.pem"
     ca = load_or_create_ca(
@@ -197,19 +236,13 @@ def run(argv: list[str] | None = None) -> int:
     schema_path = args.schema_path or _default_schema_path()
     config_validator = ConfigValidator.from_file(schema_path)
 
-    public_app = create_fleet_manager_app(
-        registry,
-        ca,
-        admin_token=admin_token,
-        cert_validity_days=args.cert_validity_days,
-        config_validator=config_validator,
-    )
-    device_app = create_fleet_device_app(registry, ca, cert_validity_days=args.cert_validity_days)
-
     asyncio.run(
         _serve(
-            public_app,
-            device_app,
+            registry,
+            ca,
+            admin_token=admin_token,
+            cert_validity_days=args.cert_validity_days,
+            config_validator=config_validator,
             host=args.host,
             port=args.port,
             device_port=args.device_port,
