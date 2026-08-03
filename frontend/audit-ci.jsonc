@@ -1,0 +1,20 @@
+// XEDGE-514 (ADR-013 §6): npm dependency audit, blocking from day one --
+// unlike pip-audit (continue-on-error: true in .github/workflows/ci.yml,
+// pending a legacy-violation baseline), there's no pre-existing npm tree
+// to grandfather a backlog against here, so this starts strict.
+{
+  "$schema": "https://github.com/IBM/audit-ci/raw/main/docs/schema.json",
+  "high": true,
+  "allowlist": [
+    // React Router: RSC Mode CSRF Bypass Allows Action Execution Before
+    // 400 Response -- https://github.com/advisories/GHSA-qwww-vcr4-c8h2
+    // Scoped to React Server Components ("RSC") mode / server actions,
+    // an opt-in feature this SPA never enables -- it uses plain
+    // client-side declarative routing (<BrowserRouter>, per
+    // frontend/src/main.tsx), never react-router's RSC/framework-mode
+    // APIs -- not reachable regardless of react-router-dom's version.
+    // No fixed release exists yet as of this writing; revisit once one
+    // does.
+    "GHSA-qwww-vcr4-c8h2",
+  ],
+}
