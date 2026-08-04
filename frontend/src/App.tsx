@@ -1,8 +1,8 @@
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import Layout from './components/Layout'
 import RequireAuth from './components/RequireAuth'
 import LoginPage from './pages/LoginPage'
-import DashboardPage from './pages/DashboardPage'
+import DeviceListPage from './pages/DeviceListPage'
 
 export default function App() {
   return (
@@ -10,7 +10,8 @@ export default function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route element={<RequireAuth />}>
         <Route element={<Layout />}>
-          <Route path="/" element={<DashboardPage />} />
+          <Route path="/" element={<Navigate to="/devices" replace />} />
+          <Route path="/devices" element={<DeviceListPage />} />
         </Route>
       </Route>
     </Routes>
