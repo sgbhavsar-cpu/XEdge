@@ -3,6 +3,7 @@ import Layout from './components/Layout'
 import RequireAuth from './components/RequireAuth'
 import LoginPage from './pages/LoginPage'
 import DeviceListPage from './pages/DeviceListPage'
+import DeviceDetailPage from './pages/DeviceDetailPage'
 
 export default function App() {
   return (
@@ -12,6 +13,7 @@ export default function App() {
         <Route element={<Layout />}>
           <Route path="/" element={<Navigate to="/devices" replace />} />
           <Route path="/devices" element={<DeviceListPage />} />
+          <Route path="/devices/:deviceId" element={<DeviceDetailPage />} />
         </Route>
       </Route>
     </Routes>
