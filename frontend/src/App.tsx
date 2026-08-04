@@ -4,6 +4,7 @@ import RequireAuth from './components/RequireAuth'
 import LoginPage from './pages/LoginPage'
 import DeviceListPage from './pages/DeviceListPage'
 import DeviceDetailPage from './pages/DeviceDetailPage'
+import JoinTokensPage from './pages/JoinTokensPage'
 
 export default function App() {
   return (
@@ -14,6 +15,7 @@ export default function App() {
           <Route path="/" element={<Navigate to="/devices" replace />} />
           <Route path="/devices" element={<DeviceListPage />} />
           <Route path="/devices/:deviceId" element={<DeviceDetailPage />} />
+          <Route path="/join-tokens" element={<JoinTokensPage />} />
         </Route>
       </Route>
     </Routes>
