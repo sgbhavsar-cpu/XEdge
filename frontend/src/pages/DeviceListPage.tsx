@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
+import { Link as RouterLink } from 'react-router-dom'
 import { DataGrid, type GridColDef } from '@mui/x-data-grid'
 import Chip from '@mui/material/Chip'
+import Link from '@mui/material/Link'
 import Typography from '@mui/material/Typography'
 import Alert from '@mui/material/Alert'
 import { api, ApiError } from '../api/client'
@@ -13,6 +15,11 @@ const columns: GridColDef<DeviceSummary>[] = [
     headerName: 'Name',
     flex: 1,
     valueGetter: (_value, row) => row.display_name ?? row.device_id,
+    renderCell: (params) => (
+      <Link component={RouterLink} to={`/devices/${params.row.device_id}`}>
+        {params.value}
+      </Link>
+    ),
   },
   { field: 'device_id', headerName: 'Device ID', flex: 1 },
   {
