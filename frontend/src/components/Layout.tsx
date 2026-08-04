@@ -8,12 +8,10 @@ import Container from '@mui/material/Container'
 import { useAuth } from '../auth/AuthContext'
 import { hasPermission } from '../auth/permissions'
 
-// More nav links are added here as later PRs introduce the pages they
-// point to (user management XEDGE-515). Hiding a link a role lacks
-// permission for is a UX nicety only; every route it would point to
-// enforces its own permission server-side regardless (same
-// defense-in-depth split the device-local Web UI's nav_permissions()
-// already uses).
+// Hiding a link a role lacks permission for is a UX nicety only; every
+// route it would point to enforces its own permission server-side
+// regardless (same defense-in-depth split the device-local Web UI's
+// nav_permissions() already uses).
 export default function Layout() {
   const { session, logout } = useAuth()
 
@@ -34,6 +32,11 @@ export default function Layout() {
               {hasPermission(session.role, 'device:write') && (
                 <Button color="inherit" component={RouterLink} to="/join-tokens">
                   Join Tokens
+                </Button>
+              )}
+              {hasPermission(session.role, 'user:manage') && (
+                <Button color="inherit" component={RouterLink} to="/users">
+                  Users
                 </Button>
               )}
               <Typography variant="body2">

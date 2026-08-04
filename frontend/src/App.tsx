@@ -5,6 +5,7 @@ import LoginPage from './pages/LoginPage'
 import DeviceListPage from './pages/DeviceListPage'
 import DeviceDetailPage from './pages/DeviceDetailPage'
 import JoinTokensPage from './pages/JoinTokensPage'
+import UsersPage from './pages/UsersPage'
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
           <Route path="/devices" element={<DeviceListPage />} />
           <Route path="/devices/:deviceId" element={<DeviceDetailPage />} />
           <Route path="/join-tokens" element={<JoinTokensPage />} />
+          <Route path="/users" element={<UsersPage />} />
         </Route>
       </Route>
     </Routes>
