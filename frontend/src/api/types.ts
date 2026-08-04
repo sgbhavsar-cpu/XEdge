@@ -52,6 +52,26 @@ export interface CertificateHistoryEntry {
   reason: string
 }
 
+// GET/POST/DELETE /api/v1/fleet/join-tokens (XEDGE-513).
+export type JoinTokenStatus = 'active' | 'consumed' | 'revoked' | 'expired'
+
+export interface JoinTokenRecord {
+  id: string
+  device_id: string
+  created_at: string
+  expires_at: string
+  consumed_at: string | null
+  revoked_at: string | null
+  revoked_by: string | null
+  status: JoinTokenStatus
+}
+
+export interface CreateJoinTokenResponse {
+  join_token: string
+  device_id: string
+  ttl_seconds: number
+}
+
 // PATCH /api/v1/fleet/devices/{device_id}/metadata -- every field optional
 // and omitted-vs-null-aware server-side (see _UpdateMetadataBody's
 // docstring), but the frontend always sends every field it shows, so
