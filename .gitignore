@@ -20,3 +20,9 @@ config/local.yaml
 xedge/fleet/static/dashboard/
 frontend/node_modules/
 frontend/dist/
+
+# Sprint P7 (XEDGE-166): the compiled BACnet MS/TP daemon binary --
+# built from xedge/drivers/bacnet/mstp_daemon/main.c against the
+# vendored third_party/bacnet-stack submodule, not committed source.
+xedge/drivers/bacnet/mstp_daemon/xedge-bacnet-mstp-daemon
+xedge/drivers/bacnet/mstp_daemon/*.o
