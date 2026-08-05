@@ -51,7 +51,8 @@ gate is passed):
 | open62541 | OPC UA client + server (ADR-006) | MPL-2.0 | ✅ Clear (file-level copyleft; compatible with proprietary linking) | In-house asyncio C-extension binding required (no off-the-shelf async Python binding exists) |
 | lib60870-C | **black-box oracle only** (ADR-006) | GPL-2.0 (OSS ed.) / Commercial | ⚠ GPL — do not link into commercial edition | IEC 104 stack is built in-house from the purchased IEC 60870-5-104 spec |
 | OpenDNP3 / pydnp3 | **archived — do not use** | Apache-2.0 (dead upstream) | ✅ Re-verified 2026-07-31, see §4 item 10 | Upstream confirmed still unmaintained (maintenance-only since 2020-12-20). In-house lean-build master planned (ADR-006/Sprint-20 gate, conditional on Delivery 2 P5's outcome) or the `stepfunc/dnp3` Rust crate fallback — **confirmed commercial-only for production use**, not merely "commercial support available" |
-| bacpypes3 | BACnet IP/MSTP | MIT | ✅ Clear | Selected over BAC0 per ADR-006 update (both MIT; bacpypes3 is the actively maintained async-native option) |
+| bacpypes3 | BACnet **IP only** | MIT | ✅ Clear | Selected over BAC0 per ADR-006 update (both MIT; bacpypes3 is the actively maintained async-native option). **Does not cover MS/TP at all — see the `bacnet-stack` row below and §4 item 11.** ADR-006 §3's original "BACnet IP/MSTP" row conflated the two; corrected here, 2026-08-05 |
+| bacnet-stack | BACnet **MS/TP** (Sprint P7) — a standalone C daemon per RS-485 port, linked directly, never modified in place; xEdge's own Python driver talks to it over local IPC | **Mixed**: core protocol/datalink files (`mstp.c`, `crc.c`, the Linux `rs485.c`/`dlmstp.c` port) are GPL-2.0-or-later WITH GCC-exception-2.0; their headers and the generic datalink glue (`dlmstp.c`/`.h` at the `src/` level) are MIT | ✅ Clear for linking — the GCC-exception-2.0 text explicitly permits linking the compiled GPL-flagged files into another program and distributing the combination without it becoming GPL; only modifications to bacnet-stack's *own* files would need GPL disclosure, and policy here is to keep it pristine unless a real bug/improvement calls for a patch (§4 item 11) | Vendored as a git submodule at `third_party/bacnet-stack`, pinned to tag `bacnet-stack-1.6.0`. Not a clean-room build — §2's clean-room rule doesn't apply here, since the decision is USE LIBRARY (linked), not BUILD (reimplemented from spec) |
 | pycomm3 | EtherNet/IP | MIT | ✅ Clear — re-verified 2026-07-28, see §3.1 | **Not actively maintained** (upstream's own notice — see §3.1); explicit messaging only, no CIP Class 1 implicit I/O (ADR-012 §1, XEDGE-DR-001 Q-7 resolved: accepted for Sprint C7) |
 | libiec61850 | IEC 61850 MMS | GPL-3.0 (OSS ed.) / Commercial (MZ Automation) | ⚠ Commercial license required for commercial edition | Budget approved (ADR-006 §6); procure before Sprint 27 |
 | gurux-dlms-python | DLMS/COSEM — decision deferred to Phase 4 | GPL-2.0 / Commercial | ⚠ GPL — do not link into commercial edition without the commercial license | Build-vs-buy decision point at Phase 4 close (ADR-006) |
@@ -377,6 +378,67 @@ XEDGE-DR-001 D-12). Entries below record the *candidate* and the
       planning decision informed by P5's real outcome, not a license-audit
       verification. This item's job is only to make sure that decision,
       whenever it's made, is made against current facts.
+
+11. **BACnet MS/TP: `bacpypes3` does not cover it — corrects a standing
+    error in ADR-006 §3 and this document's own §3 table, found 2026-08-05
+    during Sprint P7 planning, not assumed carried over.** ADR-006 §3 and
+    this table both previously listed "BACnet IP/MSTP" under `bacpypes3`
+    (MIT) as a single cleared row. Direct inspection of the installed
+    package (`bacpypes3==0.0.106`) found **no MS/TP implementation at
+    all** — no `mstp/` module, no frame/CRC/token-passing code anywhere in
+    the package, and `Application`'s link-layer construction only handles
+    IPv4 (raises `NotImplementedError` for IPv6, has no MS/TP branch).
+    `bacpypes3` remains correctly cleared for BACnet **IP**; the MSTP half
+    of that row was never true and is corrected in §3 above.
+    - **Replacement: `bacnet-stack`** (`github.com/bacnet-stack/bacnet-stack`,
+      Steve Karg et al.) — a mature, actively-maintained C implementation
+      (commits same-day as this research, 584 stars, 30 contributors,
+      real embedded deployments across ARM/AVR/PIC/STM32). Both master and
+      slave MS/TP roles are real, distinct functions
+      (`MSTP_Master_Node_FSM`/`MSTP_Slave_Node_FSM`); xEdge only uses the
+      master role, matching every other driver in this codebase (Sprint
+      P7 decision: master-only, no field-device emulation).
+    - **License is mixed, not a single grade, and was verified by reading
+      actual SPDX headers in the cloned source, not a repository-level
+      badge.** The token-passing FSM (`mstp.c`), CRC routines, and the
+      Linux serial port driver (`ports/linux/rs485.c`,
+      `ports/linux/dlmstp.c`) carry `GPL-2.0-or-later WITH
+      GCC-exception-2.0` — the same exception family GCC uses for its own
+      runtime libraries, which explicitly permits linking the compiled
+      file into another program and distributing the combination without
+      that combination becoming GPL. Their own headers, the generic
+      datalink glue, and the Linux port's headers are plain MIT.
+    - **Integration architecture chosen specifically to keep this clean:**
+      a small standalone C daemon (one per RS-485 port) links
+      `bacnet-stack` directly and talks to xEdge's Python/asyncio process
+      over a local IPC socket — not a ctypes/cffi binding into the same
+      process. Two independent reasons converged on this, not one:
+      (a) `bacnet-stack`'s own design is synchronous and thread-based with
+      no asyncio support and no existing Python binding anywhere upstream
+      (there is an open upstream issue, #44, literally requesting one);
+      a daemon avoids needing to bridge blocking C calls into the event
+      loop. (b) it also satisfies the FSF's "mere aggregation" doctrine
+      independently of the GCC exception above — two genuinely separate
+      programs communicating only over IPC don't merge into one
+      "combined work," which would keep xEdge's main process clean even
+      if the exception were read more narrowly than it appears to permit.
+    - **Modification policy:** `bacnet-stack` is vendored as a git
+      submodule (`third_party/bacnet-stack`, pinned to tag
+      `bacnet-stack-1.6.0`) and kept unmodified by default. If a real bug
+      or missing feature requires patching it directly, the patch is
+      submitted upstream as a pull request **and** kept on a public fork
+      we build from regardless of whether/when upstream merges it — an
+      open PR sitting unmerged does not by itself satisfy GPL's source-
+      availability requirement, so the public fork is the actual
+      compliance mechanism; the upstream PR is good practice on top of it,
+      not a substitute for it.
+    - **Not a legal opinion.** This reading of the exception text is
+      substantiated by direct inspection of the license files
+      (`third_party/bacnet-stack/license/readme.txt`,
+      `license/GCC-exception-2.0`) but still wants a counsel pass before
+      relying on it for the commercial edition, per the same standard
+      already applied to LGPL `asyncua` (item 1 above) — recorded as an
+      open item, not resolved here.
 
 ## 5. Provenance record template (per in-house driver)
 
