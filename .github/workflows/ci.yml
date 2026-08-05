@@ -92,6 +92,21 @@ jobs:
       - working-directory: frontend
         run: npm run audit
 
+  bacnet-mstp-daemon:
+    name: BACnet MS/TP Daemon Build (XEDGE-166)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # the only job needing third_party/bacnet-stack's actual content
+          # -- every other job leaves the submodule unfetched (checkout@v4
+          # default), which is fine since testpaths=["tests"] means pytest
+          # never scans it either.
+          submodules: recursive
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq build-essential
+      - working-directory: xedge/drivers/bacnet/mstp_daemon
+        run: make
+
   docker-build:
     name: Docker Build (amd64, arm64, armv7)
     runs-on: ubuntu-latest
