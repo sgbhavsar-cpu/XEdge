@@ -57,7 +57,9 @@ low-cost.
 | **OPC UA client + server** | **USE LIBRARY — open62541** (C, MPL 2.0) via in-house asyncio C-extension binding | Spec is thousands of pages; compliant stack (security policies, sessions, subscriptions, CTT) is a multi-year product. open62541 chosen over asyncua: MPL 2.0 is license-cleanest for the commercial edition and the C core fits the existing C-extension pattern. asyncua (LGPL-3.0) permitted only as a test oracle / CI simulator. | binding layer: 3–5 eng-weeks |
 | **IEC 61850 MMS** | **USE LIBRARY** (libiec61850 commercial license) | MMS alone is enormous; industry-standard path is MZ Automation commercial license. | not viable |
 | **IEC 61850 GOOSE/SV subscribers** | **BUILD later (carve-out)** | Pure raw-Ethernet frame decoding; separable from MMS; feasible in-house in Phase 5. | 3–5 eng-weeks |
-| **BACnet IP/MSTP** | **USE LIBRARY** (bacpypes3, MIT) | No licensing pressure; maintained; revisit only if it blocks. | — |
+| **BACnet IP** | **USE LIBRARY** (bacpypes3, MIT) | No licensing pressure; maintained; revisit only if it blocks. | — |
+| **BACnet MS/TP** | **USE LIBRARY** (`bacnet-stack`, GPL-2.0-or-later WITH GCC-exception-2.0 on its core files, MIT on headers/glue) | **Corrected 2026-08-05 — bacpypes3 does not implement MS/TP at all; the row above previously conflated IP and MS/TP under one entry and one license.** `bacnet-stack`'s exception permits linking into the commercial edition; integrated as a separate daemon process per RS-485 port (Sprint P7), not a from-scratch clean-room build. Full detail: `license-audit.md` §3/§4 item 11. | daemon + IPC layer + Python driver, ~30 eng-days (Sprint P7 revised estimate) |
+| **EtherNet/IP (CIP)** | **USE LIBRARY** (pycomm3, MIT) | No licensing pressure; monitor maintenance health. | — |
 | **EtherNet/IP (CIP)** | **USE LIBRARY** (pycomm3, MIT) | No licensing pressure; monitor maintenance health. | — |
 | **PROFINET IO** | **BUILD (forced)** | No mature open option exists; already planned as custom C extension. | 3 sprints (per plan R-05) |
 
