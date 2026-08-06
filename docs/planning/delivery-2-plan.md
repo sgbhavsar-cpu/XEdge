@@ -140,22 +140,40 @@ outstanding) — needed regardless of which side of the gate this lands on,
 since the in-house path needs it to build from and the commercial-crate
 path still needs it to write conformant config/mapping.
 
-### P7 — BACnet MS/TP driver
+### P7 — BACnet MS/TP driver — **done, merged to `main` (PRs #27–#32)**
 
-**Source:** v1.0 Sprint 22, **substantially reduced** by Delivery 1
-interleaving (development-plan.md §3 already flagged this as "the
-largest single interleaving win" — confirmed here, not just asserted).
+**Source:** v1.0 Sprint 22. **Superseded during this sprint's own
+licensing/architecture research** — the table below as originally
+written (and the `SerialBusManager`-reuse premise it was built on)
+assumed `bacpypes3` (already in use for BACnet/IP, ADR-006) covered
+MS/TP. It doesn't: `bacpypes3` has zero MS/TP implementation, confirmed
+by reading its source directly, not by trusting its docs. The actual
+delivered architecture is a standalone C daemon per RS-485 port
+(`xedge/drivers/bacnet/mstp_daemon/`) linking the vendored
+`third_party/bacnet-stack` (pinned `bacnet-stack-1.6.0`,
+GPL-2.0-or-later WITH GCC-exception-2.0 on the files this links
+against — safe to link and safe to fork-and-patch-with-disclosure, full
+writeup in `license-audit.md` §4 item 11) directly as the MS/TP master,
+exposed to `xedge/drivers/bacnet/mstp_client.py`'s `BacnetMstpDriver`
+over a local Unix domain socket — daemon-per-port over IPC, not "an
+MS/TP protocol handler on top of `SerialBusManager`." This is a
+materially different design than every other driver in this codebase
+(the only one linking third-party C, and the only one owning a
+subprocess), not a variation on the existing bus-manager pattern.
 
-| Story | Points (v1.0) | Points (revised) | Why revised |
+| Story | Points (v1.0) | Points (revised, pre-build) | Actual outcome |
 |---|---:|---:|---|
-| XEDGE-166 | 13 | 8 | RS-485 serial + token-passing master, MAC address config — **C3's `SerialBusManager` (shared-bus scheduling, RTS timing, multi-drop) already exists**; this becomes "add an MS/TP protocol handler on top of an existing bus manager," not "build multi-drop serial handling from zero" |
-| XEDGE-167 | 8 | 5 | MS/TP tuning (baud, max-info-frames, max-master) — same bus manager already has baud/timing config plumbing |
-| XEDGE-168 | 5 | 5 | Shared config schema for BACnet IP + MS/TP (unchanged estimate — this is genuinely new schema work) |
-| XEDGE-169 | 5 | 5 | RS-485 HIL test rig — unchanged; this is physical lab setup, not software |
-| XEDGE-170 | 8 | 5 | Integration test: MS/TP device read + COV, timing vs. spec — can reuse `bacpypes3`'s own `Application` pattern already proven for BACnet/IP (C-era work), not a new test harness design |
-| XEDGE-171 | 8 | 3 | Refactor: BACnet driver supports IP + MS/TP instances simultaneously — smaller than estimated because `DriverSupervisor` already runs arbitrarily many concurrent instances of different registered driver *types* with no shared state between them (proven directly, not assumed: Sprint H1's cross-protocol integration test runs five different protocol types under one supervisor at once — XEDGE-490). Adding `bacnet_mstp` as a second registered type alongside `bacnet_ip` is additive to that existing model, not a refactor of it |
-| XEDGE-289 | 3 | 3 | Web UI: MS/TP transport fields — schema-driven, unchanged |
-| **Total** | **50** | **34** | **~32% reduction from interleaving already built and paid for in Delivery 1** |
+| XEDGE-166 | 13 | 5 | C daemon: MS/TP master via bacnet-stack, IPC server (PR #28) |
+| XEDGE-167 | 8 | 2 | MS/TP tuning (baud, max-info-frames, max-master) — `dlenv_init()`'s existing env-var-driven init, reused directly, not hand-rolled (PR #28) |
+| XEDGE-168 | 5 | 3 | `config/schema/drivers/bacnet_mstp.schema.json` — own schema file, not merged into `bacnet_ip`'s (PR #30) |
+| XEDGE-169 | 5 | 5 | RS-485 HIL test rig — **not done**; deferred with the same fallback as Delivery 1's R-CRD-02 (no HIL hardware access), confirmed with the customer as acceptable for this driver same as every other |
+| XEDGE-170 | 8 | 4 | Integration test: real daemon + a new deterministic bacnet-stack-backed test-double server, bridged over a real `socat` virtual serial pair — real MS/TP token-passing over the real wire format, gated in CI (PR #32) |
+| XEDGE-171 | 8 | 5 | Python driver (`BacnetMstpDriver`) supervising the daemon subprocess over IPC — additive to `DriverSupervisor`'s existing multi-driver-type model, no refactor needed (PR #29) |
+| XEDGE-289 | 3 | 3 | Web UI: zero new template/route code (schema-driven form engine already generic); one real gap found and fixed — `port` needed the same `/api/v1/serial-ports` live-suggestion wiring `modbus_rtu_serial` already has (PR #31) |
+| **Total** | **50** | **~30 (pre-build re-estimate)** | **6 PRs (#27–#32), XEDGE-169 (HIL) explicitly descoped, not delivered** |
+
+Full architecture/licensing research trail: `license-audit.md` §4 item
+11, `adr-006-protocol-stack-build-vs-buy.md`'s BACnet MS/TP row.
 
 ### P8 — PROFINET IO driver (Phase 1: C extension)
 
