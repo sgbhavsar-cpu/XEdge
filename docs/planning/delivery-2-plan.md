@@ -94,21 +94,32 @@ here as a stated open question for when target hardware exists (D-21).
 
 ### P5 — IEC 60870-5-104 driver
 
-**Source:** v1.0 Sprint 19, unchanged in substance — this is genuinely
-new protocol scope with no Delivery 1 interleaving to draw on.
+**Source:** v1.0 Sprint 19. **Architecture superseded at kickoff
+(2026-08-06)**, before any code was written — full decision record:
+`license-audit.md` §4 item 12, `adr-006-protocol-stack-build-vs-buy.md`'s
+IEC 104 row. The clean-room in-house build below (v1.0's plan) is
+replaced by a `bacnet-stack`-style daemon-per-instance-over-IPC
+architecture linking `lib60870-C` directly — **on weaker legal footing
+than BACnet MS/TP's**, since `lib60870-C` has no linking exception: the
+daemon component itself stays GPLv3, source published on distribution,
+by explicit decision (not an oversight). IEC 104 is TCP-native, so this
+sprint has no RS-485/serial-pair complexity to carry — likely a genuine
+simplification over P7's daemon, not just a licensing tradeoff.
 
-**Prerequisite (ADR-006 §6):** IEC 60870-5-104 spec purchase — tracked
-open since Sprint 1 (`license-audit.md` §4 item 2), still outstanding.
-Must close before this sprint starts, not during it.
+**Prerequisite removed:** the IEC 60870-5-104 spec purchase
+(`license-audit.md` §4 item 2) was required for the clean-room path
+only; it does not block this architecture. Still open if wanted as a
+config-schema/ASDU-mapping reference, but not a gate on starting.
 
-| Story | Points | Description |
+| Story | Points (v1.0) | Description (revised) |
 |---|---:|---|
-| XEDGE-148 | 13 | In-house IEC 104 stack (clean-room from the purchased spec): APCI framing, U/S/I frames, k/w flow control, TESTFR keepalive. `lib60870-C` (GPL) as **black-box test oracle only** — ADR-006's clean-room rule applies in full (§2) |
-| XEDGE-149 | 13 | IEC 104 master: connect/STARTDT, spontaneous data (ASDU types 1–45), quality flags |
-| XEDGE-150 | 8 | General interrogation (type 100) and counter interrogation (type 101) |
+| XEDGE-148 | 13 | C daemon: links `lib60870-C` directly via its `CS104_Connection` (master/controlling-station) API, one daemon per configured RTU connection — not a clean-room APCI/frame-layer build |
+| (new) IPC protocol + daemon build/packaging + GPLv3 source-publication mechanism | — | Not in the original ticket list — the real cost this architecture introduces, same as P7's equivalent item. Includes deciding where the daemon's source is published (a public repo) and how the GPLv3 §6 written-offer/source-availability obligation is actually satisfied on every distributed build |
+| XEDGE-149 | 13 | IPC surface for master lifecycle: connect/STARTDT, spontaneous data (ASDU types 1–45), quality flags — daemon wires `lib60870-C`'s own connection/ASDU handling, not hand-rolled framing |
+| XEDGE-150 | 8 | General interrogation (type 100) and counter interrogation (type 101) — `lib60870-C`'s existing API calls, exposed over IPC |
 | XEDGE-151 | 5 | Command issuance: types 45–51, 58–64; command result feedback — routes through the existing `WriteRouter` (unchanged since Sprint 13), not a new write path |
 | XEDGE-152 | 5 | Quality flag → unified `Quality` mapping (IV, NT, SB, BL, OV) |
-| XEDGE-153 | 8 | Test oracle: IEC 104 against a real simulator (QTester104 or equivalent) — same ADR-006 black-box-oracle pattern as every other in-house driver this project has built |
+| XEDGE-153 | 8 | Integration test: real daemon against `lib60870-C`'s own `cs104_server` example (or a purpose-built deterministic variant, if that example proves non-static the way BACnet's `server-mini` did) over real TCP — no virtual-serial-pair infra needed, unlike P7 |
 | XEDGE-286 | 5 | Web UI: IEC 104 driver config form — schema-driven, per the established pattern (every driver added since C7/C8 needed **zero** new template code, only a JSON Schema file) |
 
 **This sprint's actual outcome is the P6 gate's decision input.** Track
@@ -117,13 +128,18 @@ done" — since Sprint 20's gate reads that number, not a completion date.
 
 ### P6 — DNP3 driver
 
-**Source:** v1.0 Sprint 20. **Gate unchanged, refreshed 2026-07-31**
-(`license-audit.md` §4 item 10): proceed in-house only if P5 landed on
-budget; otherwise the fallback is a real commercial license negotiation
-with Step Function I/O for `stepfunc/dnp3` — confirmed this sprint to be
-a genuine paid-production-use license, not merely "commercial support
-available." See §3 below for the full gate writeup — **this sprint's
-scope cannot be finalized until P5 closes.**
+**Source:** v1.0 Sprint 20. **Gate's own premise is now stale, not
+re-resolved here** (`license-audit.md` §4 item 10 refreshed
+2026-07-31, item 12 added 2026-08-06): the gate as written asks whether
+"P5's in-house IEC 104 stack landed on budget" — but P5 itself is no
+longer in-house (see P5 above). Whether that means DNP3 should get the
+same daemon-over-`stepfunc/dnp3`-or-equivalent treatment, or the gate's
+in-house/commercial fork still applies on its own separate merits, is an
+open question this document restates rather than answers — same
+restraint §3 below already applies to the gate generally. **This
+sprint's scope still cannot be finalized until P5 closes**, now for an
+added reason (the gate question itself needs re-asking, not just
+re-reading a budget number).
 
 | Story | Points | Description |
 |---|---:|---|
@@ -294,6 +310,18 @@ things must happen before P6 can be scoped for real:
 3. The customer is told which of the three paths was taken and why,
    the same way Q-7 (EtherNet/IP) and the SNMP agent's PEN/scope
    questions were surfaced during Delivery 1 rather than assumed.
+
+**Added 2026-08-06, also not resolved here:** P5's own architecture
+changed at its kickoff (P5 above; `license-audit.md` §4 item 12) from
+a clean-room in-house build to a daemon-over-IPC linking `lib60870-C`
+directly, GPLv3 component and all. Item 1 above ("P5 completes and its
+actual person-days are known") still holds as a number, but the
+question it's supposed to answer — "did the in-house path work out
+affordably enough to repeat for DNP3" — no longer has a clean in-house
+data point to read it from. Whether DNP3 should get the equivalent
+daemon-over-`stepfunc/dnp3`-or-equivalent treatment instead, independent
+of whatever P5's number turns out to be, is a live open question, not
+folded into the three items above.
 
 ---
 

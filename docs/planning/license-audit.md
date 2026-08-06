@@ -49,7 +49,7 @@ gate is passed):
 | uvicorn | REST API v1 ASGI server | BSD-3-Clause | ✅ Clear | |
 | httpx | **test-only** (FastAPI TestClient transport) | BSD-3-Clause | ✅ Clear | Not a runtime dependency; only exercised via `fastapi.testclient.TestClient` and directly in the live REST API smoke test |
 | open62541 | OPC UA client + server (ADR-006) | MPL-2.0 | ✅ Clear (file-level copyleft; compatible with proprietary linking) | In-house asyncio C-extension binding required (no off-the-shelf async Python binding exists) |
-| lib60870-C | **black-box oracle only** (ADR-006) | GPL-2.0 (OSS ed.) / Commercial | ⚠ GPL — do not link into commercial edition | IEC 104 stack is built in-house from the purchased IEC 60870-5-104 spec |
+| lib60870-C | IEC 60870-5-104 (Sprint P5) — a standalone C daemon per instance links it directly, kept as a GPLv3 component in its own right (source published), talking to xEdge's Python driver over local IPC | **GPLv3 only — no linking exception.** Dual-licensed GPLv3 / commercial (MZ Automation GmbH); confirmed by reading `COPYING` and every explicitly-licensed source file's own header directly, not a repo-level badge | ⚠ The daemon itself must stay GPLv3 with source made available on distribution (§4 item 12) — **not** the same clean outcome as `bacnet-stack` (item 11), which has an explicit linking exception this library does not | See §4 item 12 for the full decision record and why the clean-room path (originally planned here) is superseded for this path |
 | OpenDNP3 / pydnp3 | **archived — do not use** | Apache-2.0 (dead upstream) | ✅ Re-verified 2026-07-31, see §4 item 10 | Upstream confirmed still unmaintained (maintenance-only since 2020-12-20). In-house lean-build master planned (ADR-006/Sprint-20 gate, conditional on Delivery 2 P5's outcome) or the `stepfunc/dnp3` Rust crate fallback — **confirmed commercial-only for production use**, not merely "commercial support available" |
 | bacpypes3 | BACnet **IP only** | MIT | ✅ Clear | Selected over BAC0 per ADR-006 update (both MIT; bacpypes3 is the actively maintained async-native option). **Does not cover MS/TP at all — see the `bacnet-stack` row below and §4 item 11.** ADR-006 §3's original "BACnet IP/MSTP" row conflated the two; corrected here, 2026-08-05 |
 | bacnet-stack | BACnet **MS/TP** (Sprint P7) — a standalone C daemon per RS-485 port, linked directly, never modified in place; xEdge's own Python driver talks to it over local IPC | **Mixed**: core protocol/datalink files (`mstp.c`, `crc.c`, the Linux `rs485.c`/`dlmstp.c` port) are GPL-2.0-or-later WITH GCC-exception-2.0; their headers and the generic datalink glue (`dlmstp.c`/`.h` at the `src/` level) are MIT | ✅ Clear for linking — the GCC-exception-2.0 text explicitly permits linking the compiled GPL-flagged files into another program and distributing the combination without it becoming GPL; only modifications to bacnet-stack's *own* files would need GPL disclosure, and policy here is to keep it pristine unless a real bug/improvement calls for a patch (§4 item 11) | Vendored as a git submodule at `third_party/bacnet-stack`, pinned to tag `bacnet-stack-1.6.0`. Not a clean-room build — §2's clean-room rule doesn't apply here, since the decision is USE LIBRARY (linked), not BUILD (reimplemented from spec) |
@@ -439,6 +439,75 @@ XEDGE-DR-001 D-12). Entries below record the *candidate* and the
       relying on it for the commercial edition, per the same standard
       already applied to LGPL `asyncua` (item 1 above) — recorded as an
       open item, not resolved here.
+
+12. **IEC 60870-5-104: `lib60870-C` studied for a `bacnet-stack`-style
+    architecture (Sprint P5 kickoff, 2026-08-06) — the parallel does NOT
+    hold, and the resulting decision is materially different from item
+    11's outcome.** ADR-006 §3 originally planned a clean-room in-house
+    IEC 104 stack, built from the purchased official spec, with
+    `lib60870-C` used only as a black-box test oracle (§2's clean-room
+    rule). Before committing engineering time to that ~6–10 eng-week
+    build, `lib60870-C` (`github.com/mz-automation/lib60870`) was cloned
+    and studied directly to see whether the daemon-per-instance-over-IPC
+    architecture that worked for BACnet MS/TP could apply here too, at a
+    fraction of the effort.
+    - **It does not carry `bacnet-stack`'s linking exception.** Verified
+      directly, not assumed: `COPYING` is plain GPLv3 with no exception
+      text; the README states outright "This software can be dual
+      licensed under the GPLv3 ... and a commercial license agreement.
+      When using the library in commercial and non-GPL applications you
+      should buy a commercial license"; every explicitly-licensed `.c`
+      file's own header repeats plain GPLv3 "or any later version," no
+      exception clause anywhere. The handful of shared platform-
+      abstraction-layer files that omit a license header entirely
+      (`hal/socket/`, `hal/thread/`, etc. — shared with MZ Automation's
+      other protocol libraries) carry no separate permissive grant
+      either; absent one, the repository's blanket `COPYING` still
+      governs them. No published pricing for the commercial license — a
+      real quote would need to come directly from MZ Automation
+      (`info@mz-automation.de`), the same "get a number, don't guess"
+      situation already flagged for DNP3's `stepfunc/dnp3` (item 10).
+    - **Forking and republishing `lib60870-C` as our own open-source
+      project does not create a linking permission that doesn't already
+      exist.** Raised and directly addressed during this decision: GPLv3
+      §5(c) requires any modified/redistributed version to remain
+      licensed "as a whole" under GPLv3 — we cannot unilaterally add a
+      linking exception to code we don't hold copyright on, only MZ
+      Automation (the actual copyright holder) could grant that, which
+      folds back into a commercial-license conversation, not something a
+      fork resolves on its own.
+    - **Decision: ship it anyway, as a GPLv3 component in its own right.**
+      Same daemon-per-instance-over-IPC shape as `bacnet-stack` (a
+      standalone C process links `lib60870-C` directly, xEdge's Python
+      driver talks to it over local IPC — helped here by IEC 104 being
+      TCP-native to begin with, so no RS-485/serial-pair complexity),
+      but on weaker legal footing than item 11's exception-backed
+      outcome: **the daemon binary itself is a GPLv3-covered combined
+      work and must have its source made available on distribution**
+      (a real operational obligation — publish the daemon's source
+      publicly, or provide GPLv3 §6's written-offer mechanism, every
+      time a build containing it ships). The "mere aggregation" argument
+      that kept xEdge's own main process clean for BACnet MS/TP still
+      applies to the *boundary* between this daemon and the rest of
+      xEdge (genuinely separate processes, IPC-only communication), but
+      it does not exempt the daemon component itself from GPLv3 the way
+      an explicit linking exception would have.
+    - **Spec purchase (item 2) is not needed for this path.** The
+      clean-room rule (§2) exists specifically to avoid tainting an
+      *independent* implementation by reading GPL source while writing
+      it from the spec. That concern doesn't apply here — we are
+      licensed to read and extend `lib60870-C` itself precisely because
+      we're keeping the result GPLv3, not writing something separate
+      from it. If the purchased spec is still wanted as a reference for
+      config-schema/ASDU-mapping work, that's a separate call, not a
+      hard requirement of this path.
+    - **Not a legal opinion.** Same standing caveat as items 1 and 11 —
+      substantiated by direct inspection of the cloned repository's
+      `COPYING`, `README.md`, and source file headers, but wants a
+      counsel pass before shipping, particularly on the "mere
+      aggregation" boundary argument, which carries more interpretive
+      risk here than it did for `bacnet-stack` given the missing
+      exception.
 
 ## 5. Provenance record template (per in-house driver)
 
