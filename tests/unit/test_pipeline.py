@@ -305,7 +305,7 @@ class TestBuildTagPipelineConfigsIsDriverTypeAgnostic:
     function itself branches on nothing driver-type-specific — it was
     already correct for every driver type whose schema uses the common
     `scaling`/`deadband`/`engineering_unit` shape, which per
-    config/schema/drivers/*.schema.json is all three shipped types. The bug
+    config/schema/drivers/*.schema.json is all four shipped types. The bug
     was the docstring, not the function; these tests are the regression
     coverage for the function actually having this property, since a
     docstring alone can drift out of sync with the code again exactly the
@@ -379,7 +379,43 @@ class TestBuildTagPipelineConfigsIsDriverTypeAgnostic:
         assert config.deadband is not None
         assert config.deadband.kind == "percentage"
 
-    def test_mixed_fleet_of_all_three_driver_types_in_one_call(self) -> None:
+    def test_bacnet_mstp_tags_get_scaling_and_deadband(self) -> None:
+        from xedge.core.pipeline import build_tag_pipeline_configs
+
+        drivers = [
+            {
+                "id": "bacnet_mstp_1",
+                "type": "bacnet_mstp",
+                "tag_groups": [
+                    {
+                        "id": "g1",
+                        "scan_rate_ms": 1000,
+                        "deadband": {"type": "percentage", "value": 2.0},
+                        "tags": [
+                            {
+                                "id": "pressure",
+                                "device_instance": 260001,
+                                "mac_address": 1,
+                                "object_type": "analog-input",
+                                "object_instance": 1,
+                                "scaling": {"scale": 2.0, "offset": 0.0},
+                                "engineering_unit": "kPa",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+
+        config = build_tag_pipeline_configs(drivers)["bacnet_mstp_1/pressure"]
+
+        assert config.scaling is not None
+        assert config.scaling.scale == 2.0
+        assert config.engineering_unit == "kPa"
+        assert config.deadband is not None
+        assert config.deadband.kind == "percentage"
+
+    def test_mixed_fleet_of_all_four_driver_types_in_one_call(self) -> None:
         """The realistic case: one xedge.yaml with several protocols
         configured together, not one driver type in isolation."""
         from xedge.core.pipeline import build_tag_pipeline_configs
@@ -431,9 +467,28 @@ class TestBuildTagPipelineConfigsIsDriverTypeAgnostic:
                     }
                 ],
             },
+            {
+                "id": "bacnet_mstp_1",
+                "type": "bacnet_mstp",
+                "tag_groups": [
+                    {
+                        "id": "g1",
+                        "scan_rate_ms": 1000,
+                        "tags": [
+                            {
+                                "id": "t1",
+                                "device_instance": 260001,
+                                "mac_address": 1,
+                                "object_type": "binary-input",
+                                "object_instance": 1,
+                            }
+                        ],
+                    }
+                ],
+            },
         ]
 
         configs = build_tag_pipeline_configs(drivers)
 
-        assert set(configs) == {"modbus_1/t1", "opcua_1/t1", "bacnet_1/t1"}
+        assert set(configs) == {"modbus_1/t1", "opcua_1/t1", "bacnet_1/t1", "bacnet_mstp_1/t1"}
         assert configs["opcua_1/t1"].engineering_unit == "V"
