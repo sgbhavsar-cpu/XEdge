@@ -103,9 +103,21 @@ jobs:
           # default), which is fine since testpaths=["tests"] means pytest
           # never scans it either.
           submodules: recursive
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq build-essential
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq build-essential socat
       - working-directory: xedge/drivers/bacnet/mstp_daemon
         run: make
+      # XEDGE-171: the deterministic test-double server used by
+      # test_bacnet_mstp_real_daemon.py -- built here (not in unit-tests)
+      # for the same reason the daemon itself is: both need the submodule
+      # actually fetched.
+      - working-directory: tests/fixtures/mstp_test_server
+        run: make
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e ".[dev,test]"
+      - run: pytest tests/integration/test_bacnet_mstp_real_daemon.py -v
 
   docker-build:
     name: Docker Build (amd64, arm64, armv7)
