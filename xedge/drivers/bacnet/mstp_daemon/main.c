@@ -301,12 +301,27 @@ static void ipc_send_value(int fd, const BACNET_APPLICATION_DATA_VALUE *value)
             if (isnan(real_value) || isinf(real_value)) {
                 snprintf(line, sizeof(line), "{\"ok\":true,\"value\":null}");
             } else {
-                /* %.9g/%.17g round-trip a float/double exactly; a plain
-                   %g's default 6-digit precision would silently lose
-                   precision on every read */
-                snprintf(
-                    line, sizeof(line), "{\"ok\":true,\"value\":%.17g}",
-                    real_value);
+                /* %.17g round-trips a float/double exactly (a plain %g's
+                   default 6-digit precision would silently lose precision
+                   on every read) -- but %g also drops the decimal point
+                   entirely for a whole-number value (e.g. "0" rather than
+                   "0.0"), which is syntactically a JSON integer, not a
+                   float: json.loads("0") on the Python side returns int,
+                   silently losing this value's actual BACnet REAL/DOUBLE
+                   type. Force a trailing ".0" whenever %g didn't already
+                   produce a '.' or exponent, so the JSON text itself
+                   marks this as a float. */
+                char numbuf[64];
+                snprintf(numbuf, sizeof(numbuf), "%.17g", real_value);
+                /* NaN/Infinity are already handled above and never reach
+                   here, so only '.'/exponent need checking */
+                if (strpbrk(numbuf, ".eE") == NULL) {
+                    size_t len = strlen(numbuf);
+                    if (len + 3 <= sizeof(numbuf)) {
+                        snprintf(numbuf + len, sizeof(numbuf) - len, ".0");
+                    }
+                }
+                snprintf(line, sizeof(line), "{\"ok\":true,\"value\":%s}", numbuf);
             }
             break;
         case BACNET_APPLICATION_TAG_ENUMERATED:
