@@ -386,3 +386,29 @@ class TestSprintC3FieldsRenderFromSchema:
 
         assert fields["rts_pre_delay_us"].control == "number"
         assert fields["rts_post_delay_us"].control == "number"
+
+
+class TestSprintP7BacnetMstpPortFieldRendersFromSchema:
+    """XEDGE-171 — bacnet_mstp's `port` field is the same physical-RS-485
+    concept as modbus_rtu_serial's, so it must carry the same
+    `/api/v1/serial-ports` suggestions endpoint (see
+    xedge.api.server.get_serial_ports, which now backs both)."""
+
+    @staticmethod
+    def _mstp_schema() -> dict[str, Any]:
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "config"
+            / "schema"
+            / "drivers"
+            / "bacnet_mstp.schema.json"
+        )
+        return json.loads(path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+
+    def test_port_field_carries_the_serial_ports_suggestions_endpoint(self) -> None:
+        schema = self._mstp_schema()
+        config_schema = schema["properties"]["config"]
+        fields = {f.name: f for f in build_object_fields(config_schema, {})}
+
+        assert fields["port"].control == "text"
+        assert fields["port"].suggestions_endpoint == "/api/v1/serial-ports"
