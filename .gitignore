@@ -26,3 +26,9 @@ frontend/dist/
 # vendored third_party/bacnet-stack submodule, not committed source.
 xedge/drivers/bacnet/mstp_daemon/xedge-bacnet-mstp-daemon
 xedge/drivers/bacnet/mstp_daemon/*.o
+
+# Sprint P7 (XEDGE-171): the compiled deterministic MS/TP test-double
+# server used by tests/integration/test_bacnet_mstp_real_daemon.py --
+# same reasoning, built from tests/fixtures/mstp_test_server/main.c.
+tests/fixtures/mstp_test_server/mstp-test-server
+tests/fixtures/mstp_test_server/*.o
