@@ -44,9 +44,7 @@ _SOCAT_READY_TIMEOUT_SECONDS = 5.0
 
 
 def mstp_binaries_available() -> bool:
-    return (
-        TEST_SERVER_BIN.is_file() and DAEMON_BIN.is_file() and shutil.which("socat") is not None
-    )
+    return TEST_SERVER_BIN.is_file() and DAEMON_BIN.is_file() and shutil.which("socat") is not None
 
 
 @pytest.fixture
