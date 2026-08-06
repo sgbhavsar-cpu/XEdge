@@ -580,9 +580,10 @@ def create_app(
         _user: str = Depends(require_permission("config:read")),
     ) -> list[str]:
         """Serial device paths physically present on this host right now
-        (XEDGE-434) — backs the `port` field's suggestion list on the
-        Modbus RTU serial driver form (`x-suggestions-endpoint`, see
-        xedge.api.schema_forms). `pyserial` (already a dependency via
+        (XEDGE-434) — backs the `port` field's suggestion list on every
+        serial-based driver's form (`x-suggestions-endpoint`, see
+        xedge.api.schema_forms) — Modbus RTU serial and BACnet MS/TP as
+        of Sprint P7. `pyserial` (already a dependency via
         pyserial-asyncio) does the actual OS-specific enumeration; no
         detected list is ever authoritative here, only a convenience — the
         field stays a free-text input an operator can fill in by hand for

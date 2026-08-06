@@ -15,7 +15,8 @@
         "port": {
           "type": "string",
           "minLength": 1,
-          "description": "Serial device for this driver instance's RS-485 port, e.g. '/dev/ttyUSB0'. Passed to the daemon as --iface."
+          "description": "Serial device for this driver instance's RS-485 port, e.g. '/dev/ttyUSB0'. Passed to the daemon as --iface.",
+          "x-suggestions-endpoint": "/api/v1/serial-ports"
         },
         "mac_address": {
           "type": "integer",
