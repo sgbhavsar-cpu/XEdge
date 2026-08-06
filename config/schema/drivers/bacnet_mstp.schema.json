@@ -1,0 +1,139 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://xedge.example.com/schema/drivers/bacnet_mstp.schema.json",
+  "title": "BACnet MS/TP Driver Configuration",
+  "description": "Per-driver-type schema for `type: bacnet_mstp` entries (FR-DF-004, Sprint P7). Unlike `bacnet_ip`, this driver supervises a standalone C daemon (xedge/drivers/bacnet/mstp_daemon/, linked against the vendored third_party/bacnet-stack) that owns the actual MS/TP token-passing lifecycle for one RS-485 port. MVP scope matches bacnet_ip: ReadProperty polling only, master node role only, no COV subscriptions, no device discovery.",
+  "type": "object",
+  "required": ["config", "tag_groups"],
+  "additionalProperties": false,
+  "properties": {
+    "config": {
+      "type": "object",
+      "required": ["port", "mac_address", "device_instance"],
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Serial device for this driver instance's RS-485 port, e.g. '/dev/ttyUSB0'. Passed to the daemon as --iface."
+        },
+        "mac_address": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 127,
+          "description": "This xEdge instance's own MS/TP MAC address on this RS-485 segment (must be unique on the segment)."
+        },
+        "device_instance": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4194303,
+          "description": "This xEdge instance's own BACnet device instance number (must be unique on the BACnet network)."
+        },
+        "baud_rate": {
+          "type": "integer",
+          "enum": [9600, 19200, 38400, 57600, 76800, 115200],
+          "default": 38400,
+          "description": "RS-485 baud rate; must match every other node on the segment."
+        },
+        "max_info_frames": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1,
+          "description": "Max frames this node sends before passing the token, per the MS/TP spec's Max_Info_Frames property."
+        },
+        "max_master": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 127,
+          "default": 127,
+          "description": "Highest MAC address this node will poll for during token passing, per the MS/TP spec's Max_Master property."
+        },
+        "request_timeout_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 5,
+          "description": "Per-request (ReadProperty) timeout waiting on the daemon's IPC response."
+        },
+        "daemon_path": {
+          "type": "string",
+          "minLength": 1,
+          "default": "xedge-bacnet-mstp-daemon",
+          "description": "Path to (or name on PATH of) the compiled xedge_bacnet_mstp_daemon binary."
+        }
+      }
+    },
+    "tag_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "scan_rate_ms", "tags"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "scan_rate_ms": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 86400000,
+            "description": "100ms minimum sampling interval, matching the other polling drivers."
+          },
+          "deadband": {
+            "type": "object",
+            "required": ["type", "value"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "type": "string", "enum": ["absolute", "percentage"] },
+              "value": { "type": "number", "minimum": 0 }
+            }
+          },
+          "tags": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["id", "device_instance", "mac_address", "object_type", "object_instance"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "device_instance": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4194303,
+                  "description": "Target device's BACnet device instance number."
+                },
+                "mac_address": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 127,
+                  "description": "Target device's MS/TP MAC address on this RS-485 segment."
+                },
+                "object_type": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "e.g. 'analog-input', 'binary-value', 'multi-state-value'."
+                },
+                "object_instance": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Target object's instance number."
+                },
+                "property_id": {
+                  "type": "string",
+                  "default": "present-value"
+                },
+                "scaling": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "scale": { "type": "number", "default": 1.0 },
+                    "offset": { "type": "number", "default": 0.0 }
+                  }
+                },
+                "engineering_unit": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -170,10 +170,11 @@ def build_tag_pipeline_configs(drivers: list[dict[str, Any]]) -> dict[str, TagPi
     and `tags[].scaling`/`engineering_unit` off whatever's in `drivers`,
     with no branch on `driver.get("type")` anywhere in this function. Every
     driver type that follows that config shape gets scaling/deadband for
-    free — which, verified against the actual OPC UA and BACnet schemas
-    (both declare `scaling`/`deadband`/`engineering_unit` identically to
-    Modbus), is already all three shipped driver types, not "Modbus
-    currently" as an earlier version of this docstring claimed. See
+    free — which, verified against the actual OPC UA and BACnet (both
+    IP and MS/TP) schemas (all declare `scaling`/`deadband`/
+    `engineering_unit` identically to Modbus), is already all four
+    shipped driver types, not "Modbus currently" as an earlier version
+    of this docstring claimed. See
     `tests/unit/test_pipeline.py::TestBuildTagPipelineConfigsIsDriverTypeAgnostic`
     for the regression coverage backing that claim, since a docstring
     alone can drift out of sync with the code again exactly the way the

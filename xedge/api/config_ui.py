@@ -61,6 +61,7 @@ KNOWN_DRIVER_TYPES = [
     "modbus_rtu_serial",
     "opcua_client",
     "bacnet_ip",
+    "bacnet_mstp",
     "ethernet_ip",
     "mqtt_subscriber",
     "snmp_client",
